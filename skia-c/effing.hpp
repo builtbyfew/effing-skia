@@ -3,6 +3,8 @@
 #ifndef EFFING_HPP
 #define EFFING_HPP
 
+#include <vector>
+
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
 #include "modules/skparagraph/include/Paragraph.h"
@@ -15,13 +17,16 @@ namespace effing {
 // 1x or at any other scale. Runs containing glyphs without an outline (color
 // or bitmap glyphs) are drawn as masks with baseline snapping turned off.
 //
-// Only glyphs are drawn: backgrounds, shadows and decorations, which the
-// Canvas 2D text path never sets, are ignored.
-void paint_paragraph_unsnapped(skia::textlayout::Paragraph* paragraph,
-                               SkCanvas* canvas,
-                               SkScalar x,
-                               SkScalar y,
-                               const SkPaint& paint);
+// Only glyphs are drawn, with `paint`: the paragraph's own foreground,
+// backgrounds, shadows and decorations are ignored. `line_offsets`, if given,
+// moves each line by its entry.
+void paint_paragraph_unsnapped(
+    skia::textlayout::Paragraph* paragraph,
+    SkCanvas* canvas,
+    SkScalar x,
+    SkScalar y,
+    const SkPaint& paint,
+    const std::vector<SkVector>* line_offsets = nullptr);
 
 }  // namespace effing
 

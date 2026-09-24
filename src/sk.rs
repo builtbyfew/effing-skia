@@ -14,6 +14,9 @@ use crate::font::{FontStretch, FontStyle};
 use crate::image::ImageData;
 
 #[allow(non_camel_case_types)]
+pub(crate) mod effing;
+
+#[allow(non_camel_case_types)]
 pub mod ffi {
   use std::ffi::c_void;
   use std::os::raw::c_char;

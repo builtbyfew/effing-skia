@@ -38,6 +38,8 @@ use crate::{
   state::Context2dRenderingState,
 };
 
+mod effing_paragraph;
+
 static CSS_SIZE_REGEXP: LazyLock<Regex> =
   LazyLock::new(|| Regex::new(r#"(-?[\d\.]+)(%|px|pt|pc|in|cm|mm|%|em|ex|ch|rem|q)?\s*"#).unwrap());
 

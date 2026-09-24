@@ -63,15 +63,21 @@ void paint_paragraph_unsnapped(skia::textlayout::Paragraph* paragraph,
                                SkCanvas* canvas,
                                SkScalar x,
                                SkScalar y,
-                               const SkPaint& paint) {
+                               const SkPaint& paint,
+                               const std::vector<SkVector>* line_offsets) {
   const bool paths = use_paths();
   paragraph->visit(
-      [&](int, const skia::textlayout::Paragraph::VisitorInfo* info) {
+      [&](int line, const skia::textlayout::Paragraph::VisitorInfo* info) {
         if (info == nullptr || info->count == 0) {
           return;
         }
-        const SkScalar ox = x + info->origin.fX;
-        const SkScalar oy = y + info->origin.fY;
+        SkVector offset = {0, 0};
+        if (line_offsets != nullptr && line >= 0 &&
+            static_cast<size_t>(line) < line_offsets->size()) {
+          offset = (*line_offsets)[line];
+        }
+        const SkScalar ox = x + offset.fX + info->origin.fX;
+        const SkScalar oy = y + offset.fY + info->origin.fY;
         if (paths) {
           SkPathBuilder builder;
           if (append_glyph_paths(info->font, info->glyphs, info->positions,

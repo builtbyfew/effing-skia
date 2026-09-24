@@ -450,6 +450,7 @@ module.exports.FontKey = nativeBinding.FontKey
 module.exports.Image = nativeBinding.Image
 module.exports.ImageData = nativeBinding.ImageData
 module.exports.Path = nativeBinding.Path
+module.exports.Paragraph = nativeBinding.Paragraph
 module.exports.PdfDocument = nativeBinding.PdfDocument
 module.exports.SVGCanvas = nativeBinding.SVGCanvas
 module.exports.ChromaSubsampling = nativeBinding.ChromaSubsampling
