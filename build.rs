@@ -9,6 +9,8 @@ fn main() {
 
   println!("cargo:rerun-if-changed=skia-c/skia_c.cpp");
   println!("cargo:rerun-if-changed=skia-c/skia_c.hpp");
+  println!("cargo:rerun-if-changed=skia-c/effing.cpp");
+  println!("cargo:rerun-if-changed=skia-c/effing.hpp");
 
   let compile_target = env::var("TARGET").expect("TARGET");
   let compile_target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS");
@@ -40,7 +42,10 @@ fn main() {
 
   let mut build = cc::Build::new();
 
-  build.cpp(true).file("skia-c/skia_c.cpp");
+  build
+    .cpp(true)
+    .file("skia-c/skia_c.cpp")
+    .file("skia-c/effing.cpp");
 
   if compile_target.as_str() == "aarch64-linux-android" {
     let nkd_home = env::var("ANDROID_NDK_LATEST_HOME").unwrap();
