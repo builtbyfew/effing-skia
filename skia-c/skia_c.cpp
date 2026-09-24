@@ -812,8 +812,8 @@ void skiac_canvas_get_line_metrics_or_draw_text(
                                      rtl_offset + letter_spacing_offset
                                : paint_x - rtl_offset + letter_spacing_offset;
     if (text_rendering == 3) {
-      effing::paint_paragraph_unsnapped(paragraph, CANVAS_CAST, final_x,
-                                        y + baseline_offset, *PAINT_CAST);
+      effing::paint_text_unsnapped(paragraph, CANVAS_CAST, final_x,
+                                   y + baseline_offset, *PAINT_CAST);
     } else {
       paragraph->paint(CANVAS_CAST, final_x, y + baseline_offset);
     }

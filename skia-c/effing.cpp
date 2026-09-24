@@ -106,4 +106,19 @@ void paint_paragraph_unsnapped(skia::textlayout::Paragraph* paragraph,
       });
 }
 
+void paint_text_unsnapped(skia::textlayout::Paragraph* paragraph,
+                          SkCanvas* canvas,
+                          SkScalar x,
+                          SkScalar y,
+                          const SkPaint& paint) {
+  std::vector<skia::textlayout::LineMetrics> lines;
+  paragraph->getLineMetrics(lines);
+  std::vector<SkVector> offsets(lines.size(), {0, 0});
+  if (!lines.empty()) {
+    offsets[0].fY = paragraph->getAlphabeticBaseline() -
+                    static_cast<SkScalar>(lines[0].fBaseline);
+  }
+  paint_paragraph_unsnapped(paragraph, canvas, x, y, paint, &offsets);
+}
+
 }  // namespace effing

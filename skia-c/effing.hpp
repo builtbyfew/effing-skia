@@ -28,6 +28,15 @@ void paint_paragraph_unsnapped(
     const SkPaint& paint,
     const std::vector<SkVector>* line_offsets = nullptr);
 
+// The fillText/strokeText flavour: paints a single-line paragraph with its
+// alphabetic baseline exactly at y + getAlphabeticBaseline(), the value the
+// Canvas 2D textBaseline offsets are computed from.
+void paint_text_unsnapped(skia::textlayout::Paragraph* paragraph,
+                          SkCanvas* canvas,
+                          SkScalar x,
+                          SkScalar y,
+                          const SkPaint& paint);
+
 }  // namespace effing
 
 #endif  // EFFING_HPP
