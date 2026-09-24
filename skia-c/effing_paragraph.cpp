@@ -28,6 +28,7 @@ struct effing_paragraph {
   // Skia breaks lines and shapes them horizontally; effing places them. Per
   // line: the left edge and baseline effing wants, and the offset from where
   // Skia put the line, applied at paint time.
+  std::vector<float> line_width;
   std::vector<float> line_left;
   std::vector<float> line_baseline;
   std::vector<SkVector> line_offsets;
@@ -178,6 +179,21 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
   std::vector<LineMetrics> lines;
   p->paragraph->getLineMetrics(lines);
   const size_t n = lines.size();
+  // A line's metrics leave out an ellipsis Skia appended to it; the painted
+  // runs include it.
+  p->line_width.assign(n, 0.0f);
+  for (size_t i = 0; i < n; i++) {
+    p->line_width[i] = static_cast<float>(lines[i].fWidth);
+  }
+  if (p->ellipsized) {
+    p->paragraph->visit([&](int line, const Paragraph::VisitorInfo* info) {
+      if (info == nullptr || line < 0 || static_cast<size_t>(line) >= n) {
+        return;
+      }
+      const float right = info->advanceX - static_cast<float>(lines[line].fLeft);
+      p->line_width[line] = std::max(p->line_width[line], right);
+    });
+  }
   p->line_left.assign(n, 0.0f);
   p->line_baseline.assign(n, 0.0f);
   p->line_offsets.assign(n, {0, 0});
@@ -191,7 +207,7 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
     // fLeft is where the line's first glyph sits; with letter spacing Skia
     // puts half of it before that glyph, where CSS puts all of it after.
     const float skia_left = static_cast<float>(lines[i].fLeft);
-    const float slack = w - static_cast<float>(lines[i].fWidth);
+    const float slack = w - p->line_width[i];
     float left = 0;
     if (w < kUnbounded && p->align == 1) {
       left = slack;
@@ -228,7 +244,7 @@ void effing_paragraph_get_lines(effing_paragraph* p,
   for (int i = 0; i < n; i++) {
     const auto& l = lines[i];
     out[i].left = p->line_left[i];
-    out[i].width = l.fWidth;
+    out[i].width = p->line_width[i];
     out[i].baseline = p->line_baseline[i];
     out[i].ascent = p->ascent;
     out[i].descent = p->descent;

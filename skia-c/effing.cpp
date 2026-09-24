@@ -66,6 +66,10 @@ void paint_paragraph_unsnapped(skia::textlayout::Paragraph* paragraph,
                                const SkPaint& paint,
                                const std::vector<SkVector>* line_offsets) {
   const bool paths = use_paths();
+  // SkParagraph paints each line at floor(baseline + 0.5); use the exact
+  // baseline instead, so text doesn't sit up to half a pixel off.
+  std::vector<skia::textlayout::LineMetrics> lines;
+  paragraph->getLineMetrics(lines);
   paragraph->visit(
       [&](int line, const skia::textlayout::Paragraph::VisitorInfo* info) {
         if (info == nullptr || info->count == 0) {
@@ -76,8 +80,12 @@ void paint_paragraph_unsnapped(skia::textlayout::Paragraph* paragraph,
             static_cast<size_t>(line) < line_offsets->size()) {
           offset = (*line_offsets)[line];
         }
+        SkScalar baseline = info->origin.fY;
+        if (line >= 0 && static_cast<size_t>(line) < lines.size()) {
+          baseline = static_cast<SkScalar>(lines[line].fBaseline);
+        }
         const SkScalar ox = x + offset.fX + info->origin.fX;
-        const SkScalar oy = y + offset.fY + info->origin.fY;
+        const SkScalar oy = y + offset.fY + baseline;
         if (paths) {
           SkPathBuilder builder;
           if (append_glyph_paths(info->font, info->glyphs, info->positions,
