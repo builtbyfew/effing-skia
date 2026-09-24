@@ -1,9 +1,44 @@
-//! Safe wrapper around the effing paragraph primitive in
-//! `skia-c/effing_paragraph.cpp`.
+//! Safe wrappers around the effing primitives in `skia-c/effing_*.cpp`.
 
 use std::ffi::{CString, NulError, c_char};
 
-use super::{Canvas, FontCollection, Paint, ffi};
+use super::{BlendMode, Canvas, FontCollection, ImageFilter, Paint, ffi};
+
+unsafe extern "C" {
+  fn effing_canvas_save_layer(
+    canvas: *mut ffi::skiac_canvas,
+    opacity: f32,
+    blend_mode: i32,
+    filter: *mut ffi::skiac_image_filter,
+    backdrop: *mut ffi::skiac_image_filter,
+    bounds: *const f32,
+  );
+}
+
+impl Canvas {
+  /// `SkCanvas::saveLayer`: everything drawn until the matching restore is
+  /// composited as one group with `opacity`, `blend_mode` and `filter`. A
+  /// `backdrop` filter starts the layer from the filtered content behind it.
+  pub fn effing_save_layer(
+    &mut self,
+    opacity: f32,
+    blend_mode: BlendMode,
+    filter: Option<&ImageFilter>,
+    backdrop: Option<&ImageFilter>,
+    bounds: Option<[f32; 4]>,
+  ) {
+    unsafe {
+      effing_canvas_save_layer(
+        self.0,
+        opacity,
+        blend_mode as i32,
+        filter.map_or(std::ptr::null_mut(), |f| f.0),
+        backdrop.map_or(std::ptr::null_mut(), |f| f.0),
+        bounds.as_ref().map_or(std::ptr::null(), |b| b.as_ptr()),
+      );
+    }
+  }
+}
 
 #[repr(C)]
 pub struct effing_paragraph {

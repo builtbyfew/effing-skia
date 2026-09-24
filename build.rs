@@ -13,6 +13,8 @@ fn main() {
   println!("cargo:rerun-if-changed=skia-c/effing.hpp");
   println!("cargo:rerun-if-changed=skia-c/effing_paragraph.cpp");
   println!("cargo:rerun-if-changed=skia-c/effing_paragraph.hpp");
+  println!("cargo:rerun-if-changed=skia-c/effing_layer.cpp");
+  println!("cargo:rerun-if-changed=skia-c/effing_layer.hpp");
 
   let compile_target = env::var("TARGET").expect("TARGET");
   let compile_target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS");
@@ -48,7 +50,8 @@ fn main() {
     .cpp(true)
     .file("skia-c/skia_c.cpp")
     .file("skia-c/effing.cpp")
-    .file("skia-c/effing_paragraph.cpp");
+    .file("skia-c/effing_paragraph.cpp")
+    .file("skia-c/effing_layer.cpp");
 
   if compile_target.as_str() == "aarch64-linux-android" {
     let nkd_home = env::var("ANDROID_NDK_LATEST_HOME").unwrap();
