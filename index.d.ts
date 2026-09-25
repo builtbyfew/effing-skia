@@ -4,22 +4,23 @@ import { ReadableStream } from 'node:stream/web'
 export function clearAllCache(): void
 
 interface CanvasRenderingContext2D
-  extends CanvasCompositing,
-  CanvasDrawPath,
-  CanvasFillStrokeStyles,
-  CanvasFilters,
-  CanvasImageData,
-  CanvasImageSmoothing,
-  CanvasPath,
-  CanvasPathDrawingStyles,
-  CanvasRect,
-  CanvasSettings,
-  CanvasShadowStyles,
-  CanvasState,
-  CanvasText,
-  CanvasTextDrawingStyles,
-  CanvasTransform,
-  CanvasPDFAnnotations { }
+  extends
+    CanvasCompositing,
+    CanvasDrawPath,
+    CanvasFillStrokeStyles,
+    CanvasFilters,
+    CanvasImageData,
+    CanvasImageSmoothing,
+    CanvasPath,
+    CanvasPathDrawingStyles,
+    CanvasRect,
+    CanvasSettings,
+    CanvasShadowStyles,
+    CanvasState,
+    CanvasText,
+    CanvasTextDrawingStyles,
+    CanvasTransform,
+    CanvasPDFAnnotations {}
 
 interface CanvasState {
   isContextLost(): boolean
@@ -189,13 +190,7 @@ type CanvasFontStretch =
   | 'ultra-condensed'
   | 'ultra-expanded'
 type CanvasFontVariantCaps =
-  | 'all-petite-caps'
-  | 'all-small-caps'
-  | 'normal'
-  | 'petite-caps'
-  | 'small-caps'
-  | 'titling-caps'
-  | 'unicase'
+  'all-petite-caps' | 'all-small-caps' | 'normal' | 'petite-caps' | 'small-caps' | 'titling-caps' | 'unicase'
 type CanvasTextAlign = 'center' | 'end' | 'left' | 'right' | 'start'
 type CanvasTextBaseline = 'alphabetic' | 'bottom' | 'hanging' | 'ideographic' | 'middle' | 'top'
 type CanvasTextRendering = 'auto' | 'geometricPrecision' | 'optimizeLegibility' | 'optimizeSpeed'
@@ -423,7 +418,7 @@ type OmitNeverOfMatrix = OmitMatrixMethod[keyof OmitMatrixMethod]
 
 export const DOMMatrix: {
   prototype: DOMMatrix
-  new(init?: string | number[]): DOMMatrix
+  new (init?: string | number[]): DOMMatrix
   fromFloat32Array(array32: Float32Array): DOMMatrix
   fromFloat64Array(array64: Float64Array): DOMMatrix
   fromMatrix(other?: DOMMatrixInit): DOMMatrix
@@ -450,7 +445,7 @@ export interface DOMRect extends DOMRectReadOnly {
 
 export const DOMRect: {
   prototype: DOMRect
-  new(x?: number, y?: number, width?: number, height?: number): DOMRect
+  new (x?: number, y?: number, width?: number, height?: number): DOMRect
   fromRect(other?: DOMRectInit): DOMRect
 }
 
@@ -472,7 +467,7 @@ export interface DOMPoint extends DOMPointReadOnly {
 
 export const DOMPoint: {
   prototype: DOMPoint
-  new(x?: number, y?: number, z?: number, w?: number): DOMPoint
+  new (x?: number, y?: number, z?: number, w?: number): DOMPoint
   fromPoint(other?: DOMPointInit): DOMPoint
 }
 
@@ -612,6 +607,96 @@ export interface SKRSContext2D extends CanvasRenderingContext2D {
 
   letterSpacing: string
   wordSpacing: string
+
+  // Effing extensions; see docs/effing.md.
+  /**
+   * Starts a compositing group: everything drawn until the matching
+   * `endGroup()` is composited as one with the group's opacity, blend mode
+   * and filter. Saves the context state like `save()`.
+   */
+  beginGroup(options?: GroupOptions): void
+  /** Ends the innermost group, compositing it. Throws if the innermost save is not a group. */
+  endGroup(): void
+  /** Fills a laid-out paragraph's glyphs with the current fill style, its top-left corner at (x, y). */
+  fillParagraph(paragraph: Paragraph, x: number, y: number): void
+  /** Strokes a laid-out paragraph's glyph outlines with the current stroke style, its top-left corner at (x, y). */
+  strokeParagraph(paragraph: Paragraph, x: number, y: number): void
+}
+
+// Effing extensions; see docs/effing.md.
+
+export interface GroupOptions {
+  /** Group opacity, 0 to 1. Defaults to 1. */
+  opacity?: number
+  /** A `globalCompositeOperation` value, e.g. `multiply`. Defaults to `source-over`. */
+  blendMode?: string
+  /** A CSS `filter` value applied to the whole group. */
+  filter?: string
+  /** A CSS `filter` value applied to the content behind the group, which the group starts from. */
+  backdropFilter?: string
+  /** `[x, y, width, height]` in the current coordinate space: a size hint that also clips the group's content. */
+  bounds?: [number, number, number, number]
+}
+
+export interface ParagraphStyle {
+  /** CSS font-family list, e.g. `"Inter", sans-serif`. */
+  fontFamily: string
+  fontSize: number
+  /** Defaults to 400. */
+  fontWeight?: number
+  fontStyle?: 'normal' | 'italic' | 'oblique'
+  letterSpacing?: number
+  /** Line box height in px; omitted or 0 for `normal` (hhea ascent + descent). */
+  lineHeight?: number
+  /** `start` and `end` follow `direction`. Defaults to `left`. */
+  textAlign?: 'left' | 'right' | 'center' | 'justify' | 'start' | 'end'
+  direction?: 'ltr' | 'rtl'
+  /** Break only at hard line breaks. */
+  noWrap?: boolean
+  /** 0 or omitted for unlimited. */
+  maxLines?: number
+  /** Appended where text is truncated by `maxLines` or `noWrap`, e.g. `…`. */
+  ellipsis?: string
+}
+
+export interface ParagraphLine {
+  /** Left edge of the line, alignment included. */
+  left: number
+  /** Advance width without trailing whitespace, letter spacing included. */
+  width: number
+  /** Baseline, from the top of the paragraph. */
+  baseline: number
+  /** UTF-8 byte offsets of the line's text, trailing whitespace excluded. */
+  startIndex: number
+  endIndex: number
+  hardBreak: boolean
+}
+
+export interface ParagraphLayout {
+  /** `lines.length * lineHeight`. */
+  height: number
+  longestLine: number
+  minIntrinsicWidth: number
+  maxIntrinsicWidth: number
+  didExceedMaxLines: boolean
+  /** Every line box is exactly this tall. */
+  lineHeight: number
+  /** The primary font's hhea ascender and descender in px. */
+  ascent: number
+  descent: number
+  lines: ParagraphLine[]
+}
+
+/**
+ * A single-style paragraph laid out natively. Line boxes follow the CSS
+ * model (every line exactly `lineHeight` tall, baseline placed by
+ * half-leading) and glyphs are painted unhinted and unsnapped, so the text
+ * lands in the same place at any raster scale.
+ */
+export class Paragraph {
+  constructor(text: string, style: ParagraphStyle)
+  /** Lays the paragraph out in `width` px (non-finite or ≤ 0 for unbounded) and reports its lines. */
+  layout(width: number): ParagraphLayout
 }
 
 export type ColorSpace = 'srgb' | 'display-p3'

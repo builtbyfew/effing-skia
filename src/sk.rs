@@ -13,7 +13,6 @@ use crate::error::SkError;
 use crate::font::{FontStretch, FontStyle};
 use crate::image::ImageData;
 
-#[allow(non_camel_case_types)]
 pub(crate) mod effing;
 
 #[allow(non_camel_case_types)]

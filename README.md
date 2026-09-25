@@ -20,6 +20,13 @@ npm install @napi-rs/canvas
 
 # Support matrix
 
+## Effing extensions
+
+This fork adds unsnapped text under `textRendering = 'geometricPrecision'`, a native
+`Paragraph` primitive with `fillParagraph` / `strokeParagraph`, and compositing groups with
+`beginGroup` / `endGroup`. They are documented in [docs/effing.md](./docs/effing.md), which also
+lists where the fork's code lives and how it hooks into upstream.
+
 ## System requirement
 
 ### `arm64`
