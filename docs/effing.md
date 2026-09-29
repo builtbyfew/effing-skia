@@ -1,8 +1,16 @@
 # Effing extensions
 
-This is effing's fork of [`@napi-rs/canvas`](https://github.com/napi-rs/canvas).
-It adds what effing's CSS-like renderer needs and the Canvas 2D API cannot
-express, and changes one behaviour. Everything else is upstream.
+`@effing/skia` is effing's fork of [`@napi-rs/canvas`](https://github.com/napi-rs/canvas).
+The main entry is a drop-in for upstream: same classes, same context, same
+types. Effing's additions live in a separate entry, `@effing/skia/extensions`,
+so that swapping the backend later only touches the code that imports it.
+One behaviour is changed, and only behind an opt-in: text rendering under
+`textRendering = 'geometricPrecision'`.
+
+```ts
+import { createCanvas } from '@effing/skia' // upstream's API, unchanged
+import { beginGroup, endGroup, Paragraph, fillParagraph } from '@effing/skia/extensions'
+```
 
 ## Where the code lives
 
@@ -10,15 +18,19 @@ Fork code is kept out of upstream files so that upstream merges stay trivial.
 Each layer has an `effing` directory with one file per feature, and each
 upstream file has at most a few marked hook lines.
 
-| Layer                  | Fork code                                                  | Upstream hooks                                              |
-| ---------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,group}.{hpp,cpp}`           | `skia-c/skia_c.cpp` (include + two `text_rendering` checks) |
-| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{paragraph,group}.rs`   | `src/sk.rs` (`mod effing`)                                  |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{paragraph,group}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`)     |
-| Build                  |                                                            | `build.rs` (`EFFING_SOURCES`)                               |
-| JS surface             | `__test__/effing-*.spec.ts`, this file                     | `index.js`, `js-binding.js`, `index.d.ts` (hand-maintained) |
+| Layer                  | Fork code                                                  | Upstream hooks                                                |
+| ---------------------- | ---------------------------------------------------------- | ------------------------------------------------------------- |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,group}.{hpp,cpp}`           | `skia-c/skia_c.cpp` (include + two `text_rendering` checks)   |
+| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{paragraph,group}.rs`   | `src/sk.rs` (`mod effing`)                                    |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{paragraph,group}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`)       |
+| Build                  |                                                            | `build.rs` (`EFFING_SOURCES`)                                 |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`    | `js-binding.js` (exports; hand-maintained, like `index.d.ts`) |
+| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)          | `package.json`, `.github/workflows/CI.yaml` (publish check)   |
 
-C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`.
+C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
+napi bindings are functions that take the context as their first argument
+rather than methods on it, which is what keeps `SKRSContext2D` identical to
+upstream's.
 
 ## Unsnapped text under `textRendering = 'geometricPrecision'`
 
@@ -37,7 +49,7 @@ The other `textRendering` values behave as upstream.
 ## `Paragraph`
 
 ```ts
-import { Paragraph } from '@napi-rs/canvas'
+import { Paragraph, fillParagraph, strokeParagraph } from '@effing/skia/extensions'
 
 const paragraph = new Paragraph('The quick brown fox…', {
   fontFamily: '"Inter", sans-serif',
@@ -48,8 +60,8 @@ const paragraph = new Paragraph('The quick brown fox…', {
   ellipsis: '…',
 })
 const layout = paragraph.layout(320) // { height, lines: [{ left, width, baseline, … }], … }
-ctx.fillParagraph(paragraph, x, y) // top-left corner at (x, y)
-ctx.strokeParagraph(paragraph, x, y)
+fillParagraph(ctx, paragraph, x, y) // top-left corner at (x, y)
+strokeParagraph(ctx, paragraph, x, y)
 ```
 
 A `Paragraph` is a single-style paragraph laid out natively by SkParagraph
@@ -79,9 +91,11 @@ The style's own font settings are all a paragraph has; `ctx.font`,
 ## Compositing groups: `beginGroup` / `endGroup`
 
 ```ts
-ctx.beginGroup({ opacity: 0.5, blendMode: 'multiply', filter: 'blur(2px)' })
-// … any drawing …
-ctx.endGroup()
+import { beginGroup, endGroup } from '@effing/skia/extensions'
+
+beginGroup(ctx, { opacity: 0.5, blendMode: 'multiply', filter: 'blur(2px)' })
+// … any drawing on ctx …
+endGroup(ctx)
 ```
 
 Everything drawn between the two calls is composited as one when the group
@@ -105,21 +119,47 @@ API takes the layer's alpha and blend mode from `globalAlpha` and
 `globalCompositeOperation` and resets them inside the layer, while a group is
 configured explicitly and leaves the state alone.
 
+## Releasing
+
+Versions are upstream's version with an `-effing.N` suffix, so the lineage
+stays visible: `1.0.9-effing.1` is the first fork release on upstream 1.0.9,
+and a rebase onto upstream 1.0.10 restarts at `1.0.10-effing.1`. Consumers
+pin exact versions.
+
+The package publishes from CI on a push to `main` whose commit message is
+the bare version, the way upstream does. `yarn version` writes the changelog
+and that commit after `package.json`'s `version` has been set. The publish
+job needs an `NPM_TOKEN` repository secret with publish rights on the
+`@effing` scope, passed to the publish step as `NODE_AUTH_TOKEN`, and
+`registry-url: https://registry.npmjs.org` on its `setup-node` step, until
+the packages exist and trusted publishing is configured for them on
+npmjs.com. The platform packages under `npm/` are published first by
+`napi prepublish`, which `prepublishOnly` runs.
+
+The prebuilt Skia libraries still come from upstream's GitHub releases,
+keyed on the `skia` submodule commit, so the fork never needs to build Skia
+itself as long as the submodule matches an upstream release.
+
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
-### Unreleased
+### 1.0.9-effing.1
 
-- `beginLayer(options)` / `endLayer()` are now `beginGroup(options)` /
-  `endGroup()` with the same options. `endGroup()` throws when the innermost
-  save is not a group (it used to be a plain `restore()`).
+- The package is `@effing/skia`; the platform packages are
+  `@effing/skia-<platform>`.
+- Effing's additions moved to `@effing/skia/extensions` as functions taking
+  the context: `beginGroup(ctx, options)`, `endGroup(ctx)`,
+  `fillParagraph(ctx, paragraph, x, y)`, `strokeParagraph(ctx, paragraph, x, y)`,
+  plus the `Paragraph` class. They are no longer methods on the context or
+  exports of the main entry, whose types now match upstream's exactly.
+- `beginLayer(options)` / `endLayer()` became `beginGroup` / `endGroup` with
+  the same options. `endGroup` throws when the innermost save is not a group
+  (it used to be a plain `restore()`).
 - `ParagraphLine` no longer carries `ascent`, `descent` and `height`; they
   are constant across lines and live on `ParagraphLayout` as `ascent`,
   `descent` and `lineHeight`.
-- `ParagraphStyle.fontStyle`, `textAlign` and `direction` now reject invalid
+- `ParagraphStyle.fontStyle`, `textAlign` and `direction` reject invalid
   values instead of falling back to the default.
 - The `EFFING_GP_TEXT=mask` environment switch is gone; `geometricPrecision`
   always fills outlines.
-- Types for `Paragraph`, `fillParagraph`, `strokeParagraph`, `beginGroup` and
-  `endGroup` are in `index.d.ts`.

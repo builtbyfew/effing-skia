@@ -1,3 +1,3 @@
-# `@napi-rs/canvas-linux-riscv64-gnu`
+# `@effing/skia-linux-riscv64-gnu`
 
-This is the **riscv64-unknown-linux-gnu** binary for `@napi-rs/canvas`
+This is the **riscv64-unknown-linux-gnu** binary for `@effing/skia`

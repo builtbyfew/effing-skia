@@ -2,7 +2,7 @@
 // This test verifies that pdfjs-dist can render PDFs to canvas in a webpack bundle
 
 import fs from 'fs';
-import { createCanvas } from '@napi-rs/canvas';
+import { createCanvas } from '@effing/skia';
 
 const init = async () => {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');

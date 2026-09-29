@@ -1,11 +1,11 @@
 {
-  "name": "@napi-rs/canvas",
-  "version": "1.0.9",
-  "description": "Canvas for Node.js with skia backend",
+  "name": "@effing/skia",
+  "version": "1.0.9-effing.1",
+  "description": "Effing's fork of @napi-rs/canvas: Canvas for Node.js with skia backend, plus unsnapped text, a Paragraph primitive and compositing groups",
   "main": "index.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Brooooooklyn/canvas.git"
+    "url": "git+https://github.com/builtbyfew/effing-skia.git"
   },
   "workspaces": [
     "e2e/*"
@@ -27,6 +27,8 @@
   "files": [
     "index.d.ts",
     "index.js",
+    "extensions.d.ts",
+    "extensions.js",
     "geometry.js",
     "js-binding.js",
     "load-image.js",
@@ -148,10 +150,6 @@
     "singleQuote": true,
     "arrowParens": "always"
   },
-  "funding": {
-    "type": "github",
-    "url": "https://github.com/sponsors/Brooooooklyn"
-  },
   "packageManager": "yarn@4.18.0",
   "dependenciesMeta": {
     "canvas": {
@@ -162,6 +160,6 @@
     }
   },
   "resolutions": {
-    "@napi-rs/canvas": "workspace:"
+    "@napi-rs/canvas": "portal:."
   }
 }
