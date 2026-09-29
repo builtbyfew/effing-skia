@@ -73,15 +73,18 @@ top:
   half-leading. Fallback fonts never grow a line.
 - `textAlign` is applied per line relative to the layout width, so `noWrap`
   lines wider than the box overflow the way CSS does. `justify` is Skia's.
-- `noWrap` breaks only at hard breaks; with an `ellipsis` it truncates to the
-  width instead. `maxLines` truncates with the `ellipsis` too.
+- `noWrap` breaks only at hard breaks; with an `ellipsis` it truncates each
+  line to the width instead. `maxLines` truncates with the `ellipsis` too.
+  Without either, the `ellipsis` does nothing, as `text-overflow` doesn't on
+  wrapped text.
 - Glyphs are unhinted and painted unsnapped, exactly as `fillText` does under
   `geometricPrecision`; the two agree pixel for pixel.
 
 `layout(width)` must be called before painting. It returns the paragraph's
 metrics and one entry per line: `left` and `baseline` from the paragraph's
-top-left corner, the advance `width` without trailing whitespace, the UTF-8
-byte range of the line's text, and whether it ends at a hard break.
+top-left corner, the advance `width` without trailing whitespace, the range
+of the line's text in UTF-16 units (JS string indices), and whether it ends
+at a hard break.
 
 `fillParagraph`/`strokeParagraph` use the context's current fill or stroke
 style, line settings, shadow, filter, clip and transform, like `fillText`.
@@ -112,7 +115,9 @@ coordinate space) sizes the group's buffer and clips its content.
 it like `restore()`. `endGroup` throws if the innermost save was not made by
 `beginGroup`; a plain `restore()` closes a group as well. Reading the
 canvas's pixels while a group is open (`getImageData`, encoding, drawing the
-canvas into another) composites the group early.
+canvas into another) composites what the group holds so far; the rest of
+the group is composited on its own when it ends, with the same options but
+no backdrop filter, which the content behind it already has.
 
 This is deliberately not the proposed Canvas 2D `beginLayer`/`endLayer`: that
 API takes the layer's alpha and blend mode from `globalAlpha` and

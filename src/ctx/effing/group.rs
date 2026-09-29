@@ -12,7 +12,9 @@
 //! it like `restore()`; `endGroup` throws if the innermost save isn't a group,
 //! while `restore()` closes a group too. Reading the canvas's pixels
 //! (getImageData, encoding, drawing it into another canvas) while a group is
-//! open composites the group early.
+//! open composites what it holds so far; the rest of the group is composited
+//! on its own when it ends, with the same options and without the backdrop
+//! filter, which the content behind it already has.
 
 use std::result;
 use std::str::FromStr;
@@ -22,6 +24,7 @@ use napi::bindgen_prelude::*;
 use super::super::{CanvasRenderingContext2D, Context};
 use crate::error::SkError;
 use crate::filter::{css_filter, css_filters_to_image_filter};
+use crate::sk::effing::group::GroupLayer;
 use crate::sk::{BlendMode, ImageFilter, Paint};
 
 #[napi(object)]
@@ -71,6 +74,13 @@ impl Context {
     };
     self.save_with(|canvas| canvas.save_group(&paint, backdrop.as_ref(), bounds));
     self.group_saves.push(self.states.len() - 1);
+    if let Some(ref recorder) = self.page_recorder {
+      recorder.borrow_mut().set_group(GroupLayer {
+        paint,
+        bounds,
+        transform: self.state.transform.clone(),
+      });
+    }
     Ok(())
   }
 

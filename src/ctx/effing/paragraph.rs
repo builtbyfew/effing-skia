@@ -48,7 +48,7 @@ pub struct ParagraphLine {
   pub width: f64,
   /// Baseline, from the top of the paragraph.
   pub baseline: f64,
-  /// UTF-8 byte offsets of the line's text, trailing whitespace excluded.
+  /// UTF-16 offsets of the line's text (JS string indices), trailing whitespace excluded.
   pub start_index: u32,
   pub end_index: u32,
   pub hard_break: bool,

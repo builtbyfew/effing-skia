@@ -75,6 +75,22 @@ test('bounds clip the group', (t) => {
   t.is(pixel(ctx, 75, 75)[3], 0)
 })
 
+test("reading the canvas mid-group keeps the group's options", (t) => {
+  const ctx = createCanvas(100, 100).getContext('2d')
+  ctx.fillStyle = 'black'
+  beginGroup(ctx, { opacity: 0.5, bounds: [0, 0, 100, 50] })
+  ctx.fillRect(0, 0, 50, 100)
+  t.is(pixel(ctx, 25, 25)[3], 128)
+  ctx.fillRect(50, 0, 50, 100)
+  endGroup(ctx)
+  t.is(pixel(ctx, 25, 25)[3], 128)
+  t.is(pixel(ctx, 75, 25)[3], 128)
+  t.is(pixel(ctx, 75, 75)[3], 0)
+  // The state after the group is the one before it.
+  ctx.fillRect(0, 0, 100, 100)
+  t.is(pixel(ctx, 75, 75)[3], 255)
+})
+
 test('groups nest', (t) => {
   const ctx = createCanvas(10, 10).getContext('2d')
   ctx.fillStyle = 'black'

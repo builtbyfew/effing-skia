@@ -72,6 +72,60 @@ test('noWrap with an ellipsis truncates to the width', (t) => {
   t.true(layout.lines[0].endIndex < TEXT.length)
 })
 
+test('an ellipsis without maxLines or noWrap leaves wrapping alone', (t) => {
+  const plain = new Paragraph(TEXT, STYLE).layout(200)
+  const ellipsized = new Paragraph(TEXT, { ...STYLE, ellipsis: '…' }).layout(200)
+  t.true(plain.lines.length > 1)
+  t.deepEqual(ellipsized.lines, plain.lines)
+  t.false(ellipsized.didExceedMaxLines)
+})
+
+test('noWrap with an ellipsis truncates every hard-broken line', (t) => {
+  const text = `${TEXT}\n\n${TEXT}\nshort`
+  const layout = new Paragraph(text, { ...STYLE, noWrap: true, ellipsis: '…' }).layout(200)
+  t.is(layout.lines.length, 4)
+  near(t, layout.height, 4 * layout.lineHeight)
+  for (const i of [0, 2]) {
+    t.true(layout.lines[i].width <= 200, `line ${i} is ${layout.lines[i].width} wide`)
+    t.true(layout.lines[i].endIndex < layout.lines[i].startIndex + TEXT.length)
+  }
+  t.is(layout.lines[1].startIndex, TEXT.length + 1)
+  t.is(layout.lines[2].startIndex, TEXT.length + 2)
+  t.is(layout.lines[3].startIndex, 2 * TEXT.length + 3)
+  t.is(layout.lines[3].endIndex, text.length)
+  for (const [i, line] of layout.lines.entries()) {
+    near(t, line.baseline, i * layout.lineHeight + (layout.lineHeight + layout.ascent - layout.descent) / 2)
+  }
+  t.false(layout.didExceedMaxLines)
+})
+
+test('noWrap with an ellipsis and maxLines drops the lines past it', (t) => {
+  const text = `${TEXT}\n${TEXT}\n${TEXT}`
+  const layout = new Paragraph(text, { ...STYLE, noWrap: true, ellipsis: '…', maxLines: 2 }).layout(200)
+  t.is(layout.lines.length, 2)
+  t.true(layout.didExceedMaxLines)
+  for (const line of layout.lines) {
+    t.true(line.width <= 200)
+  }
+  t.is(layout.lines[1].startIndex, TEXT.length + 1)
+})
+
+test('line indices are UTF-16 offsets', (t) => {
+  const text = 'Ünïcödé wörds wräp hère ănd thêre 😀 again'
+  const layout = new Paragraph(text, STYLE).layout(150)
+  t.true(layout.lines.length > 1)
+  t.is(layout.lines.at(-1)!.endIndex, text.length)
+  for (const [i, line] of layout.lines.entries()) {
+    const slice = text.slice(line.startIndex, line.endIndex)
+    t.is(slice, slice.trim(), `line ${i} is ${JSON.stringify(slice)}`)
+    if (i > 0) {
+      t.is(text.slice(layout.lines[i - 1].endIndex, line.startIndex).trim(), '')
+    }
+  }
+  const split = new Paragraph('é😀\nb', { ...STYLE, noWrap: true, ellipsis: '…' }).layout(200)
+  t.is(split.lines[1].startIndex, 4)
+})
+
 test('textAlign positions each line in the width', (t) => {
   const width = 300
   const left = new Paragraph(TEXT, { ...STYLE, textAlign: 'left' }).layout(width)
@@ -90,6 +144,28 @@ test('start and end follow the direction', (t) => {
   const rtl = new Paragraph(TEXT, { ...STYLE, textAlign: 'start', direction: 'rtl' }).layout(width)
   near(t, ltr.lines[0].left, width - ltr.lines[0].width)
   near(t, rtl.lines[0].left, width - rtl.lines[0].width)
+})
+
+test('justify in RTL right-aligns the lines it does not justify', (t) => {
+  const width = 300
+  const text = `${TEXT}\n${TEXT}`
+  const ltr = new Paragraph(text, { ...STYLE, textAlign: 'justify' }).layout(width)
+  const rtl = new Paragraph(text, { ...STYLE, textAlign: 'justify', direction: 'rtl' }).layout(width)
+  t.is(rtl.lines.length, ltr.lines.length)
+  for (const [i, line] of rtl.lines.entries()) {
+    if (line.hardBreak) {
+      near(t, line.left, width - line.width)
+      t.is(ltr.lines[i].left, 0)
+    } else {
+      t.is(line.left, 0)
+    }
+  }
+  const noWrap = new Paragraph(text, { ...STYLE, textAlign: 'justify', direction: 'rtl', noWrap: true }).layout(
+    width * 2,
+  )
+  for (const line of noWrap.lines) {
+    near(t, line.left, width * 2 - line.width)
+  }
 })
 
 test('font families may be quoted', (t) => {

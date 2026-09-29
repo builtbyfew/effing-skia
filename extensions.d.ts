@@ -52,7 +52,7 @@ export interface ParagraphLine {
   width: number
   /** Baseline, from the top of the paragraph. */
   baseline: number
-  /** UTF-8 byte offsets of the line's text, trailing whitespace excluded. */
+  /** UTF-16 offsets of the line's text (JS string indices), trailing whitespace excluded. */
   startIndex: number
   endIndex: number
   hardBreak: boolean

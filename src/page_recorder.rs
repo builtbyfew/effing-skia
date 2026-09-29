@@ -1,4 +1,5 @@
 use crate::picture_recorder::PictureRecorder;
+use crate::sk::effing::group::GroupLayer;
 use crate::sk::{
   Canvas, ColorSpace, FilterQuality, Matrix, Path as SkPath, SkImage, SkPicture, Surface,
 };
@@ -97,6 +98,7 @@ pub struct PageRecorder {
   current_transform: Option<Matrix>, // Transform to restore after layer promotion
   current_clip: Option<SkPath>, // Clip path to restore after layer promotion
   save_count: usize, // Track save stack depth to restore after layer promotion
+  groups: Vec<(usize, GroupLayer)>, // effing: the save depths that open a group, and its layer
 }
 
 impl PageRecorder {
@@ -117,6 +119,7 @@ impl PageRecorder {
       current_transform: None,
       current_clip: None,
       save_count: 0,
+      groups: Vec::new(),
     }
   }
 
@@ -126,8 +129,12 @@ impl PageRecorder {
       .current
       .begin_recording(0.0, 0.0, self.width, self.height);
     if let Some(canvas) = self.current.get_recording_canvas() {
-      for _ in 0..self.save_count {
-        canvas.save();
+      for depth in 0..self.save_count {
+        // effing: a group's save opens its layer again.
+        match self.groups.iter().find(|(d, _)| *d == depth) {
+          Some((_, group)) => group.reopen(canvas),
+          None => canvas.save(),
+        }
       }
       if let Some(ref clip_path) = self.current_clip {
         canvas.reset_transform();
@@ -180,6 +187,12 @@ impl PageRecorder {
   /// Decrement save count (called when ctx.restore() is invoked)
   pub fn decrement_save(&mut self) {
     self.save_count = self.save_count.saturating_sub(1);
+    self.groups.retain(|(depth, _)| *depth < self.save_count);
+  }
+
+  /// effing: marks the latest save as opening `group`'s layer.
+  pub fn set_group(&mut self, group: GroupLayer) {
+    self.groups.push((self.save_count.saturating_sub(1), group));
   }
 
   /// Get composite picture of all layers (for drawCanvas)
@@ -282,6 +295,7 @@ impl PageRecorder {
     self.current_clip = None;
     // Reset save count
     self.save_count = 0;
+    self.groups.clear();
   }
 
   /// Get pixels using the persistent RecordingSurface.

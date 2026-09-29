@@ -1,6 +1,6 @@
 //! Compositing groups: `skia-c/effing/group.cpp`.
 
-use super::super::{Canvas, ImageFilter, Paint, ffi};
+use super::super::{Canvas, ImageFilter, Matrix, Paint, ffi};
 
 unsafe extern "C" {
   fn effing_canvas_save_group(
@@ -31,5 +31,24 @@ impl Canvas {
         bounds.as_ref().map_or(std::ptr::null(), |b| b.as_ptr()),
       );
     }
+  }
+}
+
+/// An open group's layer, kept so a recording that resumes mid-group (after
+/// its pixels were read) can open the layer again.
+pub struct GroupLayer {
+  pub paint: Paint,
+  pub bounds: Option<[f32; 4]>,
+  /// The transform `bounds` are in.
+  pub transform: Matrix,
+}
+
+impl GroupLayer {
+  /// Opens the layer on `canvas` like `save_group` did, without the
+  /// backdrop: the content behind it already has the backdrop baked in.
+  /// Leaves `canvas` at the layer's transform.
+  pub fn reopen(&self, canvas: &mut Canvas) {
+    canvas.set_transform(&self.transform);
+    canvas.save_group(&self.paint, None, self.bounds);
   }
 }

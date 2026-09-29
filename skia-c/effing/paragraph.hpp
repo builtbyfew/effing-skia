@@ -25,7 +25,8 @@ struct effing_paragraph_style {
   bool nowrap;
   // 0 means unlimited.
   int max_lines;
-  // UTF-8 string appended where text is truncated, or null for none.
+  // UTF-8 string appended where max_lines or nowrap truncates the text, or
+  // null for none.
   const char* ellipsis;
 };
 
@@ -49,7 +50,8 @@ struct effing_paragraph_line {
   float width;
   // Baseline, from the top of the paragraph.
   float baseline;
-  // UTF-8 byte offsets of the line's text, trailing whitespace excluded.
+  // UTF-16 offsets of the line's text (JS string indices), trailing whitespace
+  // excluded.
   size_t start_index;
   size_t end_index;
   bool hard_break;

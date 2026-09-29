@@ -39,6 +39,21 @@ function inkCentroid(textRendering: TextRendering, scale: number, x: number, y: 
   return { x: sumX / sum / scale, y: sumY / sum / scale }
 }
 
+test('geometricPrecision text keeps color glyphs in color', (t) => {
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'COLR-v1.ttf'), 'Colrv1'))
+  const ctx = createCanvas(300, 150).getContext('2d')
+  ctx.font = '100px Colrv1'
+  ctx.textRendering = 'geometricPrecision'
+  ctx.fillStyle = 'black'
+  ctx.fillText('abc', 20, 110)
+  const { data } = ctx.getImageData(0, 0, 300, 150)
+  let colored = 0
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] > 0 && (data[i] !== data[i + 1] || data[i + 1] !== data[i + 2])) colored++
+  }
+  t.true(colored > 100, `${colored} colored pixels`)
+})
+
 test('geometricPrecision text follows sub-pixel positions', (t) => {
   const a = inkCentroid('geometricPrecision', 1, 10.29, 40.1)
   const b = inkCentroid('geometricPrecision', 1, 10.29, 40.6)
