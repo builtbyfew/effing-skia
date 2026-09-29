@@ -13,7 +13,9 @@
 #endif
 
 #include "skia_c.hpp"
-#include "effing/text.hpp"
+
+#include "effing/text.hpp"  // effing
+
 #define SURFACE_CAST reinterpret_cast<SkSurface*>(c_surface)
 #define CANVAS_CAST reinterpret_cast<SkCanvas*>(c_canvas)
 #define PAINT_CAST reinterpret_cast<SkPaint*>(c_paint)
