@@ -1,4 +1,5 @@
-//! Compositing groups: `ctx.beginGroup(options)` / `ctx.endGroup()`.
+//! Compositing groups: `beginGroup(ctx, options)` / `endGroup(ctx)` from
+//! `extensions.js`.
 //!
 //! Everything drawn in between is composited as one when the group ends, with
 //! the group's opacity, blend mode and CSS filter: the semantics of CSS
@@ -79,32 +80,35 @@ impl Context {
   }
 }
 
-#[napi]
-impl CanvasRenderingContext2D {
-  /// Starts a compositing group; see the module docs.
-  #[napi]
-  pub fn begin_group(&mut self, options: Option<GroupOptions>) -> Result<()> {
-    let options = options.unwrap_or(GroupOptions {
-      opacity: None,
-      blend_mode: None,
-      filter: None,
-      backdrop_filter: None,
-      bounds: None,
-    });
-    self.context.begin_group(&options)?;
-    Ok(())
-  }
+// Exposed as functions taking the context rather than as methods on it, so the
+// context's own surface stays identical to upstream's; see extensions.js.
 
-  /// Ends the innermost group started by `beginGroup`, compositing it.
-  #[napi]
-  pub fn end_group(&mut self) -> Result<()> {
-    if !self.context.in_group() {
-      return Err(Error::new(
-        Status::GenericFailure,
-        "endGroup() called without a matching beginGroup()",
-      ));
-    }
-    self.context.restore();
-    Ok(())
+/// Starts a compositing group on `ctx`; see the module docs.
+#[napi]
+pub fn begin_group(
+  ctx: &mut CanvasRenderingContext2D,
+  options: Option<GroupOptions>,
+) -> Result<()> {
+  let options = options.unwrap_or(GroupOptions {
+    opacity: None,
+    blend_mode: None,
+    filter: None,
+    backdrop_filter: None,
+    bounds: None,
+  });
+  ctx.context.begin_group(&options)?;
+  Ok(())
+}
+
+/// Ends the innermost group started by `beginGroup` on `ctx`, compositing it.
+#[napi]
+pub fn end_group(ctx: &mut CanvasRenderingContext2D) -> Result<()> {
+  if !ctx.context.in_group() {
+    return Err(Error::new(
+      Status::GenericFailure,
+      "endGroup() called without a matching beginGroup()",
+    ));
   }
+  ctx.context.restore();
+  Ok(())
 }

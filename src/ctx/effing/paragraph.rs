@@ -1,7 +1,8 @@
 //! The paragraph primitive: `new Paragraph(text, style)` lays out a
 //! single-style paragraph natively, `layout(width)` reports its lines, and
-//! `ctx.fillParagraph` / `ctx.strokeParagraph` paint it with the context's
-//! current paint, shadow, filter, clip and transform.
+//! `fillParagraph(ctx, …)` / `strokeParagraph(ctx, …)` from `extensions.js`
+//! paint it with the context's current paint, shadow, filter, clip and
+//! transform.
 
 use std::result;
 use std::str::FromStr;
@@ -195,35 +196,45 @@ impl Context {
   }
 }
 
-#[napi]
-impl CanvasRenderingContext2D {
-  /// Fills a laid-out paragraph's glyphs with the current fill style, its
-  /// top-left corner at (x, y).
-  #[napi]
-  pub fn fill_paragraph(&mut self, paragraph: &Paragraph, x: f64, y: f64) -> Result<()> {
-    let paint = self.context.fill_paint()?;
-    self.context.draw_paragraph(
-      &paragraph.inner,
-      x as f32,
-      y as f32,
-      &paint,
-      ShadowSource::Fill,
-    )?;
-    Ok(())
-  }
+// Exposed as functions taking the context rather than as methods on it, so the
+// context's own surface stays identical to upstream's; see extensions.js.
 
-  /// Strokes a laid-out paragraph's glyph outlines with the current stroke
-  /// style and line settings, its top-left corner at (x, y).
-  #[napi]
-  pub fn stroke_paragraph(&mut self, paragraph: &Paragraph, x: f64, y: f64) -> Result<()> {
-    let paint = self.context.stroke_paint()?;
-    self.context.draw_paragraph(
-      &paragraph.inner,
-      x as f32,
-      y as f32,
-      &paint,
-      ShadowSource::Stroke,
-    )?;
-    Ok(())
-  }
+/// Fills a laid-out paragraph's glyphs on `ctx` with its current fill style,
+/// the paragraph's top-left corner at (x, y).
+#[napi]
+pub fn fill_paragraph(
+  ctx: &mut CanvasRenderingContext2D,
+  paragraph: &Paragraph,
+  x: f64,
+  y: f64,
+) -> Result<()> {
+  let paint = ctx.context.fill_paint()?;
+  ctx.context.draw_paragraph(
+    &paragraph.inner,
+    x as f32,
+    y as f32,
+    &paint,
+    ShadowSource::Fill,
+  )?;
+  Ok(())
+}
+
+/// Strokes a laid-out paragraph's glyph outlines on `ctx` with its current
+/// stroke style and line settings, the paragraph's top-left corner at (x, y).
+#[napi]
+pub fn stroke_paragraph(
+  ctx: &mut CanvasRenderingContext2D,
+  paragraph: &Paragraph,
+  x: f64,
+  y: f64,
+) -> Result<()> {
+  let paint = ctx.context.stroke_paint()?;
+  ctx.context.draw_paragraph(
+    &paragraph.inner,
+    x as f32,
+    y as f32,
+    &paint,
+    ShadowSource::Stroke,
+  )?;
+  Ok(())
 }

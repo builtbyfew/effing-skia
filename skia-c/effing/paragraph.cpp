@@ -66,9 +66,8 @@ bool hhea_metrics(const sk_sp<SkTypeface>& typeface,
                   float* ascent,
                   float* descent) {
   uint8_t buf[4];
-  if (!typeface ||
-      typeface->getTableData(SkSetFourByteTag('h', 'h', 'e', 'a'), 4, 4,
-                             buf) != 4) {
+  if (!typeface || typeface->getTableData(SkSetFourByteTag('h', 'h', 'e', 'a'),
+                                          4, 4, buf) != 4) {
     return false;
   }
   const int upem = typeface->getUnitsPerEm();

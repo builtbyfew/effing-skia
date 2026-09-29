@@ -3,7 +3,8 @@ import { fileURLToPath } from 'node:url'
 
 import test from 'ava'
 
-import { GlobalFonts, Paragraph, createCanvas, type ParagraphStyle, type SKRSContext2D } from '../index'
+import { GlobalFonts, createCanvas, type SKRSContext2D } from '../index'
+import { Paragraph, fillParagraph, strokeParagraph, type ParagraphStyle } from '../extensions'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -117,7 +118,7 @@ test('fillParagraph paints exactly where geometricPrecision fillText does', (t) 
 
   const actual = createCanvas(200, 60)
   const actualCtx = actual.getContext('2d')
-  actualCtx.fillParagraph(paragraph, x, y)
+  fillParagraph(actualCtx, paragraph, x, y)
 
   const a = actualCtx.getImageData(0, 0, 200, 60).data
   const b = expectedCtx.getImageData(0, 0, 200, 60).data
@@ -146,10 +147,10 @@ test('strokeParagraph strokes the outlines', (t) => {
   const ctx = createCanvas(300, 120).getContext('2d')
   ctx.strokeStyle = 'black'
   ctx.lineWidth = 1
-  ctx.strokeParagraph(paragraph, 10, 10)
+  strokeParagraph(ctx, paragraph, 10, 10)
   const stroked = inkSum(ctx)
   ctx.clearRect(0, 0, 300, 120)
-  ctx.fillParagraph(paragraph, 10, 10)
+  fillParagraph(ctx, paragraph, 10, 10)
   const filled = inkSum(ctx)
   t.true(stroked > 0)
   t.true(stroked < filled / 2, `${stroked} stroked vs ${filled} filled coverage`)
@@ -162,7 +163,7 @@ test('fillParagraph honours the context shadow', (t) => {
   ctx.fillStyle = 'black'
   ctx.shadowColor = 'red'
   ctx.shadowOffsetX = 60
-  ctx.fillParagraph(paragraph, 10, 10)
+  fillParagraph(ctx, paragraph, 10, 10)
   const { data } = ctx.getImageData(0, 0, 200, 100)
   let red = 0
   for (let i = 0; i < data.length; i += 4) {
