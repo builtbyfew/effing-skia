@@ -196,6 +196,18 @@ impl Context {
   }
 }
 
+/// The paragraph to paint, or an error naming `function` when `layout` has
+/// not run yet: the native side has no lines to place until it has.
+fn laid_out<'a>(paragraph: &'a Paragraph, function: &str) -> Result<&'a SkParagraph> {
+  if !paragraph.inner.is_laid_out() {
+    return Err(Error::new(
+      Status::GenericFailure,
+      format!("{function}() needs a laid-out Paragraph: call layout(width) first"),
+    ));
+  }
+  Ok(&paragraph.inner)
+}
+
 // Exposed as functions taking the context rather than as methods on it, so the
 // context's own surface stays identical to upstream's; see extensions.js.
 
@@ -208,14 +220,11 @@ pub fn fill_paragraph(
   x: f64,
   y: f64,
 ) -> Result<()> {
+  let paragraph = laid_out(paragraph, "fillParagraph")?;
   let paint = ctx.context.fill_paint()?;
-  ctx.context.draw_paragraph(
-    &paragraph.inner,
-    x as f32,
-    y as f32,
-    &paint,
-    ShadowSource::Fill,
-  )?;
+  ctx
+    .context
+    .draw_paragraph(paragraph, x as f32, y as f32, &paint, ShadowSource::Fill)?;
   Ok(())
 }
 
@@ -228,13 +237,10 @@ pub fn stroke_paragraph(
   x: f64,
   y: f64,
 ) -> Result<()> {
+  let paragraph = laid_out(paragraph, "strokeParagraph")?;
   let paint = ctx.context.stroke_paint()?;
-  ctx.context.draw_paragraph(
-    &paragraph.inner,
-    x as f32,
-    y as f32,
-    &paint,
-    ShadowSource::Stroke,
-  )?;
+  ctx
+    .context
+    .draw_paragraph(paragraph, x as f32, y as f32, &paint, ShadowSource::Stroke)?;
   Ok(())
 }

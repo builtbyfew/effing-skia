@@ -79,6 +79,7 @@ impl Context {
         paint,
         bounds,
         transform: self.state.transform.clone(),
+        clip: self.state.clip_path.clone(),
       });
     }
     Ok(())

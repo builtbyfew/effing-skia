@@ -91,6 +91,23 @@ test("reading the canvas mid-group keeps the group's options", (t) => {
   t.is(pixel(ctx, 75, 75)[3], 255)
 })
 
+test('reading the canvas mid-group keeps the clip around the group', (t) => {
+  const ctx = createCanvas(100, 100).getContext('2d')
+  ctx.fillStyle = 'black'
+  ctx.rect(0, 0, 50, 50)
+  ctx.clip()
+  beginGroup(ctx, { filter: 'blur(10px)' })
+  ctx.fillRect(0, 0, 50, 50)
+  ctx.getImageData(0, 0, 1, 1)
+  ctx.fillRect(0, 0, 50, 50)
+  endGroup(ctx)
+  // The rest of the group is composited inside the clip set before it, so
+  // the blur doesn't bleed past it.
+  t.true(pixel(ctx, 25, 25)[3] > 0)
+  t.is(pixel(ctx, 55, 25)[3], 0)
+  t.is(pixel(ctx, 25, 55)[3], 0)
+})
+
 test('groups nest', (t) => {
   const ctx = createCanvas(10, 10).getContext('2d')
   ctx.fillStyle = 'black'

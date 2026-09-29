@@ -180,6 +180,16 @@ test('invalid style values throw', (t) => {
   t.throws(() => new Paragraph(TEXT, { ...STYLE, direction: 'down' }))
 })
 
+test('painting before layout throws', (t) => {
+  const ctx = createCanvas(10, 10).getContext('2d')
+  const paragraph = new Paragraph(TEXT, STYLE)
+  t.throws(() => fillParagraph(ctx, paragraph, 0, 0), { message: /layout/ })
+  t.throws(() => strokeParagraph(ctx, paragraph, 0, 0), { message: /layout/ })
+  paragraph.layout(1000)
+  t.notThrows(() => fillParagraph(ctx, paragraph, 0, 0))
+  t.notThrows(() => strokeParagraph(ctx, paragraph, 0, 0))
+})
+
 test('fillParagraph paints exactly where geometricPrecision fillText does', (t) => {
   const paragraph = new Paragraph('Hello Canvas', STYLE)
   const { lines } = paragraph.layout(0)

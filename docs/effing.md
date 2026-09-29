@@ -80,7 +80,8 @@ top:
 - Glyphs are unhinted and painted unsnapped, exactly as `fillText` does under
   `geometricPrecision`; the two agree pixel for pixel.
 
-`layout(width)` must be called before painting. It returns the paragraph's
+`layout(width)` must be called before painting, which throws otherwise. It
+returns the paragraph's
 metrics and one entry per line: `left` and `baseline` from the paragraph's
 top-left corner, the advance `width` without trailing whitespace, the range
 of the line's text in UTF-16 units (JS string indices), and whether it ends
@@ -179,3 +180,5 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   values instead of falling back to the default.
 - The `EFFING_GP_TEXT=mask` environment switch is gone; `geometricPrecision`
   always fills outlines.
+- `fillParagraph` and `strokeParagraph` throw when the paragraph has not been
+  laid out; that used to crash the process.

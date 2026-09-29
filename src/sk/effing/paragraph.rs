@@ -112,7 +112,10 @@ pub struct ParagraphLine {
 /// A single-style paragraph laid out by SkParagraph. Line boxes are exactly
 /// `line_height` tall with the baseline placed by CSS half-leading, and the
 /// glyphs are painted unsnapped.
-pub struct Paragraph(*mut ffi::effing_paragraph);
+pub struct Paragraph {
+  ptr: *mut ffi::effing_paragraph,
+  laid_out: bool,
+}
 
 impl Paragraph {
   /// `font_family` is a comma-separated list of family names, unquoted.
@@ -146,32 +149,41 @@ impl Paragraph {
         &style,
       )
     };
-    Ok(Paragraph(ptr))
+    Ok(Paragraph {
+      ptr,
+      laid_out: false,
+    })
   }
 
   /// Lays the text out in `width` px; non-positive or non-finite means
   /// unbounded. Must precede `metrics`, `lines` and painting.
   pub fn layout(&mut self, width: f32) {
-    unsafe { ffi::effing_paragraph_layout(self.0, width) }
+    unsafe { ffi::effing_paragraph_layout(self.ptr, width) }
+    self.laid_out = true;
+  }
+
+  /// Whether `layout` has run, which painting requires.
+  pub fn is_laid_out(&self) -> bool {
+    self.laid_out
   }
 
   pub fn metrics(&self) -> ParagraphMetrics {
     let mut metrics = ParagraphMetrics::default();
-    unsafe { ffi::effing_paragraph_get_metrics(self.0, &mut metrics) };
+    unsafe { ffi::effing_paragraph_get_metrics(self.ptr, &mut metrics) };
     metrics
   }
 
   pub fn lines(&self) -> Vec<ParagraphLine> {
     let count = self.metrics().line_count.max(0) as usize;
     let mut lines = vec![ParagraphLine::default(); count];
-    unsafe { ffi::effing_paragraph_get_lines(self.0, lines.as_mut_ptr(), count as i32) };
+    unsafe { ffi::effing_paragraph_get_lines(self.ptr, lines.as_mut_ptr(), count as i32) };
     lines
   }
 }
 
 impl Drop for Paragraph {
   fn drop(&mut self) {
-    unsafe { ffi::effing_paragraph_destroy(self.0) }
+    unsafe { ffi::effing_paragraph_destroy(self.ptr) }
   }
 }
 
@@ -179,6 +191,6 @@ impl Canvas {
   /// Paints a laid-out paragraph's glyphs with `paint`, its top-left corner
   /// at (x, y).
   pub fn draw_paragraph(&mut self, paragraph: &Paragraph, x: f32, y: f32, paint: &Paint) {
-    unsafe { ffi::effing_paragraph_paint(paragraph.0, self.0, paint.0, x, y) }
+    unsafe { ffi::effing_paragraph_paint(paragraph.ptr, self.0, paint.0, x, y) }
   }
 }
