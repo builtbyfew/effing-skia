@@ -140,12 +140,23 @@ The prebuilt Skia libraries still come from upstream's GitHub releases,
 keyed on the `skia` submodule commit, so the fork never needs to build Skia
 itself as long as the submodule matches an upstream release.
 
+### Targets
+
+The fork builds and publishes seven targets, the platforms effing supports
+(the same set as `effing-ffmpeg-builds`, with both glibc and musl on Linux
+because effing runs on Alpine and Debian images): Linux x64 and arm64 for gnu
+and musl, macOS x64 and arm64, and Windows x64. Upstream's armv7, riscv64,
+Android and Windows ARM64 targets are dropped from `napi.targets`, `npm/` and
+the CI matrix.
+
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### 1.0.9-effing.1
 
+- Only seven targets are published: Linux x64 and arm64 (gnu and musl),
+  macOS x64 and arm64, and Windows x64.
 - The package is `@effing/skia`; the platform packages are
   `@effing/skia-<platform>`.
 - Effing's additions moved to `@effing/skia/extensions` as functions taking
