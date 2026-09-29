@@ -127,7 +127,6 @@ async function download() {
   if (PLATFORM_NAME === 'win32') {
     await downloadIcu()
     await fs.copyFile(join(dirname, '..', ICU_DAT), join(dirname, '..', 'npm', 'win32-x64-msvc', ICU_DAT))
-    await fs.copyFile(join(dirname, '..', ICU_DAT), join(dirname, '..', 'npm', 'win32-arm64-msvc', ICU_DAT))
   }
 }
 
@@ -137,7 +136,6 @@ function downloadIcu() {
     stdio: 'inherit',
   })
   copyFileSync(join(dirname, '..', ICU_DAT), join(dirname, '..', 'npm', 'win32-x64-msvc', ICU_DAT))
-  copyFileSync(join(dirname, '..', ICU_DAT), join(dirname, '..', 'npm', 'win32-arm64-msvc', ICU_DAT))
   return Promise.resolve(null)
 }
 
