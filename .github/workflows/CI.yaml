@@ -567,6 +567,8 @@ jobs:
         with:
           node-version: 24
           cache: 'yarn'
+          # effing: lets the publish step authenticate with NODE_AUTH_TOKEN.
+          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: yarn install --immutable --mode=skip-build
@@ -601,3 +603,5 @@ jobs:
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # effing: token publish until trusted publishing is set up on npm.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
