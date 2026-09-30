@@ -594,7 +594,11 @@ jobs:
           # effing: a `<upstream>-effing.N` version is a release, not a prerelease.
           if git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+\(-effing\.[0-9]\+\)\?$";
           then
-            npm publish --access public
+            # effing: npm 11 refuses a version with a prerelease part unless a
+            # tag is set. Set in the environment, not as `--tag latest`: npm
+            # only hands non-default flags down to the per-platform publishes
+            # that `napi prepublish` runs.
+            npm_config_tag=latest npm publish --access public
           elif git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+";
           then
             npm publish --tag next --access public
