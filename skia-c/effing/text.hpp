@@ -8,12 +8,21 @@
 #include "include/core/SkPaint.h"
 #include "include/core/SkPoint.h"
 #include "modules/skparagraph/include/Paragraph.h"
+#include "modules/skparagraph/include/ParagraphStyle.h"
+#include "modules/skparagraph/include/TextStyle.h"
 
 namespace effing {
 
 // The `text_rendering` value skia_c.cpp receives for geometricPrecision; it
 // mirrors `TextRendering` in src/sk.rs.
 constexpr int kTextRenderingGeometricPrecision = 3;
+
+// Makes a paragraph of `text_style` shape and draw unhinted, so glyph outlines
+// and advances don't depend on the device scale. `strut_style` is the
+// paragraph's strut, which must be disabled: it carries the marker that keeps
+// the paragraph apart from its hinted twin in SkParagraph's cache.
+void make_unhinted(skia::textlayout::TextStyle* text_style,
+                   skia::textlayout::StrutStyle* strut_style);
 
 // Paints a laid-out paragraph's glyphs with `paint`, without snapping them to
 // the pixel grid: outlines are filled as paths at their exact positions, so
