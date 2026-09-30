@@ -49,7 +49,11 @@ canvas is drawn at 1x or any other scale, which is what a video renderer
 producing several resolutions needs. Runs with glyphs that have no outline
 (color or bitmap emoji) fall back to masks with baseline snapping off.
 
-The other `textRendering` values behave as upstream.
+The other `textRendering` values behave as upstream. Skia caches shaped
+text under a key that ignores hinting, so the fork marks its unhinted
+paragraphs apart (`effing::make_unhinted`): measuring or drawing a text under
+`auto` and under `geometricPrecision` gives each its own result, in either
+order.
 
 ## `Paragraph`
 
@@ -204,3 +208,7 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   always fills outlines.
 - `fillParagraph` and `strokeParagraph` throw when the paragraph has not been
   laid out; that used to crash the process.
+- `fillText`, `strokeText` and `measureText` under `geometricPrecision` no
+  longer reuse the hinted layout of the same text and font from another
+  `textRendering`, nor the other way round. Results used to depend on which
+  was called first.

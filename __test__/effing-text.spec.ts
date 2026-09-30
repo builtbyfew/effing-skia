@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -75,4 +76,40 @@ test('geometricPrecision text lands in the same place at any scale', (t) => {
     t.true(Math.abs(scaled.x - at1x.x) < 0.15, `x moved ${at1x.x} -> ${scaled.x} at ${scale}x`)
     t.true(Math.abs(scaled.y - at1x.y) < 0.15, `y moved ${at1x.y} -> ${scaled.y} at ${scale}x`)
   }
+})
+
+// What one fillText and measureText of the same text give, to compare whole.
+function drawAndMeasure(textRendering: TextRendering, fontFamily: string) {
+  const ctx = createCanvas(240, 60).getContext('2d')
+  ctx.font = `17px ${fontFamily}`
+  ctx.textRendering = textRendering
+  ctx.fillStyle = 'black'
+  ctx.fillText('Hello fjord 123', 10.3, 30.4)
+  const metrics = ctx.measureText('Hello fjord 123')
+  return {
+    pixels: createHash('sha1')
+      .update(ctx.getImageData(0, 0, 240, 60).data)
+      .digest('hex'),
+    width: metrics.width,
+    box: [
+      metrics.actualBoundingBoxLeft,
+      metrics.actualBoundingBoxRight,
+      metrics.actualBoundingBoxAscent,
+      metrics.actualBoundingBoxDescent,
+    ],
+  }
+}
+
+test('text under one textRendering is not affected by the same text under another', (t) => {
+  // Skia caches shaped text per text and style. One font under two names is
+  // two cache entries for the same rendering, so each mode can be drawn both
+  // first and after the other mode has put the text in the cache.
+  const font = join(__dirname, 'fonts', 'Lato-Regular.ttf')
+  t.truthy(GlobalFonts.registerFromPath(font, 'Lato First'))
+  t.truthy(GlobalFonts.registerFromPath(font, 'Lato Second'))
+  const hinted = drawAndMeasure('auto', 'Lato First')
+  const unhinted = drawAndMeasure('geometricPrecision', 'Lato Second')
+  t.notDeepEqual(unhinted, hinted)
+  t.deepEqual(drawAndMeasure('geometricPrecision', 'Lato First'), unhinted)
+  t.deepEqual(drawAndMeasure('auto', 'Lato Second'), hinted)
 })

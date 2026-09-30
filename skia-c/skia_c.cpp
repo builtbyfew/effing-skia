@@ -658,16 +658,16 @@ void skiac_canvas_get_line_metrics_or_draw_text(
   }
   // auto, optimizeLegibility, geometricPrecision: use HarfBuzz/Skia defaults
   // (liga, clig, calt are ON by default)
-  // effing: geometricPrecision also drops hinting, so glyph outlines and
-  // advances don't depend on the device scale.
-  if (text_rendering == effing::kTextRenderingGeometricPrecision) {
-    text_style.setFontHinting(SkFontHinting::kNone);
-  }
 
   text_style.setForegroundColor(*PAINT_CAST);
   text_style.setTextBaseline(TextBaseline::kAlphabetic);
   StrutStyle struct_style;
   struct_style.setLeading(0);
+  // effing: geometricPrecision also drops hinting, so glyph outlines and
+  // advances don't depend on the device scale.
+  if (text_rendering == effing::kTextRenderingGeometricPrecision) {
+    effing::make_unhinted(&text_style, &struct_style);
+  }
 
   ParagraphStyle paragraph_style;
   paragraph_style.setTextStyle(text_style);

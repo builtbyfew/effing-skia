@@ -74,6 +74,17 @@ void draw_run_as_paths(SkCanvas* canvas,
 
 }  // namespace
 
+void make_unhinted(skia::textlayout::TextStyle* text_style,
+                   skia::textlayout::StrutStyle* strut_style) {
+  text_style->setFontHinting(SkFontHinting::kNone);
+  // SkParagraph caches shaped runs, fonts included, under a key that leaves
+  // hinting out, so the same text and style drawn hinted and unhinted would
+  // share an entry and whichever came second would get the other's advances
+  // and outlines. The key does compare the strut style, and nothing reads the
+  // font families of a disabled strut: name the unhinted ones apart there.
+  strut_style->setFontFamilies({SkString("effing-unhinted")});
+}
+
 void paint_paragraph_unsnapped(Paragraph* paragraph,
                                SkCanvas* canvas,
                                SkScalar x,
