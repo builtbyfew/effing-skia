@@ -133,10 +133,19 @@ and a rebase onto upstream 1.0.10 restarts at `1.0.10-effing.1`. Consumers
 pin exact versions.
 
 The package publishes from CI on a push to `main` whose commit message is
-the bare version, the way upstream does. `yarn version` writes the changelog
-and that commit after `package.json`'s `version` has been set. The publish
-job needs an `NPM_TOKEN` repository secret with publish rights on the
-`@effing` scope, passed to the publish step as `NODE_AUTH_TOKEN`, and
+the bare version, the way upstream does. To cut a release:
+
+```sh
+# on main, with package.json's "version" set to the new version
+yarn run version            # syncs npm/*/package.json, updates CHANGELOG.md, stages both
+git commit -m "1.0.9-effing.1"
+git push                    # CI builds, tests, then publishes
+```
+
+(`yarn run version` is the `version` script; plain `yarn version` is Yarn's
+own command and does something else.) The publish job needs an `NPM_TOKEN`
+repository secret with publish rights on the `@effing` scope, passed to the
+publish step as `NODE_AUTH_TOKEN`, and
 `registry-url: https://registry.npmjs.org` on its `setup-node` step, until
 the packages exist and trusted publishing is configured for them on
 npmjs.com. The platform packages under `npm/` are published first by
