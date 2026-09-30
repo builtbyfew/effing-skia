@@ -72,6 +72,15 @@ test('noWrap with an ellipsis truncates to the width', (t) => {
   t.true(layout.lines[0].endIndex < TEXT.length)
 })
 
+test('text and ellipsis may contain NUL', (t) => {
+  const text = `${TEXT}\0${TEXT}`
+  const layout = new Paragraph(text, STYLE).layout(200)
+  t.is(layout.lines[layout.lines.length - 1].endIndex, text.length)
+  const truncated = new Paragraph(text, { ...STYLE, maxLines: 1, ellipsis: '\0…' }).layout(200)
+  t.is(truncated.lines.length, 1)
+  t.true(truncated.didExceedMaxLines)
+})
+
 test('an ellipsis without maxLines or noWrap leaves wrapping alone', (t) => {
   const plain = new Paragraph(TEXT, STYLE).layout(200)
   const ellipsized = new Paragraph(TEXT, { ...STYLE, ellipsis: '…' }).layout(200)

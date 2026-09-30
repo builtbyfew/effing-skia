@@ -160,8 +160,7 @@ effing_paragraph* effing_paragraph_create(const char* text,
   out->nowrap = s->nowrap;
   // Only max_lines and nowrap truncate; Skia would otherwise stop at the
   // first line.
-  out->ellipsized = s->ellipsis != nullptr && s->ellipsis[0] != '\0' &&
-                    (s->max_lines > 0 || s->nowrap);
+  out->ellipsized = s->ellipsis_len > 0 && (s->max_lines > 0 || s->nowrap);
 
   const auto typefaces =
       font_collection->findTypefaces(families, font_style, std::nullopt);
@@ -212,7 +211,7 @@ effing_paragraph* effing_paragraph_create(const char* text,
   paragraph_style.setApplyRoundingHack(false);
   paragraph_style.setReplaceTabCharacters(true);
   if (out->ellipsized) {
-    paragraph_style.setEllipsis(SkString(s->ellipsis));
+    paragraph_style.setEllipsis(SkString(s->ellipsis, s->ellipsis_len));
   }
 
   const auto unicode = SkUnicodes::ICU::Make();

@@ -150,6 +150,9 @@ publish step as `NODE_AUTH_TOKEN`, and
 the packages exist and trusted publishing is configured for them on
 npmjs.com. The platform packages under `npm/` are published first by
 `napi prepublish`, which `prepublishOnly` runs.
+`napi create-npm-dirs` leaves `icudtl.dat` out of the `files` of
+`npm/win32-x64-msvc/package.json`; put it back after regenerating, or the
+Windows package ships without ICU data and text shaping fails there.
 
 The prebuilt Skia libraries still come from upstream's GitHub releases,
 keyed on the `skia` submodule commit, so the fork never needs to build Skia
@@ -187,6 +190,8 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   `descent` and `lineHeight`.
 - `ParagraphStyle.fontStyle`, `textAlign` and `direction` reject invalid
   values instead of falling back to the default.
+- `Paragraph` accepts text and an ellipsis containing U+0000 instead of
+  throwing, like `fillText`.
 - The `EFFING_GP_TEXT=mask` environment switch is gone; `geometricPrecision`
   always fills outlines.
 - `fillParagraph` and `strokeParagraph` throw when the paragraph has not been

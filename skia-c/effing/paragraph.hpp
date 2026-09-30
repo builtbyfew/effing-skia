@@ -26,8 +26,9 @@ struct effing_paragraph_style {
   // 0 means unlimited.
   int max_lines;
   // UTF-8 string appended where max_lines or nowrap truncates the text, or
-  // null for none.
+  // empty for none. Not NUL-terminated.
   const char* ellipsis;
+  size_t ellipsis_len;
 };
 
 struct effing_paragraph_metrics {

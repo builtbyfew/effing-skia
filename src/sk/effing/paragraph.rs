@@ -29,6 +29,7 @@ mod ffi {
     pub nowrap: bool,
     pub max_lines: i32,
     pub ellipsis: *const c_char,
+    pub ellipsis_len: usize,
   }
 
   unsafe extern "C" {
@@ -125,9 +126,9 @@ impl Paragraph {
     collection: &FontCollection,
     options: &ParagraphOptions,
   ) -> Result<Self, NulError> {
-    let c_text = CString::new(text)?;
     let c_family = CString::new(font_family)?;
-    let c_ellipsis = options.ellipsis.map(CString::new).transpose()?;
+    // The text and ellipsis go by length, so they may contain NUL.
+    let ellipsis = options.ellipsis.unwrap_or("");
     let style = ffi::effing_paragraph_style {
       font_size: options.font_size,
       weight: options.weight as i32,
@@ -138,11 +139,12 @@ impl Paragraph {
       direction: options.direction.as_sk_direction(),
       nowrap: options.nowrap,
       max_lines: options.max_lines as i32,
-      ellipsis: c_ellipsis.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+      ellipsis: ellipsis.as_ptr().cast(),
+      ellipsis_len: ellipsis.len(),
     };
     let ptr = unsafe {
       ffi::effing_paragraph_create(
-        c_text.as_ptr(),
+        text.as_ptr().cast(),
         text.len(),
         collection.0,
         c_family.as_ptr(),
