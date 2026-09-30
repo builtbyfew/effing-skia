@@ -32,6 +32,11 @@ napi bindings are functions that take the context as their first argument
 rather than methods on it, which is what keeps `SKRSContext2D` identical to
 upstream's.
 
+`package.json` has an `exports` map, which upstream does not: Node's ESM
+resolver only finds `@effing/skia/extensions` (no file extension) through
+one. Its two wildcard entries keep every path that resolves in upstream
+resolving here, with or without `.js`.
+
 ## Unsnapped text under `textRendering = 'geometricPrecision'`
 
 Upstream `fillText`/`strokeText` draws hinted glyph masks that Skia snaps to
@@ -149,7 +154,10 @@ publish step as `NODE_AUTH_TOKEN`, and
 `registry-url: https://registry.npmjs.org` on its `setup-node` step, until
 the packages exist and trusted publishing is configured for them on
 npmjs.com. The platform packages under `npm/` are published first by
-`napi prepublish`, which `prepublishOnly` runs.
+`napi prepublish`, which `prepublishOnly` runs. To semver an `-effing.N`
+version is a prerelease, which npm 11 refuses to publish without a tag, so
+the publish step sets `npm_config_tag=latest` in the environment; a
+`--tag latest` flag would not reach the platform publishes.
 `napi create-npm-dirs` leaves `icudtl.dat` out of the `files` of
 `npm/win32-x64-msvc/package.json`; put it back after regenerating, or the
 Windows package ships without ICU data and text shaping fails there.
