@@ -16,13 +16,11 @@
 //! on its own when it ends, with the same options and without the backdrop
 //! filter, which the content behind it already has.
 
-use std::result;
 use std::str::FromStr;
 
 use napi::bindgen_prelude::*;
 
-use super::super::{CanvasRenderingContext2D, Context};
-use crate::error::SkError;
+use super::super::{Backend, CanvasRenderingContext2D, Context};
 use crate::filter::{css_filter, css_filters_to_image_filter};
 use crate::sk::effing::group::GroupLayer;
 use crate::sk::{BlendMode, ImageFilter, Paint};
@@ -56,23 +54,75 @@ fn parse_filter(value: Option<&str>) -> Option<ImageFilter> {
   css_filters_to_image_filter(filters)
 }
 
-impl Context {
-  fn begin_group(&mut self, options: &GroupOptions) -> result::Result<(), SkError> {
+/// A group's options, parsed. `paint` carries what the group's layer
+/// composites with; it is `None` when there is nothing to composite (opacity
+/// 1, source-over, no filters), where a plain save does.
+struct Group {
+  paint: Option<Paint>,
+  backdrop: Option<ImageFilter>,
+  bounds: Option<[f32; 4]>,
+}
+
+fn invalid(message: String) -> Error {
+  Error::new(Status::GenericFailure, format!("beginGroup(): {message}"))
+}
+
+fn parse_group(options: &GroupOptions) -> Result<Group> {
+  let opacity = options.opacity.unwrap_or(1.0);
+  if !opacity.is_finite() {
+    return Err(invalid(format!("opacity must be a number, got {opacity}")));
+  }
+  // Quantized like globalAlpha is.
+  let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+  let blend_mode = match options.blend_mode.as_deref() {
+    Some(mode) => BlendMode::from_str(mode)?,
+    None => BlendMode::SourceOver,
+  };
+  let filter = parse_filter(options.filter.as_deref());
+  let backdrop = parse_filter(options.backdrop_filter.as_deref());
+  let bounds = match options.bounds.as_deref() {
+    None => None,
+    Some(&[x, y, w, h]) if [x, y, w, h].iter().all(|v| v.is_finite()) => {
+      Some([x as f32, y as f32, w as f32, h as f32])
+    }
+    Some(bounds) => {
+      return Err(invalid(format!(
+        "bounds must be [x, y, width, height], got {bounds:?}"
+      )));
+    }
+  };
+  let composites =
+    alpha != 255 || blend_mode != BlendMode::SourceOver || filter.is_some() || backdrop.is_some();
+  let paint = composites.then(|| {
     let mut paint = Paint::new();
-    // Quantized like globalAlpha is.
-    paint.set_alpha((options.opacity.unwrap_or(1.0).clamp(0.0, 1.0) * 255.0).round() as u8);
-    if let Some(mode) = options.blend_mode.as_deref() {
-      paint.set_blend_mode(BlendMode::from_str(mode)?);
+    paint.set_alpha(alpha);
+    paint.set_blend_mode(blend_mode);
+    if let Some(ref filter) = filter {
+      paint.set_image_filter(filter);
     }
-    if let Some(filter) = parse_filter(options.filter.as_deref()) {
-      paint.set_image_filter(&filter);
+    paint
+  });
+  Ok(Group {
+    paint,
+    backdrop,
+    bounds,
+  })
+}
+
+impl Context {
+  fn begin_group(&mut self, group: Group) -> Result<()> {
+    if group.paint.is_some() && self.backend == Backend::Svg {
+      // SkSVGDevice has no layers: whatever is drawn into one is lost.
+      return Err(invalid(
+        "an SVG canvas cannot composite a group; only `bounds` is supported on one".to_owned(),
+      ));
     }
-    let backdrop = parse_filter(options.backdrop_filter.as_deref());
-    let bounds = match options.bounds.as_deref() {
-      Some([x, y, w, h]) => Some([*x as f32, *y as f32, *w as f32, *h as f32]),
-      _ => None,
-    };
-    self.save_with(|canvas| canvas.save_group(&paint, backdrop.as_ref(), bounds));
+    let Group {
+      paint,
+      backdrop,
+      bounds,
+    } = group;
+    self.save_with(|canvas| canvas.save_group(paint.as_ref(), backdrop.as_ref(), bounds));
     self.group_saves.push(self.states.len() - 1);
     if let Some(ref recorder) = self.page_recorder {
       recorder.borrow_mut().set_group(GroupLayer {
@@ -107,8 +157,7 @@ pub fn begin_group(
     backdrop_filter: None,
     bounds: None,
   });
-  ctx.context.begin_group(&options)?;
-  Ok(())
+  ctx.context.begin_group(parse_group(&options)?)
 }
 
 /// Ends the innermost group started by `beginGroup` on `ctx`, compositing it.

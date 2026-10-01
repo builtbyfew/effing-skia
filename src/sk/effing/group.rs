@@ -14,19 +14,20 @@ unsafe extern "C" {
 impl Canvas {
   /// `SkCanvas::saveLayer` for a compositing group: everything drawn until the
   /// matching `restore()` is composited as one with `paint`'s alpha, blend
-  /// mode and image filter. A `backdrop` filter starts the group from the
-  /// filtered content behind it, and `bounds` (x, y, w, h in local space)
+  /// mode and image filter. Without a `paint` it is a plain `save()`, for a
+  /// group that composites nothing. A `backdrop` filter starts the group from
+  /// the filtered content behind it, and `bounds` (x, y, w, h in local space)
   /// hints the group's size and clips its content. Owes one `restore()`.
   pub fn save_group(
     &mut self,
-    paint: &Paint,
+    paint: Option<&Paint>,
     backdrop: Option<&ImageFilter>,
     bounds: Option<[f32; 4]>,
   ) {
     unsafe {
       effing_canvas_save_group(
         self.0,
-        paint.0,
+        paint.map_or(std::ptr::null_mut(), |p| p.0),
         backdrop.map_or(std::ptr::null_mut(), |f| f.0),
         bounds.as_ref().map_or(std::ptr::null(), |b| b.as_ptr()),
       );
@@ -37,7 +38,8 @@ impl Canvas {
 /// An open group's layer, kept so a recording that resumes mid-group (after
 /// its pixels were read) can open the layer again.
 pub struct GroupLayer {
-  pub paint: Paint,
+  /// `None` for a group that composites nothing: a plain save.
+  pub paint: Option<Paint>,
   pub bounds: Option<[f32; 4]>,
   /// The transform `bounds` are in.
   pub transform: Matrix,
@@ -58,6 +60,6 @@ impl GroupLayer {
       canvas.set_clip_path(clip);
     }
     canvas.set_transform(&self.transform);
-    canvas.save_group(&self.paint, None, self.bounds);
+    canvas.save_group(self.paint.as_ref(), None, self.bounds);
   }
 }
