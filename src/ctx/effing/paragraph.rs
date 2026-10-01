@@ -4,6 +4,7 @@
 //! paint it with the context's current paint, shadow, filter, clip and
 //! transform.
 
+use std::cell::RefCell;
 use std::result;
 use std::str::FromStr;
 
@@ -14,6 +15,7 @@ use crate::error::SkError;
 use crate::font::FontStyle;
 use crate::global_fonts::get_font;
 use crate::sk::effing::paragraph::{Paragraph as SkParagraph, ParagraphOptions};
+use crate::sk::effing::text::Painted;
 use crate::sk::{Paint, TextAlign, TextDirection};
 
 #[napi(object)]
@@ -170,6 +172,8 @@ impl Context {
     paint: &Paint,
     source: ShadowSource,
   ) -> result::Result<(), SkError> {
+    // What each pass drew, charged to the recording once they are done.
+    let passes = RefCell::new(Vec::new());
     let shadow_paint = self.shadow_paint(paint, source, DrawContent::Glyphs);
     let (shadow_offset_x, shadow_offset_y) = self.canvas_shadow_offset(source, DrawContent::Glyphs);
     self.with_shadowed_render_canvas(
@@ -184,15 +188,37 @@ impl Context {
           shadow_offset_x,
           shadow_offset_y,
         )?;
-        shadow_canvas.draw_paragraph(paragraph, x, y, shadow_paint);
+        let painted = shadow_canvas.draw_paragraph(paragraph, x, y, shadow_paint);
+        passes.borrow_mut().push(painted);
         shadow_canvas.restore();
         Ok(())
       },
       |canvas, paint| {
-        canvas.draw_paragraph(paragraph, x, y, paint);
+        let painted = canvas.draw_paragraph(paragraph, x, y, paint);
+        passes.borrow_mut().push(painted);
         Ok(())
       },
-    )
+    )?;
+    self.account_paragraph_passes(&passes.into_inner(), source);
+    self.flush_if_recording_limit_exceeded();
+    Ok(())
+  }
+
+  /// Charges the recording's byte budget (upstream #1342) with what painting
+  /// a paragraph drew: the paint's resources, unless nothing was drawn, and
+  /// what each pass drew (see `account_painted`).
+  fn account_paragraph_passes(&self, passes: &[Painted], source: ShadowSource) {
+    if passes.iter().all(|pass| pass.ops == 0) {
+      return;
+    }
+    match source {
+      ShadowSource::Fill => self.account_paint_resources(&self.state.fill_style),
+      ShadowSource::Stroke => self.account_paint_resources(&self.state.stroke_style),
+      ShadowSource::Image => unreachable!("draw_paragraph is only reached via fill/stroke"),
+    }
+    for pass in passes {
+      self.account_painted(pass);
+    }
   }
 }
 
@@ -221,6 +247,7 @@ pub fn fill_paragraph(
   y: f64,
 ) -> Result<()> {
   let paragraph = laid_out(paragraph, "fillParagraph")?;
+  ctx.context.flush_if_recording_limit_exceeded();
   let paint = ctx.context.fill_paint()?;
   ctx
     .context
@@ -238,9 +265,114 @@ pub fn stroke_paragraph(
   y: f64,
 ) -> Result<()> {
   let paragraph = laid_out(paragraph, "strokeParagraph")?;
+  ctx.context.flush_if_recording_limit_exceeded();
   let paint = ctx.context.stroke_paint()?;
   ctx
     .context
     .draw_paragraph(paragraph, x as f32, y as f32, &paint, ShadowSource::Stroke)?;
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::page_recorder::BYTES_PER_RECORDED_OP;
+  use crate::sk::ColorSpace;
+
+  fn style(font_family: &str) -> ParagraphStyle {
+    ParagraphStyle {
+      font_family: font_family.to_owned(),
+      font_size: 16.0,
+      font_weight: None,
+      font_style: None,
+      letter_spacing: None,
+      line_height: None,
+      text_align: None,
+      direction: None,
+      no_wrap: None,
+      max_lines: None,
+      ellipsis: None,
+    }
+  }
+
+  fn laid_out_paragraph(text: &str) -> Paragraph {
+    {
+      let fonts = get_font().unwrap();
+      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None);
+    }
+    let mut paragraph = Paragraph::new(text.to_owned(), style("Lato")).unwrap();
+    paragraph.layout(64.0).unwrap();
+    paragraph
+  }
+
+  fn recorder(ctx: &Context) -> std::cell::Ref<'_, crate::page_recorder::PageRecorder> {
+    ctx.page_recorder.as_ref().unwrap().borrow()
+  }
+
+  fn fill(ctx: &mut Context, paragraph: &Paragraph) {
+    let paint = ctx.fill_paint().unwrap();
+    ctx
+      .draw_paragraph(&paragraph.inner, 0.0, 0.0, &paint, ShadowSource::Fill)
+      .unwrap();
+  }
+
+  // Lato's glyphs have outlines, so each paint records outline paths, which
+  // keep no typeface alive.
+  #[test]
+  fn draw_paragraph_charges_its_outline_paths() {
+    let paragraph = laid_out_paragraph("hello");
+    let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
+    let pending0 = recorder(&ctx).pending_bytes();
+    fill(&mut ctx, &paragraph);
+    let pending1 = recorder(&ctx).pending_bytes();
+    fill(&mut ctx, &paragraph);
+    let pending2 = recorder(&ctx).pending_bytes();
+    // Five glyph outlines: well over a point per glyph at 16 B each.
+    assert!(pending1 - pending0 > BYTES_PER_RECORDED_OP + 5 * 16);
+    assert_eq!(pending2 - pending1, pending1 - pending0);
+    assert_eq!(recorder(&ctx).retained_raster_count(), 0);
+  }
+
+  // Color glyphs have no outline and are drawn as text blobs, which keep
+  // their typeface alive: charged once per window, like fillText's.
+  #[test]
+  fn draw_paragraph_charges_a_text_blob_typeface_once() {
+    {
+      let fonts = get_font().unwrap();
+      fonts.register_from_path("__test__/fonts/COLR-v1.ttf", Some("Colrv1".to_owned()));
+    }
+    let mut paragraph = Paragraph::new("abc".to_owned(), style("Colrv1")).unwrap();
+    paragraph.layout(400.0).unwrap();
+    let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
+    fill(&mut ctx, &paragraph);
+    fill(&mut ctx, &paragraph);
+    assert_eq!(recorder(&ctx).retained_raster_count(), 1);
+    assert_eq!(recorder(&ctx).retained_raster_bytes(), 1024 * 1024);
+  }
+
+  #[test]
+  fn draw_paragraph_of_nothing_charges_no_paint_resources() {
+    let paragraph = laid_out_paragraph("");
+    let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
+    let pending0 = recorder(&ctx).pending_bytes();
+    fill(&mut ctx, &paragraph);
+    // Only the base charge of touching the recording canvas.
+    assert!(recorder(&ctx).pending_bytes() - pending0 <= BYTES_PER_RECORDED_OP);
+  }
+
+  // A paint whose own charge crosses the cap flushes right away, like the
+  // other draws do, rather than at the next op.
+  #[test]
+  fn draw_paragraph_flushes_once_over_the_cap() {
+    let paragraph = laid_out_paragraph("hello");
+    let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
+    ctx
+      .page_recorder
+      .as_ref()
+      .unwrap()
+      .borrow_mut()
+      .set_recording_limit(1);
+    fill(&mut ctx, &paragraph);
+    assert_eq!(recorder(&ctx).consolidations(), 1);
+  }
 }

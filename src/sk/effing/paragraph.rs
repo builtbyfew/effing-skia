@@ -3,13 +3,14 @@
 use std::ffi::{CString, NulError};
 
 use super::super::{Canvas, FontCollection, Paint, TextAlign, TextDirection};
+use super::text::Painted;
 use crate::font::FontStyle;
 
 #[allow(non_camel_case_types)]
 mod ffi {
   use std::ffi::c_char;
 
-  use super::{ParagraphLine, ParagraphMetrics};
+  use super::{Painted, ParagraphLine, ParagraphMetrics};
   use crate::sk::ffi::{skiac_canvas, skiac_font_collection, skiac_paint};
 
   #[repr(C)]
@@ -53,6 +54,7 @@ mod ffi {
       paint: *mut skiac_paint,
       x: f32,
       y: f32,
+      painted: *mut Painted,
     );
     pub fn effing_paragraph_destroy(p: *mut effing_paragraph);
   }
@@ -191,8 +193,16 @@ impl Drop for Paragraph {
 
 impl Canvas {
   /// Paints a laid-out paragraph's glyphs with `paint`, its top-left corner
-  /// at (x, y).
-  pub fn draw_paragraph(&mut self, paragraph: &Paragraph, x: f32, y: f32, paint: &Paint) {
-    unsafe { ffi::effing_paragraph_paint(paragraph.ptr, self.0, paint.0, x, y) }
+  /// at (x, y), and reports what it drew.
+  pub fn draw_paragraph(
+    &mut self,
+    paragraph: &Paragraph,
+    x: f32,
+    y: f32,
+    paint: &Paint,
+  ) -> Painted {
+    let mut painted = Painted::default();
+    unsafe { ffi::effing_paragraph_paint(paragraph.ptr, self.0, paint.0, x, y, &mut painted) };
+    painted
   }
 }

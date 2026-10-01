@@ -6,6 +6,7 @@
 #include <cstddef>
 
 #include "../skia_c.hpp"
+#include "text.hpp"
 
 struct effing_paragraph;
 
@@ -74,12 +75,14 @@ void effing_paragraph_get_metrics(effing_paragraph* p,
 void effing_paragraph_get_lines(effing_paragraph* p,
                                 effing_paragraph_line* lines,
                                 int count);
-// Paints the glyphs with `paint`, the paragraph's top-left corner at (x, y).
+// Paints the glyphs with `paint`, the paragraph's top-left corner at (x, y),
+// and reports what it drew in `painted`.
 void effing_paragraph_paint(effing_paragraph* p,
                             skiac_canvas* canvas,
                             skiac_paint* paint,
                             float x,
-                            float y);
+                            float y,
+                            effing_painted* painted);
 void effing_paragraph_destroy(effing_paragraph* p);
 }
 

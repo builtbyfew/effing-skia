@@ -18,14 +18,14 @@ Fork code is kept out of upstream files so that upstream merges stay trivial.
 Each layer has an `effing` directory with one file per feature, and each
 upstream file has at most a few marked hook lines.
 
-| Layer                  | Fork code                                                  | Upstream hooks                                                |
-| ---------------------- | ---------------------------------------------------------- | ------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,group}.{hpp,cpp}`           | `skia-c/skia_c.cpp` (include + two `text_rendering` checks)   |
-| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{paragraph,group}.rs`   | `src/sk.rs` (`mod effing`)                                    |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{paragraph,group}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`)       |
-| Build                  |                                                            | `build.rs` (`EFFING_SOURCES`)                                 |
-| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`    | `js-binding.js` (exports; hand-maintained, like `index.d.ts`) |
-| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)          | `package.json`, `.github/workflows/CI.yaml` (publish check)   |
+| Layer                  | Fork code                                                       | Upstream hooks                                                                                                                                        |
+| ---------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,group}.{hpp,cpp}`                | `skia-c/skia_c.cpp` (include + two `text_rendering` checks)                                                                                           |
+| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group}.rs`   | `src/sk.rs` (`mod effing`)                                                                                                                            |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `account_unsnapped_text`); `src/page_recorder.rs` (`BYTES_PER_RECORDED_OP` made `pub(crate)`) |
+| Build                  |                                                                 | `build.rs` (`EFFING_SOURCES`)                                                                                                                         |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`         | `js-binding.js` (exports; hand-maintained, like `index.d.ts`)                                                                                         |
+| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)               | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                           |
 
 C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
 napi bindings are functions that take the context as their first argument
@@ -54,6 +54,14 @@ text under a key that ignores hinting, so the fork marks its unhinted
 paragraphs apart (`effing::make_unhinted`): measuring or drawing a text under
 `auto` and under `geometricPrecision` gives each its own result, in either
 order.
+
+Upstream caps the deferred recording at 32 MiB and charges each draw with an
+estimate of what it records; its text estimate is a text blob and the
+typeface it keeps alive. Outline paths are larger, so the painter tallies
+what it draws (path sizes, draw calls, and the typefaces of glyph-mask runs)
+and the end of upstream's `draw_text` charges that tally on top
+(`account_unsnapped_text`). The tally is per thread, which keeps upstream's
+C signature unchanged.
 
 ## `Paragraph`
 
@@ -139,7 +147,9 @@ it like `restore()`. `endGroup` throws if the innermost save was not made by
 canvas's pixels while a group is open (`getImageData`, encoding, drawing the
 canvas into another) composites what the group holds so far; the rest of
 the group is composited on its own when it ends, with the same options but
-no backdrop filter, which the content behind it already has.
+no backdrop filter, which the content behind it already has. The same split
+happens when the pending recording outgrows upstream's 32 MiB cap while a
+group is open, since that flushes it to the surface too.
 
 This is deliberately not the proposed Canvas 2D `beginLayer`/`endLayer`: that
 API takes the layer's alpha and blend mode from `globalAlpha` and
@@ -197,6 +207,18 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### 1.0.10-effing.1 (unreleased)
+
+- Based on upstream 1.0.10: Skia chrome/m156, a use-after-free fix for
+  `restore()` reviving a garbage-collected `CanvasPattern`, and a 32 MiB cap
+  on the deferred recording, past which it is flushed to the surface.
+- `fillParagraph` and `strokeParagraph` count toward that cap with what they
+  record: the glyph outline paths, plus the typeface of any color or bitmap
+  glyphs, which are drawn as text. So do `fillText` and `strokeText` under
+  `geometricPrecision`, which upstream's estimate undercounts. A group open
+  when the cap is reached is split as if the canvas had been read (see
+  above).
 
 ### 1.0.9-effing.1
 

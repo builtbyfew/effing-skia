@@ -3,3 +3,4 @@
 
 pub mod group;
 pub mod paragraph;
+pub mod text;

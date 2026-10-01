@@ -1,6 +1,8 @@
 #include "text.hpp"
 
+#include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <vector>
 
 #include "include/core/SkFont.h"
@@ -54,7 +56,8 @@ void draw_run_as_paths(SkCanvas* canvas,
                        const Paragraph::VisitorInfo& run,
                        SkScalar x,
                        SkScalar y,
-                       const SkPaint& paint) {
+                       const SkPaint& paint,
+                       Painted* painted) {
   SkPathBuilder builder;
   if (!append_glyph_paths(run.font, run.glyphs, run.positions, run.count,
                           &builder)) {
@@ -65,14 +68,44 @@ void draw_run_as_paths(SkCanvas* canvas,
     std::memcpy(buffer.glyphs, run.glyphs, run.count * sizeof(SkGlyphID));
     std::memcpy(buffer.pos, run.positions, run.count * sizeof(SkPoint));
     canvas->drawTextBlob(blob.make(), x, y, paint);
+    if (painted != nullptr) {
+      painted->bytes += run.count * (sizeof(SkGlyphID) + sizeof(SkPoint));
+      painted->ops++;
+      if (const SkTypeface* typeface = font.getTypeface()) {
+        const SkTypefaceID id = typeface->uniqueID();
+        if (std::find(painted->typefaces.begin(), painted->typefaces.end(),
+                      id) == painted->typefaces.end()) {
+          painted->typefaces.push_back(id);
+        }
+      }
+    }
     return;
   }
   SkPaint path_paint(paint);
   path_paint.setAntiAlias(true);
-  canvas->drawPath(builder.detach().makeOffset(x, y), path_paint);
+  const SkPath path = builder.detach().makeOffset(x, y);
+  canvas->drawPath(path, path_paint);
+  if (painted != nullptr) {
+    painted->bytes += path.countPoints() * 16 + path.countVerbs() * 8;
+    painted->ops++;
+  }
 }
 
+// What paint_text_unsnapped drew on this thread, until
+// effing_take_text_painted reports it.
+thread_local Painted text_painted;
+
 }  // namespace
+
+void Painted::export_to(effing_painted* out) const {
+  *out = {};
+  out->bytes = bytes;
+  out->ops = ops;
+  out->typeface_count = typefaces.size();
+  std::copy_n(typefaces.begin(),
+              std::min(typefaces.size(), std::size(out->typefaces)),
+              out->typefaces);
+}
 
 void make_unhinted(skia::textlayout::TextStyle* text_style,
                    skia::textlayout::StrutStyle* strut_style) {
@@ -90,7 +123,8 @@ void paint_paragraph_unsnapped(Paragraph* paragraph,
                                SkScalar x,
                                SkScalar y,
                                const SkPaint& paint,
-                               const SkPoint* line_origins) {
+                               const SkPoint* line_origins,
+                               Painted* painted) {
   std::vector<LineMetrics> lines;
   paragraph->getLineMetrics(lines);
   paragraph->visit([&](int line, const Paragraph::VisitorInfo* run) {
@@ -109,7 +143,7 @@ void paint_paragraph_unsnapped(Paragraph* paragraph,
     // relative to wherever the line goes.
     const SkScalar run_x = x + origin.fX + (run->origin.fX - skia_origin.fX);
     const SkScalar run_y = y + origin.fY;
-    draw_run_as_paths(canvas, *run, run_x, run_y, paint);
+    draw_run_as_paths(canvas, *run, run_x, run_y, paint, painted);
   });
 }
 
@@ -131,7 +165,16 @@ void paint_text_unsnapped(Paragraph* paragraph,
     origins.push_back({static_cast<SkScalar>(line.fLeft),
                        static_cast<SkScalar>(line.fBaseline) + shift});
   }
-  paint_paragraph_unsnapped(paragraph, canvas, x, y, paint, origins.data());
+  paint_paragraph_unsnapped(paragraph, canvas, x, y, paint, origins.data(),
+                            &text_painted);
 }
 
 }  // namespace effing
+
+extern "C" {
+
+void effing_take_text_painted(effing_painted* painted) {
+  effing::text_painted.export_to(painted);
+  effing::text_painted = {};
+}
+}

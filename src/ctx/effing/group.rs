@@ -132,6 +132,8 @@ impl Context {
         clip: self.state.clip_path.clone(),
       });
     }
+    // save()'s closing flush, now that a flush would reopen the layer.
+    self.flush_if_recording_limit_exceeded();
     Ok(())
   }
 
@@ -171,4 +173,54 @@ pub fn end_group(ctx: &mut CanvasRenderingContext2D) -> Result<()> {
   }
   ctx.context.restore();
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::sk::ColorSpace;
+
+  fn alpha_at(ctx: &mut Context, x: f32, y: f32) -> u8 {
+    ctx
+      .get_image_data(x, y, 1.0, 1.0, ColorSpace::default())
+      .expect("pixels")[3]
+  }
+
+  fn set_recording_limit(ctx: &Context, bytes: usize) {
+    ctx
+      .page_recorder
+      .as_ref()
+      .unwrap()
+      .borrow_mut()
+      .set_recording_limit(bytes);
+  }
+
+  // The save that opens a group can be the op that reaches the recording
+  // cap. The flush it triggers has to reopen the group's layer rather than a
+  // plain save, or nothing drawn in the group is composited with it.
+  #[test]
+  fn group_opened_at_the_recording_cap_still_composites() {
+    let mut ctx = Context::new(4, 4, ColorSpace::default()).expect("raster context");
+    let pending = ctx.page_recorder.as_ref().unwrap().borrow().pending_bytes();
+    set_recording_limit(&ctx, pending + 1);
+    let options = GroupOptions {
+      opacity: Some(0.5),
+      blend_mode: None,
+      filter: None,
+      backdrop_filter: None,
+      bounds: None,
+    };
+    ctx.begin_group(parse_group(&options).unwrap()).unwrap();
+    let recorder = ctx.page_recorder.as_ref().unwrap();
+    assert_eq!(
+      recorder.borrow().consolidations(),
+      1,
+      "the group's save flushed"
+    );
+    set_recording_limit(&ctx, usize::MAX);
+    ctx.fill_rect(0.0, 0.0, 4.0, 4.0).unwrap();
+    ctx.restore();
+    let alpha = alpha_at(&mut ctx, 1.0, 1.0);
+    assert!((127..=129).contains(&alpha), "alpha {alpha}");
+  }
 }
