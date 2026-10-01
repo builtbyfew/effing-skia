@@ -788,9 +788,12 @@ impl Context {
 
   pub fn save(&mut self) {
     self.save_with(|canvas| canvas.save());
+    self.flush_if_recording_limit_exceeded();
   }
 
-  /// `save()` with `save_canvas` doing the canvas-side save.
+  /// `save()` with `save_canvas` doing the canvas-side save, short of its
+  /// closing flush, which the caller owes once the save is complete: a
+  /// group's layer has to be known to the recorder before a flush reopens it.
   pub(crate) fn save_with(&mut self, save_canvas: impl FnOnce(&mut Canvas)) {
     self.flush_if_recording_limit_exceeded();
     self.with_canvas_state(save_canvas);
@@ -802,7 +805,6 @@ impl Context {
     if let Some(ref recorder) = self.page_recorder {
       recorder.borrow_mut().increment_save();
     }
-    self.flush_if_recording_limit_exceeded();
   }
 
   pub fn restore(&mut self) {
