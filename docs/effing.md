@@ -205,9 +205,10 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 - Based on upstream 1.0.10: Skia chrome/m156, a use-after-free fix for
   `restore()` reviving a garbage-collected `CanvasPattern`, and a 32 MiB cap
   on the deferred recording, past which it is flushed to the surface.
-- `fillParagraph` and `strokeParagraph` count toward that cap like
-  `fillText` does. A group open when the cap is reached is split as if the
-  canvas had been read (see above).
+- `fillParagraph` and `strokeParagraph` count toward that cap with what they
+  record: the glyph outline paths, plus the typeface of any color or bitmap
+  glyphs, which are drawn as text. A group open when the cap is reached is
+  split as if the canvas had been read (see above).
 
 ### 1.0.9-effing.1
 

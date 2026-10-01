@@ -4,6 +4,7 @@
 //! paint it with the context's current paint, shadow, filter, clip and
 //! transform.
 
+use std::cell::RefCell;
 use std::result;
 use std::str::FromStr;
 
@@ -12,9 +13,9 @@ use napi::bindgen_prelude::*;
 use super::super::{CanvasRenderingContext2D, Context, DrawContent, ShadowSource};
 use crate::error::SkError;
 use crate::font::FontStyle;
-use crate::global_fonts::{font_collection_generation, get_font};
-use crate::page_recorder::RasterKey;
-use crate::sk::effing::paragraph::{Paragraph as SkParagraph, ParagraphOptions};
+use crate::global_fonts::get_font;
+use crate::page_recorder::{BYTES_PER_RECORDED_OP, RasterKey};
+use crate::sk::effing::paragraph::{Paragraph as SkParagraph, ParagraphOptions, ParagraphPainted};
 use crate::sk::{Paint, TextAlign, TextDirection};
 
 #[napi(object)]
@@ -86,16 +87,6 @@ fn normalize_font_family(list: &str) -> String {
 #[napi]
 pub struct Paragraph {
   inner: SkParagraph,
-  /// What painting it pins in a recording, charged like `fillText` charges.
-  charge: RecordingCharge,
-}
-
-/// A paragraph's share of the recorder's byte budget (see `draw_text` in
-/// ctx.rs): its glyph blobs, bounded by 16 B per UTF-8 byte, and the typeface
-/// they keep alive, keyed by what picks the face so redraws charge it once.
-struct RecordingCharge {
-  text_bytes: usize,
-  typeface_key: u64,
 }
 
 #[napi]
@@ -126,22 +117,14 @@ impl Paragraph {
     // Font lookup goes through the shared collection, which font registration
     // mutates under the same lock.
     let collection = get_font().map_err(SkError::from)?;
-    let font_family = normalize_font_family(&style.font_family);
-    let inner =
-      SkParagraph::new(&text, &font_family, &collection, &options).map_err(SkError::from)?;
-    let charge = RecordingCharge {
-      text_bytes: (text.len() + options.ellipsis.map_or(0, str::len)).saturating_mul(16),
-      typeface_key: {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        font_family.hash(&mut hasher);
-        options.weight.hash(&mut hasher);
-        std::mem::discriminant(&options.style).hash(&mut hasher);
-        font_collection_generation().hash(&mut hasher);
-        hasher.finish()
-      },
-    };
-    Ok(Paragraph { inner, charge })
+    let inner = SkParagraph::new(
+      &text,
+      &normalize_font_family(&style.font_family),
+      &collection,
+      &options,
+    )
+    .map_err(SkError::from)?;
+    Ok(Paragraph { inner })
   }
 
   /// Lays the paragraph out in `width` px (non-finite or ≤ 0 for unbounded)
@@ -183,25 +166,14 @@ impl Paragraph {
 impl Context {
   fn draw_paragraph(
     &mut self,
-    paragraph: &Paragraph,
+    paragraph: &SkParagraph,
     x: f32,
     y: f32,
     paint: &Paint,
     source: ShadowSource,
   ) -> result::Result<(), SkError> {
-    match source {
-      ShadowSource::Fill => self.account_paint_resources(&self.state.fill_style),
-      ShadowSource::Stroke => self.account_paint_resources(&self.state.stroke_style),
-      ShadowSource::Image => unreachable!("draw_paragraph is only reached via fill/stroke"),
-    }
-    self.account_recorded_bytes(paragraph.charge.text_bytes);
-    self.account_raster_resource(
-      RasterKey::Typeface {
-        key: paragraph.charge.typeface_key,
-      },
-      1024 * 1024,
-    );
-    let paragraph = &paragraph.inner;
+    // What each pass drew, charged to the recording once they are done.
+    let passes = RefCell::new(Vec::new());
     let shadow_paint = self.shadow_paint(paint, source, DrawContent::Glyphs);
     let (shadow_offset_x, shadow_offset_y) = self.canvas_shadow_offset(source, DrawContent::Glyphs);
     self.with_shadowed_render_canvas(
@@ -216,28 +188,75 @@ impl Context {
           shadow_offset_x,
           shadow_offset_y,
         )?;
-        shadow_canvas.draw_paragraph(paragraph, x, y, shadow_paint);
+        let painted = shadow_canvas.draw_paragraph(paragraph, x, y, shadow_paint);
+        passes.borrow_mut().push(painted);
         shadow_canvas.restore();
         Ok(())
       },
       |canvas, paint| {
-        canvas.draw_paragraph(paragraph, x, y, paint);
+        let painted = canvas.draw_paragraph(paragraph, x, y, paint);
+        passes.borrow_mut().push(painted);
         Ok(())
       },
-    )
+    )?;
+    self.account_paragraph_passes(&passes.into_inner(), source);
+    self.flush_if_recording_limit_exceeded();
+    Ok(())
   }
+
+  /// Charges the recording's byte budget (upstream #1342) with what painting
+  /// a paragraph drew: the paint's resources, unless nothing was drawn; each
+  /// draw op and outline path; and 1 MiB, once per window, for each typeface
+  /// a text-blob run (color or bitmap glyphs) keeps alive. Outline paths keep
+  /// no typeface alive.
+  fn account_paragraph_passes(&self, passes: &[ParagraphPainted], source: ShadowSource) {
+    if passes.iter().all(|pass| pass.ops == 0) {
+      return;
+    }
+    match source {
+      ShadowSource::Fill => self.account_paint_resources(&self.state.fill_style),
+      ShadowSource::Stroke => self.account_paint_resources(&self.state.stroke_style),
+      ShadowSource::Image => unreachable!("draw_paragraph is only reached via fill/stroke"),
+    }
+    const TYPEFACE_BYTES: usize = 1024 * 1024;
+    for pass in passes {
+      self.account_recorded_bytes(pass.bytes + pass.ops * BYTES_PER_RECORDED_OP);
+      let listed = pass.listed_typefaces();
+      for &id in listed {
+        self.account_raster_resource(
+          RasterKey::Typeface {
+            key: typeface_key(id),
+          },
+          TYPEFACE_BYTES,
+        );
+      }
+      // Ones past the listed few can't be told apart: charge them every time.
+      self.account_raster_bytes((pass.typeface_count - listed.len()) * TYPEFACE_BYTES);
+    }
+  }
+}
+
+/// A `RasterKey::Typeface` key for a typeface's SkTypeface::uniqueID(). The
+/// keys `fillText` charges hash a font descriptor instead; the two can alias
+/// only by a hash collision.
+fn typeface_key(id: u32) -> u64 {
+  use std::hash::{Hash, Hasher};
+  let mut hasher = std::collections::hash_map::DefaultHasher::new();
+  "effing typeface".hash(&mut hasher);
+  id.hash(&mut hasher);
+  hasher.finish()
 }
 
 /// The paragraph to paint, or an error naming `function` when `layout` has
 /// not run yet: the native side has no lines to place until it has.
-fn laid_out<'a>(paragraph: &'a Paragraph, function: &str) -> Result<&'a Paragraph> {
+fn laid_out<'a>(paragraph: &'a Paragraph, function: &str) -> Result<&'a SkParagraph> {
   if !paragraph.inner.is_laid_out() {
     return Err(Error::new(
       Status::GenericFailure,
       format!("{function}() needs a laid-out Paragraph: call layout(width) first"),
     ));
   }
-  Ok(paragraph)
+  Ok(&paragraph.inner)
 }
 
 // Exposed as functions taking the context rather than as methods on it, so the
@@ -300,30 +319,84 @@ mod tests {
     }
   }
 
-  // Like fill_text_dedups_the_typeface_charge in ctx.rs: every paint of a
-  // paragraph charges its glyphs, its typeface once per window.
-  #[test]
-  fn draw_paragraph_charges_the_recording() {
+  fn laid_out_paragraph(text: &str) -> Paragraph {
     {
       let fonts = get_font().unwrap();
       fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None);
     }
-    let mut paragraph = Paragraph::new("hello".to_owned(), style("Lato")).unwrap();
+    let mut paragraph = Paragraph::new(text.to_owned(), style("Lato")).unwrap();
     paragraph.layout(64.0).unwrap();
+    paragraph
+  }
+
+  fn recorder(ctx: &Context) -> std::cell::Ref<'_, crate::page_recorder::PageRecorder> {
+    ctx.page_recorder.as_ref().unwrap().borrow()
+  }
+
+  fn fill(ctx: &mut Context, paragraph: &Paragraph) {
+    let paint = ctx.fill_paint().unwrap();
+    ctx
+      .draw_paragraph(&paragraph.inner, 0.0, 0.0, &paint, ShadowSource::Fill)
+      .unwrap();
+  }
+
+  // Lato's glyphs have outlines, so each paint records outline paths, which
+  // keep no typeface alive.
+  #[test]
+  fn draw_paragraph_charges_its_outline_paths() {
+    let paragraph = laid_out_paragraph("hello");
     let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
-    fn recorder(ctx: &Context) -> std::cell::Ref<'_, crate::page_recorder::PageRecorder> {
-      ctx.page_recorder.as_ref().unwrap().borrow()
-    }
     let pending0 = recorder(&ctx).pending_bytes();
-    for _ in 0..3 {
-      let paint = ctx.fill_paint().unwrap();
-      ctx
-        .draw_paragraph(&paragraph, 0.0, 0.0, &paint, ShadowSource::Fill)
-        .unwrap();
+    fill(&mut ctx, &paragraph);
+    let pending1 = recorder(&ctx).pending_bytes();
+    fill(&mut ctx, &paragraph);
+    let pending2 = recorder(&ctx).pending_bytes();
+    // Five glyph outlines: well over a point per glyph at 16 B each.
+    assert!(pending1 - pending0 > BYTES_PER_RECORDED_OP + 5 * 16);
+    assert_eq!(pending2 - pending1, pending1 - pending0);
+    assert_eq!(recorder(&ctx).retained_raster_count(), 0);
+  }
+
+  // Color glyphs have no outline and are drawn as text blobs, which keep
+  // their typeface alive: charged once per window, like fillText's.
+  #[test]
+  fn draw_paragraph_charges_a_text_blob_typeface_once() {
+    {
+      let fonts = get_font().unwrap();
+      fonts.register_from_path("__test__/fonts/COLR-v1.ttf", Some("Colrv1".to_owned()));
     }
-    let recorder = recorder(&ctx);
-    assert_eq!(recorder.retained_raster_count(), 1);
-    assert_eq!(recorder.retained_raster_bytes(), 1024 * 1024);
-    assert!(recorder.pending_bytes() - pending0 >= 1024 * 1024 + 3 * "hello".len() * 16);
+    let mut paragraph = Paragraph::new("abc".to_owned(), style("Colrv1")).unwrap();
+    paragraph.layout(400.0).unwrap();
+    let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
+    fill(&mut ctx, &paragraph);
+    fill(&mut ctx, &paragraph);
+    assert_eq!(recorder(&ctx).retained_raster_count(), 1);
+    assert_eq!(recorder(&ctx).retained_raster_bytes(), 1024 * 1024);
+  }
+
+  #[test]
+  fn draw_paragraph_of_nothing_charges_no_paint_resources() {
+    let paragraph = laid_out_paragraph("");
+    let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
+    let pending0 = recorder(&ctx).pending_bytes();
+    fill(&mut ctx, &paragraph);
+    // Only the base charge of touching the recording canvas.
+    assert!(recorder(&ctx).pending_bytes() - pending0 <= BYTES_PER_RECORDED_OP);
+  }
+
+  // A paint whose own charge crosses the cap flushes right away, like the
+  // other draws do, rather than at the next op.
+  #[test]
+  fn draw_paragraph_flushes_once_over_the_cap() {
+    let paragraph = laid_out_paragraph("hello");
+    let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
+    ctx
+      .page_recorder
+      .as_ref()
+      .unwrap()
+      .borrow_mut()
+      .set_recording_limit(1);
+    fill(&mut ctx, &paragraph);
+    assert_eq!(recorder(&ctx).consolidations(), 1);
   }
 }

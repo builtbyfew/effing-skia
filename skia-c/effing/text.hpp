@@ -4,9 +4,13 @@
 #ifndef EFFING_TEXT_HPP
 #define EFFING_TEXT_HPP
 
+#include <cstddef>
+#include <vector>
+
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkPoint.h"
+#include "include/core/SkTypeface.h"
 #include "modules/skparagraph/include/Paragraph.h"
 #include "modules/skparagraph/include/ParagraphStyle.h"
 #include "modules/skparagraph/include/TextStyle.h"
@@ -24,6 +28,19 @@ constexpr int kTextRenderingGeometricPrecision = 3;
 void make_unhinted(skia::textlayout::TextStyle* text_style,
                    skia::textlayout::StrutStyle* strut_style);
 
+// What paint_paragraph_unsnapped drew, for a recording's byte budget.
+struct Painted {
+  // The outline paths and text blobs drawn, estimated the way the canvas
+  // estimates paths: 16 B per point and 8 B per verb, and 10 B per glyph of
+  // a blob.
+  size_t bytes = 0;
+  // Draw calls made, one per run.
+  size_t ops = 0;
+  // The typefaces that text-blob runs keep alive, each listed once. Outline
+  // paths keep none alive.
+  std::vector<SkTypefaceID> typefaces;
+};
+
 // Paints a laid-out paragraph's glyphs with `paint`, without snapping them to
 // the pixel grid: outlines are filled as paths at their exact positions, so
 // with unhinted outlines the text lands in the same place at any raster
@@ -34,13 +51,15 @@ void make_unhinted(skia::textlayout::TextStyle* text_style,
 // shadows and decorations are ignored. Line `i` is painted with its left edge
 // and baseline at `line_origins[i]`, relative to (x, y); when `line_origins`
 // is null, each line stays where SkParagraph put it (its `LineMetrics::fLeft`
-// and exact, unrounded `fBaseline`).
+// and exact, unrounded `fBaseline`). What was drawn is added to `painted`
+// when it is not null.
 void paint_paragraph_unsnapped(skia::textlayout::Paragraph* paragraph,
                                SkCanvas* canvas,
                                SkScalar x,
                                SkScalar y,
                                const SkPaint& paint,
-                               const SkPoint* line_origins = nullptr);
+                               const SkPoint* line_origins = nullptr,
+                               Painted* painted = nullptr);
 
 // The fillText/strokeText flavour: paints the paragraph with its first line's
 // alphabetic baseline exactly at y + getAlphabeticBaseline(), the value the

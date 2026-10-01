@@ -56,7 +56,7 @@ pub(crate) enum RasterKey {
 const MAX_RECORDED_BYTES: usize = 32 * 1024 * 1024;
 
 /// Base per-recorded-op byte estimate; ~265 B/op was measured in issue #1342.
-const BYTES_PER_RECORDED_OP: usize = 256;
+pub(crate) const BYTES_PER_RECORDED_OP: usize = 256; // effing: pub(crate)
 
 /// Per-SkPicture overhead estimate (SkRecord + SkPicture/SkImage objects)
 /// for each finalized layer; ~1.2 KB/layer measured with a 1x1 putImageData
