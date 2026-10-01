@@ -202,10 +202,12 @@ effing_paragraph* effing_paragraph_create(const char* text,
   paragraph_style.setTextStyle(text_style);
   paragraph_style.setStrutStyle(strut);
   paragraph_style.setTextDirection(direction);
-  // Only justify is Skia's job. The other alignments are applied per line at
-  // layout time, relative to the layout width, so nowrap lines wider than the
-  // box align like CSS.
-  paragraph_style.setTextAlign(out->align == TextAlign::kJustify
+  // Only justify is Skia's job, and only for text that wraps: every line of
+  // nowrap text ends in a hard break or the text, which CSS never justifies,
+  // and Skia would right-align them in RTL at the unbounded width, where
+  // floats are too coarse for sub-pixel positions. The alignments are
+  // applied per line at layout time, relative to the layout width.
+  paragraph_style.setTextAlign(out->align == TextAlign::kJustify && !out->nowrap
                                    ? TextAlign::kJustify
                                    : TextAlign::kLeft);
   paragraph_style.setApplyRoundingHack(false);
@@ -313,17 +315,22 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
   for (size_t i = 0; i < n; i++) {
     const float slack = w - p->line_widths[i];
     float left = 0;
-    if (w < kUnbounded && p->align == TextAlign::kRight) {
+    if (w >= kUnbounded) {
+      // No width to align to.
+    } else if (slack < 0) {
+      // A line wider than the box is start-aligned and overflows the box's
+      // end edge, as in CSS.
+      left = p->rtl ? slack : 0;
+    } else if (p->align == TextAlign::kRight) {
       left = slack;
-    } else if (w < kUnbounded && p->align == TextAlign::kCenter) {
+    } else if (p->align == TextAlign::kCenter) {
       left = slack / 2;
-    } else if (w < kUnbounded && p->align == TextAlign::kJustify) {
-      // Skia justifies the lines itself, and right-aligns the ones it
-      // doesn't justify in RTL text; keep its shift. Unbounded nowrap lines
-      // all end in hard breaks, so they start-align.
-      left = !unbounded ? static_cast<float>(p->lines[i].fLeft)
-             : p->rtl   ? slack
-                        : 0;
+    } else if (p->align == TextAlign::kJustify) {
+      // Skia spread the lines it could justify over the whole width, so
+      // they have no slack; the others start-align. Skia's own left edge is
+      // not used: it includes half the letter spacing, which the painter
+      // cancels for every other alignment.
+      left = p->rtl ? slack : 0;
     }
     p->line_origins[i] = {left, i * p->line_height + baseline_in_box};
   }
@@ -343,6 +350,11 @@ void effing_paragraph_get_metrics(effing_paragraph* p,
         std::max(m->min_intrinsic_width, paragraph->getMinIntrinsicWidth());
     m->max_intrinsic_width =
         std::max(m->max_intrinsic_width, paragraph->getMaxIntrinsicWidth());
+  }
+  // Skia's minimum is the widest word, which nowrap text cannot shrink to:
+  // its min-content width is its max-content width, as in CSS.
+  if (p->nowrap) {
+    m->min_intrinsic_width = m->max_intrinsic_width;
   }
   // Each line of nowrap text with an ellipsis is its own one-line paragraph,
   // which "exceeds" its one line whenever it is truncated to the width.
