@@ -177,6 +177,84 @@ test('justify in RTL right-aligns the lines it does not justify', (t) => {
   }
 })
 
+test('a line wider than the width is start-aligned', (t) => {
+  // CSS start-aligns a line that overflows, whatever its alignment.
+  const width = 50
+  for (const textAlign of ['left', 'center', 'right', 'justify'] as const) {
+    const ltr = new Paragraph(TEXT, { ...STYLE, textAlign, noWrap: true }).layout(width)
+    t.true(ltr.lines[0].width > width)
+    t.is(ltr.lines[0].left, 0, textAlign)
+    const rtl = new Paragraph(TEXT, { ...STYLE, textAlign, noWrap: true, direction: 'rtl' }).layout(width)
+    near(t, rtl.lines[0].left, width - rtl.lines[0].width)
+  }
+})
+
+test('noWrap text is as narrow as its lines', (t) => {
+  const wrapping = new Paragraph(TEXT, STYLE).layout(0)
+  const noWrap = new Paragraph(TEXT, { ...STYLE, noWrap: true }).layout(0)
+  t.true(wrapping.minIntrinsicWidth < wrapping.maxIntrinsicWidth)
+  near(t, noWrap.minIntrinsicWidth, noWrap.maxIntrinsicWidth)
+  near(t, noWrap.maxIntrinsicWidth, wrapping.maxIntrinsicWidth)
+  // Truncation leaves the intrinsic widths alone.
+  const truncated = new Paragraph(TEXT, { ...STYLE, noWrap: true, ellipsis: '…' }).layout(50)
+  near(t, truncated.minIntrinsicWidth, wrapping.maxIntrinsicWidth)
+})
+
+// The leftmost and rightmost inked columns of the first line box.
+function inkSpan(paragraph: Paragraph, layout: ReturnType<Paragraph['layout']>) {
+  const width = 400
+  const ctx = createCanvas(width, Math.ceil(layout.lineHeight)).getContext('2d')
+  fillParagraph(ctx, paragraph, 0, 0)
+  const { data } = ctx.getImageData(0, 0, width, Math.ceil(layout.lineHeight))
+  let left = width
+  let right = -1
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] > 0) {
+      const x = (i >> 2) % width
+      left = Math.min(left, x)
+      right = Math.max(right, x)
+    }
+  }
+  return [left, right]
+}
+
+test('justify starts its lines where left does, letter spacing included', (t) => {
+  const width = 300
+  const style: ParagraphStyle = { ...STYLE, letterSpacing: 4 }
+  const left = new Paragraph(TEXT, { ...style, textAlign: 'left' })
+  const justify = new Paragraph(TEXT, { ...style, textAlign: 'justify' })
+  const leftLayout = left.layout(width)
+  const justifyLayout = justify.layout(width)
+  t.is(justifyLayout.lines.length, leftLayout.lines.length)
+  for (const [i, line] of justifyLayout.lines.entries()) {
+    t.is(line.left, 0)
+    near(t, line.width, line.hardBreak ? leftLayout.lines[i].width : width)
+  }
+  const [leftInk] = inkSpan(left, leftLayout)
+  const [justifyInk, justifyRight] = inkSpan(justify, justifyLayout)
+  t.is(justifyInk, leftInk)
+  t.true(justifyRight < width, `justified ink ends at ${justifyRight}`)
+})
+
+test('justify on noWrap text paints like start', (t) => {
+  // Skia is not asked to justify noWrap text, whose lines it would
+  // right-align in RTL at the unbounded layout width, where floats are too
+  // coarse to keep a multi-run line's runs in place.
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Harmattan-Regular.ttf')))
+  const text = 'مرحبا hello مرحبا world'
+  const style: ParagraphStyle = { fontFamily: 'Harmattan, Iosevka Slab', fontSize: 20.3, noWrap: true }
+  for (const direction of ['ltr', 'rtl'] as const) {
+    const paint = (textAlign: ParagraphStyle['textAlign']) => {
+      const ctx = createCanvas(400, 40).getContext('2d')
+      const paragraph = new Paragraph(text, { ...style, textAlign, direction })
+      const { lines } = paragraph.layout(300)
+      fillParagraph(ctx, paragraph, 0, 0)
+      return { left: lines[0].left, pixels: Buffer.from(ctx.getImageData(0, 0, 400, 40).data).toString('base64') }
+    }
+    t.deepEqual(paint('justify'), paint('start'), direction)
+  }
+})
+
 test('font families may be quoted', (t) => {
   const plain = new Paragraph(TEXT, STYLE).layout(0)
   const quoted = new Paragraph(TEXT, { ...STYLE, fontFamily: ' "Iosevka Slab" , serif' }).layout(0)
