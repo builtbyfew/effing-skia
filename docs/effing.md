@@ -164,12 +164,15 @@ git push                    # CI builds, tests, then publishes
 ```
 
 (`yarn run version` is the `version` script; plain `yarn version` is Yarn's
-own command and does something else.) The publish job needs an `NPM_TOKEN`
-repository secret with publish rights on the `@effing` scope, passed to the
-publish step as `NODE_AUTH_TOKEN`, and
-`registry-url: https://registry.npmjs.org` on its `setup-node` step, until
-the packages exist and trusted publishing is configured for them on
-npmjs.com. The platform packages under `npm/` are published first by
+own command and does something else.) The publish job authenticates with
+npm trusted publishing, the way upstream does: it holds no token, and npm
+accepts the publish because each of the eight packages names the `CI.yaml`
+workflow of `builtbyfew/effing-skia` as its trusted publisher. A package has
+to exist before it can be given one, so a package for a new target needs a
+first publish by hand, then
+`npm trust github <package> --repo builtbyfew/effing-skia --file CI.yaml --allow-publish`
+(npm 11.15 or later, logged in with 2FA); `npm trust list <package>` shows
+what is configured. The platform packages under `npm/` are published first by
 `napi prepublish`, which `prepublishOnly` runs. To semver an `-effing.N`
 version is a prerelease, which npm 11 refuses to publish without a tag, so
 the publish step sets `npm_config_tag=latest` in the environment; a
