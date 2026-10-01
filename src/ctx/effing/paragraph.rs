@@ -12,7 +12,8 @@ use napi::bindgen_prelude::*;
 use super::super::{CanvasRenderingContext2D, Context, DrawContent, ShadowSource};
 use crate::error::SkError;
 use crate::font::FontStyle;
-use crate::global_fonts::get_font;
+use crate::global_fonts::{font_collection_generation, get_font};
+use crate::page_recorder::RasterKey;
 use crate::sk::effing::paragraph::{Paragraph as SkParagraph, ParagraphOptions};
 use crate::sk::{Paint, TextAlign, TextDirection};
 
@@ -85,6 +86,16 @@ fn normalize_font_family(list: &str) -> String {
 #[napi]
 pub struct Paragraph {
   inner: SkParagraph,
+  /// What painting it pins in a recording, charged like `fillText` charges.
+  charge: RecordingCharge,
+}
+
+/// A paragraph's share of the recorder's byte budget (see `draw_text` in
+/// ctx.rs): its glyph blobs, bounded by 16 B per UTF-8 byte, and the typeface
+/// they keep alive, keyed by what picks the face so redraws charge it once.
+struct RecordingCharge {
+  text_bytes: usize,
+  typeface_key: u64,
 }
 
 #[napi]
@@ -115,14 +126,22 @@ impl Paragraph {
     // Font lookup goes through the shared collection, which font registration
     // mutates under the same lock.
     let collection = get_font().map_err(SkError::from)?;
-    let inner = SkParagraph::new(
-      &text,
-      &normalize_font_family(&style.font_family),
-      &collection,
-      &options,
-    )
-    .map_err(SkError::from)?;
-    Ok(Paragraph { inner })
+    let font_family = normalize_font_family(&style.font_family);
+    let inner =
+      SkParagraph::new(&text, &font_family, &collection, &options).map_err(SkError::from)?;
+    let charge = RecordingCharge {
+      text_bytes: (text.len() + options.ellipsis.map_or(0, str::len)).saturating_mul(16),
+      typeface_key: {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        font_family.hash(&mut hasher);
+        options.weight.hash(&mut hasher);
+        std::mem::discriminant(&options.style).hash(&mut hasher);
+        font_collection_generation().hash(&mut hasher);
+        hasher.finish()
+      },
+    };
+    Ok(Paragraph { inner, charge })
   }
 
   /// Lays the paragraph out in `width` px (non-finite or ≤ 0 for unbounded)
@@ -164,12 +183,25 @@ impl Paragraph {
 impl Context {
   fn draw_paragraph(
     &mut self,
-    paragraph: &SkParagraph,
+    paragraph: &Paragraph,
     x: f32,
     y: f32,
     paint: &Paint,
     source: ShadowSource,
   ) -> result::Result<(), SkError> {
+    match source {
+      ShadowSource::Fill => self.account_paint_resources(&self.state.fill_style),
+      ShadowSource::Stroke => self.account_paint_resources(&self.state.stroke_style),
+      ShadowSource::Image => unreachable!("draw_paragraph is only reached via fill/stroke"),
+    }
+    self.account_recorded_bytes(paragraph.charge.text_bytes);
+    self.account_raster_resource(
+      RasterKey::Typeface {
+        key: paragraph.charge.typeface_key,
+      },
+      1024 * 1024,
+    );
+    let paragraph = &paragraph.inner;
     let shadow_paint = self.shadow_paint(paint, source, DrawContent::Glyphs);
     let (shadow_offset_x, shadow_offset_y) = self.canvas_shadow_offset(source, DrawContent::Glyphs);
     self.with_shadowed_render_canvas(
@@ -198,14 +230,14 @@ impl Context {
 
 /// The paragraph to paint, or an error naming `function` when `layout` has
 /// not run yet: the native side has no lines to place until it has.
-fn laid_out<'a>(paragraph: &'a Paragraph, function: &str) -> Result<&'a SkParagraph> {
+fn laid_out<'a>(paragraph: &'a Paragraph, function: &str) -> Result<&'a Paragraph> {
   if !paragraph.inner.is_laid_out() {
     return Err(Error::new(
       Status::GenericFailure,
       format!("{function}() needs a laid-out Paragraph: call layout(width) first"),
     ));
   }
-  Ok(&paragraph.inner)
+  Ok(paragraph)
 }
 
 // Exposed as functions taking the context rather than as methods on it, so the
@@ -221,6 +253,7 @@ pub fn fill_paragraph(
   y: f64,
 ) -> Result<()> {
   let paragraph = laid_out(paragraph, "fillParagraph")?;
+  ctx.context.flush_if_recording_limit_exceeded();
   let paint = ctx.context.fill_paint()?;
   ctx
     .context
@@ -238,9 +271,59 @@ pub fn stroke_paragraph(
   y: f64,
 ) -> Result<()> {
   let paragraph = laid_out(paragraph, "strokeParagraph")?;
+  ctx.context.flush_if_recording_limit_exceeded();
   let paint = ctx.context.stroke_paint()?;
   ctx
     .context
     .draw_paragraph(paragraph, x as f32, y as f32, &paint, ShadowSource::Stroke)?;
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::sk::ColorSpace;
+
+  fn style(font_family: &str) -> ParagraphStyle {
+    ParagraphStyle {
+      font_family: font_family.to_owned(),
+      font_size: 16.0,
+      font_weight: None,
+      font_style: None,
+      letter_spacing: None,
+      line_height: None,
+      text_align: None,
+      direction: None,
+      no_wrap: None,
+      max_lines: None,
+      ellipsis: None,
+    }
+  }
+
+  // Like fill_text_dedups_the_typeface_charge in ctx.rs: every paint of a
+  // paragraph charges its glyphs, its typeface once per window.
+  #[test]
+  fn draw_paragraph_charges_the_recording() {
+    {
+      let fonts = get_font().unwrap();
+      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None);
+    }
+    let mut paragraph = Paragraph::new("hello".to_owned(), style("Lato")).unwrap();
+    paragraph.layout(64.0).unwrap();
+    let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
+    fn recorder(ctx: &Context) -> std::cell::Ref<'_, crate::page_recorder::PageRecorder> {
+      ctx.page_recorder.as_ref().unwrap().borrow()
+    }
+    let pending0 = recorder(&ctx).pending_bytes();
+    for _ in 0..3 {
+      let paint = ctx.fill_paint().unwrap();
+      ctx
+        .draw_paragraph(&paragraph, 0.0, 0.0, &paint, ShadowSource::Fill)
+        .unwrap();
+    }
+    let recorder = recorder(&ctx);
+    assert_eq!(recorder.retained_raster_count(), 1);
+    assert_eq!(recorder.retained_raster_bytes(), 1024 * 1024);
+    assert!(recorder.pending_bytes() - pending0 >= 1024 * 1024 + 3 * "hello".len() * 16);
+  }
 }

@@ -139,7 +139,9 @@ it like `restore()`. `endGroup` throws if the innermost save was not made by
 canvas's pixels while a group is open (`getImageData`, encoding, drawing the
 canvas into another) composites what the group holds so far; the rest of
 the group is composited on its own when it ends, with the same options but
-no backdrop filter, which the content behind it already has.
+no backdrop filter, which the content behind it already has. The same split
+happens when the pending recording outgrows upstream's 32 MiB cap while a
+group is open, since that flushes it to the surface too.
 
 This is deliberately not the proposed Canvas 2D `beginLayer`/`endLayer`: that
 API takes the layer's alpha and blend mode from `globalAlpha` and
@@ -197,6 +199,15 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### 1.0.10-effing.1 (unreleased)
+
+- Based on upstream 1.0.10: Skia chrome/m156, a use-after-free fix for
+  `restore()` reviving a garbage-collected `CanvasPattern`, and a 32 MiB cap
+  on the deferred recording, past which it is flushed to the surface.
+- `fillParagraph` and `strokeParagraph` count toward that cap like
+  `fillText` does. A group open when the cap is reached is split as if the
+  canvas had been read (see above).
 
 ### 1.0.9-effing.1
 
