@@ -15,10 +15,10 @@
     "webpack-cli": "^7.0.0"
   },
   "dependencies": {
-    "@napi-rs/canvas": "workspace:*",
+    "@effing/skia": "workspace:*",
     "node-loader": "^2.1.0"
   },
   "resolutions": {
-    "@napi-rs/canvas": "workspace:*"
+    "@effing/skia": "workspace:*"
   }
 }

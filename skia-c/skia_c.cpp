@@ -13,6 +13,9 @@
 #endif
 
 #include "skia_c.hpp"
+
+#include "effing/text.hpp"  // effing
+
 #define SURFACE_CAST reinterpret_cast<SkSurface*>(c_surface)
 #define CANVAS_CAST reinterpret_cast<SkCanvas*>(c_canvas)
 #define PAINT_CAST reinterpret_cast<SkPaint*>(c_paint)
@@ -660,6 +663,11 @@ void skiac_canvas_get_line_metrics_or_draw_text(
   text_style.setTextBaseline(TextBaseline::kAlphabetic);
   StrutStyle struct_style;
   struct_style.setLeading(0);
+  // effing: geometricPrecision also drops hinting, so glyph outlines and
+  // advances don't depend on the device scale.
+  if (text_rendering == effing::kTextRenderingGeometricPrecision) {
+    effing::make_unhinted(&text_style, &struct_style);
+  }
 
   ParagraphStyle paragraph_style;
   paragraph_style.setTextStyle(text_style);
@@ -805,7 +813,12 @@ void skiac_canvas_get_line_metrics_or_draw_text(
     float final_x = need_scale ? (paint_x + (1 - ratio) * offset_x) / ratio -
                                      rtl_offset + letter_spacing_offset
                                : paint_x - rtl_offset + letter_spacing_offset;
-    paragraph->paint(CANVAS_CAST, final_x, y + baseline_offset);
+    if (text_rendering == effing::kTextRenderingGeometricPrecision) {
+      effing::paint_text_unsnapped(paragraph, CANVAS_CAST, final_x,
+                                   y + baseline_offset, *PAINT_CAST);
+    } else {
+      paragraph->paint(CANVAS_CAST, final_x, y + baseline_offset);
+    }
     if (need_scale) {
       CANVAS_CAST->restore();
     }

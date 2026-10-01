@@ -38,6 +38,8 @@ use crate::{
   state::Context2dRenderingState,
 };
 
+mod effing;
+
 static CSS_SIZE_REGEXP: LazyLock<Regex> =
   LazyLock::new(|| Regex::new(r#"(-?[\d\.]+)(%|px|pt|pc|in|cm|mm|%|em|ex|ch|rem|q)?\s*"#).unwrap());
 
@@ -133,6 +135,8 @@ pub struct Context {
   path: SkPath,
   pub alpha: bool,
   pub(crate) states: Vec<Context2dRenderingState>,
+  /// Indices in `states` of the saves made by effing's `beginGroup`.
+  pub(crate) group_saves: Vec<usize>,
   state: Context2dRenderingState,
   pub width: u32,
   pub height: u32,
@@ -162,6 +166,7 @@ impl Context {
       alpha: true,
       path: SkPath::new(),
       states: vec![],
+      group_saves: vec![],
       state: Context2dRenderingState::default(),
       width,
       height,
@@ -180,6 +185,7 @@ impl Context {
       alpha: true,
       path: SkPath::new(),
       states: vec![],
+      group_saves: vec![],
       state: Context2dRenderingState::default(),
       width,
       height,
@@ -197,6 +203,7 @@ impl Context {
       alpha: true,
       path: SkPath::new(),
       states: vec![],
+      group_saves: vec![],
       state: Context2dRenderingState::default(),
       width,
       height,
@@ -535,9 +542,12 @@ impl Context {
   }
 
   pub fn save(&mut self) {
-    self.with_canvas_state(|canvas| {
-      canvas.save();
-    });
+    self.save_with(|canvas| canvas.save());
+  }
+
+  /// `save()` with `save_canvas` doing the canvas-side save.
+  pub(crate) fn save_with(&mut self, save_canvas: impl FnOnce(&mut Canvas)) {
+    self.with_canvas_state(save_canvas);
     self.states.push(self.state.clone());
     // Sync state to recorder at save time for layer promotion restoration
     self.sync_transform_to_recorder();
@@ -550,6 +560,9 @@ impl Context {
 
   pub fn restore(&mut self) {
     if let Some(s) = self.states.pop() {
+      if self.group_saves.last() == Some(&self.states.len()) {
+        self.group_saves.pop();
+      }
       self.path.transform_self(&self.state.transform);
       self.with_canvas_state(|canvas| {
         canvas.restore();
@@ -610,6 +623,7 @@ impl Context {
 
     // Clear the drawing state stack
     self.states.clear();
+    self.group_saves.clear();
 
     // Reset all styles to default
     self.state = Context2dRenderingState::default();

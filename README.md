@@ -20,6 +20,15 @@ npm install @napi-rs/canvas
 
 # Support matrix
 
+## Effing extensions
+
+This is `@effing/skia`, effing's fork of `@napi-rs/canvas`. The main entry is a drop-in for upstream.
+The fork adds unsnapped text under `textRendering = 'geometricPrecision'` and, in a separate
+`@effing/skia/extensions` entry, a native `Paragraph` primitive with `fillParagraph` /
+`strokeParagraph` and compositing groups with `beginGroup` / `endGroup`. They are documented in
+[docs/effing.md](./docs/effing.md), which also lists where the fork's code lives, how it hooks into
+upstream, and how releases work.
+
 ## System requirement
 
 ### `arm64`

@@ -135,7 +135,7 @@ Map the failure to its layer, then read
 |---|---|---|
 | `gn gen` rejects an argument | Skia build config | `scripts/build-skia.js` GN_ARGS |
 | `ninja` reports `FAILED:` | Skia source or toolchain | `scripts/build-skia.js` flags |
-| `yarn build` C++ errors | Skia C++ API churn | `skia-c/skia_c.cpp`, `skia-c/skia_c.hpp` |
+| `yarn build` C++ errors | Skia C++ API churn | `skia-c/skia_c.cpp`, `skia-c/skia_c.hpp`, `skia-c/effing/` |
 | `yarn build` link errors | archive list drift | `src/sk.rs` `#[link]`, `LIB` in `scripts/release-skia-binary.mjs` |
 | `yarn test` image diffs | raster output changed | `__test__/snapshots/*` |
 

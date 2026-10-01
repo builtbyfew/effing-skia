@@ -13,6 +13,8 @@ use crate::error::SkError;
 use crate::font::{FontStretch, FontStyle};
 use crate::image::ImageData;
 
+pub(crate) mod effing;
+
 #[allow(non_camel_case_types)]
 pub mod ffi {
   use std::ffi::c_void;

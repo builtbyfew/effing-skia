@@ -1,3 +1,3 @@
-# `@napi-rs/canvas-darwin-x64`
+# `@effing/skia-darwin-x64`
 
-This is the **x86_64-apple-darwin** binary for `@napi-rs/canvas`
+This is the **x86_64-apple-darwin** binary for `@effing/skia`
