@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <vector>
 
 #include "include/core/SkFont.h"
@@ -90,7 +91,21 @@ void draw_run_as_paths(SkCanvas* canvas,
   }
 }
 
+// What paint_text_unsnapped drew on this thread, until
+// effing_take_text_painted reports it.
+thread_local Painted text_painted;
+
 }  // namespace
+
+void Painted::export_to(effing_painted* out) const {
+  *out = {};
+  out->bytes = bytes;
+  out->ops = ops;
+  out->typeface_count = typefaces.size();
+  std::copy_n(typefaces.begin(),
+              std::min(typefaces.size(), std::size(out->typefaces)),
+              out->typefaces);
+}
 
 void make_unhinted(skia::textlayout::TextStyle* text_style,
                    skia::textlayout::StrutStyle* strut_style) {
@@ -150,7 +165,16 @@ void paint_text_unsnapped(Paragraph* paragraph,
     origins.push_back({static_cast<SkScalar>(line.fLeft),
                        static_cast<SkScalar>(line.fBaseline) + shift});
   }
-  paint_paragraph_unsnapped(paragraph, canvas, x, y, paint, origins.data());
+  paint_paragraph_unsnapped(paragraph, canvas, x, y, paint, origins.data(),
+                            &text_painted);
 }
 
 }  // namespace effing
+
+extern "C" {
+
+void effing_take_text_painted(effing_painted* painted) {
+  effing::text_painted.export_to(painted);
+  effing::text_painted = {};
+}
+}

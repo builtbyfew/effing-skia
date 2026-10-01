@@ -4,9 +4,9 @@
 #define EFFING_PARAGRAPH_HPP
 
 #include <cstddef>
-#include <cstdint>
 
 #include "../skia_c.hpp"
+#include "text.hpp"
 
 struct effing_paragraph;
 
@@ -59,16 +59,6 @@ struct effing_paragraph_line {
   bool hard_break;
 };
 
-// What one effing_paragraph_paint drew; see effing::Painted.
-struct effing_paragraph_painted {
-  size_t bytes;
-  size_t ops;
-  // The unique IDs of the typefaces text-blob runs keep alive. Only the
-  // first 16 are listed; `typeface_count` counts them all.
-  uint32_t typefaces[16];
-  size_t typeface_count;
-};
-
 extern "C" {
 // `font_family` is a comma-separated list of family names, unquoted.
 effing_paragraph* effing_paragraph_create(const char* text,
@@ -92,7 +82,7 @@ void effing_paragraph_paint(effing_paragraph* p,
                             skiac_paint* paint,
                             float x,
                             float y,
-                            effing_paragraph_painted* painted);
+                            effing_painted* painted);
 void effing_paragraph_destroy(effing_paragraph* p);
 }
 

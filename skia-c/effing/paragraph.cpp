@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -387,7 +386,7 @@ void effing_paragraph_paint(effing_paragraph* p,
                             skiac_paint* c_paint,
                             float x,
                             float y,
-                            effing_paragraph_painted* painted) {
+                            effing_painted* painted) {
   *painted = {};
   // Nowhere to put the lines until effing_paragraph_layout has run.
   if (p->first_lines.size() != p->paragraphs.size()) {
@@ -400,12 +399,7 @@ void effing_paragraph_paint(effing_paragraph* p,
         *reinterpret_cast<SkPaint*>(c_paint),
         p->line_origins.data() + p->first_lines[k], &drawn);
   }
-  painted->bytes = drawn.bytes;
-  painted->ops = drawn.ops;
-  painted->typeface_count = drawn.typefaces.size();
-  std::copy_n(drawn.typefaces.begin(),
-              std::min(drawn.typefaces.size(), std::size(painted->typefaces)),
-              painted->typefaces);
+  drawn.export_to(painted);
 }
 
 void effing_paragraph_destroy(effing_paragraph* p) {

@@ -5,6 +5,7 @@
 #define EFFING_TEXT_HPP
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "include/core/SkCanvas.h"
@@ -14,6 +15,24 @@
 #include "modules/skparagraph/include/Paragraph.h"
 #include "modules/skparagraph/include/ParagraphStyle.h"
 #include "modules/skparagraph/include/TextStyle.h"
+
+// What the painter drew, for a recording's byte budget; see effing::Painted.
+struct effing_painted {
+  size_t bytes;
+  size_t ops;
+  // The unique IDs of the typefaces text-blob runs keep alive. Only the
+  // first 16 are listed; `typeface_count` counts them all.
+  uint32_t typefaces[16];
+  size_t typeface_count;
+};
+
+extern "C" {
+// Reports what paint_text_unsnapped drew on this thread since the last call,
+// and starts the tally over. fillText/strokeText under geometricPrecision
+// reach it through upstream's skiac_canvas_get_line_metrics_or_draw_text,
+// whose signature stays upstream's.
+void effing_take_text_painted(effing_painted* painted);
+}
 
 namespace effing {
 
@@ -28,7 +47,7 @@ constexpr int kTextRenderingGeometricPrecision = 3;
 void make_unhinted(skia::textlayout::TextStyle* text_style,
                    skia::textlayout::StrutStyle* strut_style);
 
-// What paint_paragraph_unsnapped drew, for a recording's byte budget.
+// What the painter drew, for a recording's byte budget.
 struct Painted {
   // The outline paths and text blobs drawn, estimated the way the canvas
   // estimates paths: 16 B per point and 8 B per verb, and 10 B per glyph of
@@ -39,6 +58,9 @@ struct Painted {
   // The typefaces that text-blob runs keep alive, each listed once. Outline
   // paths keep none alive.
   std::vector<SkTypefaceID> typefaces;
+
+  // Copies the tally into its C form.
+  void export_to(effing_painted* out) const;
 };
 
 // Paints a laid-out paragraph's glyphs with `paint`, without snapping them to
@@ -63,7 +85,8 @@ void paint_paragraph_unsnapped(skia::textlayout::Paragraph* paragraph,
 
 // The fillText/strokeText flavour: paints the paragraph with its first line's
 // alphabetic baseline exactly at y + getAlphabeticBaseline(), the value the
-// Canvas 2D textBaseline offsets are computed from.
+// Canvas 2D textBaseline offsets are computed from. What was drawn is added
+// to this thread's tally, which effing_take_text_painted reports.
 void paint_text_unsnapped(skia::textlayout::Paragraph* paragraph,
                           SkCanvas* canvas,
                           SkScalar x,

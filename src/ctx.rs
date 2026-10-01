@@ -2433,6 +2433,7 @@ impl Context {
         Ok(())
       },
     )?;
+    self.account_unsnapped_text(); // effing
     // End-of-op boundary: the callers return this directly, so the
     // post-check covers both fillText and strokeText.
     self.flush_if_recording_limit_exceeded();

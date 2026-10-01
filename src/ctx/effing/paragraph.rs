@@ -14,8 +14,8 @@ use super::super::{CanvasRenderingContext2D, Context, DrawContent, ShadowSource}
 use crate::error::SkError;
 use crate::font::FontStyle;
 use crate::global_fonts::get_font;
-use crate::page_recorder::{BYTES_PER_RECORDED_OP, RasterKey};
-use crate::sk::effing::paragraph::{Paragraph as SkParagraph, ParagraphOptions, ParagraphPainted};
+use crate::sk::effing::paragraph::{Paragraph as SkParagraph, ParagraphOptions};
+use crate::sk::effing::text::Painted;
 use crate::sk::{Paint, TextAlign, TextDirection};
 
 #[napi(object)]
@@ -205,11 +205,9 @@ impl Context {
   }
 
   /// Charges the recording's byte budget (upstream #1342) with what painting
-  /// a paragraph drew: the paint's resources, unless nothing was drawn; each
-  /// draw op and outline path; and 1 MiB, once per window, for each typeface
-  /// a text-blob run (color or bitmap glyphs) keeps alive. Outline paths keep
-  /// no typeface alive.
-  fn account_paragraph_passes(&self, passes: &[ParagraphPainted], source: ShadowSource) {
+  /// a paragraph drew: the paint's resources, unless nothing was drawn, and
+  /// what each pass drew (see `account_painted`).
+  fn account_paragraph_passes(&self, passes: &[Painted], source: ShadowSource) {
     if passes.iter().all(|pass| pass.ops == 0) {
       return;
     }
@@ -218,33 +216,10 @@ impl Context {
       ShadowSource::Stroke => self.account_paint_resources(&self.state.stroke_style),
       ShadowSource::Image => unreachable!("draw_paragraph is only reached via fill/stroke"),
     }
-    const TYPEFACE_BYTES: usize = 1024 * 1024;
     for pass in passes {
-      self.account_recorded_bytes(pass.bytes + pass.ops * BYTES_PER_RECORDED_OP);
-      let listed = pass.listed_typefaces();
-      for &id in listed {
-        self.account_raster_resource(
-          RasterKey::Typeface {
-            key: typeface_key(id),
-          },
-          TYPEFACE_BYTES,
-        );
-      }
-      // Ones past the listed few can't be told apart: charge them every time.
-      self.account_raster_bytes((pass.typeface_count - listed.len()) * TYPEFACE_BYTES);
+      self.account_painted(pass);
     }
   }
-}
-
-/// A `RasterKey::Typeface` key for a typeface's SkTypeface::uniqueID(). The
-/// keys `fillText` charges hash a font descriptor instead; the two can alias
-/// only by a hash collision.
-fn typeface_key(id: u32) -> u64 {
-  use std::hash::{Hash, Hasher};
-  let mut hasher = std::collections::hash_map::DefaultHasher::new();
-  "effing typeface".hash(&mut hasher);
-  id.hash(&mut hasher);
-  hasher.finish()
 }
 
 /// The paragraph to paint, or an error naming `function` when `layout` has
@@ -301,6 +276,7 @@ pub fn stroke_paragraph(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::page_recorder::BYTES_PER_RECORDED_OP;
   use crate::sk::ColorSpace;
 
   fn style(font_family: &str) -> ParagraphStyle {

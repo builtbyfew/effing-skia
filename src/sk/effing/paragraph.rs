@@ -3,13 +3,14 @@
 use std::ffi::{CString, NulError};
 
 use super::super::{Canvas, FontCollection, Paint, TextAlign, TextDirection};
+use super::text::Painted;
 use crate::font::FontStyle;
 
 #[allow(non_camel_case_types)]
 mod ffi {
   use std::ffi::c_char;
 
-  use super::{ParagraphLine, ParagraphMetrics, ParagraphPainted};
+  use super::{Painted, ParagraphLine, ParagraphMetrics};
   use crate::sk::ffi::{skiac_canvas, skiac_font_collection, skiac_paint};
 
   #[repr(C)]
@@ -53,7 +54,7 @@ mod ffi {
       paint: *mut skiac_paint,
       x: f32,
       y: f32,
-      painted: *mut ParagraphPainted,
+      painted: *mut Painted,
     );
     pub fn effing_paragraph_destroy(p: *mut effing_paragraph);
   }
@@ -109,28 +110,6 @@ pub struct ParagraphLine {
   pub start_index: usize,
   pub end_index: usize,
   pub hard_break: bool,
-}
-
-/// Mirrors `effing_paragraph_painted`: what one paint of a paragraph drew.
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ParagraphPainted {
-  /// The outline paths and text blobs drawn, estimated like `Path::estimated_bytes`.
-  pub bytes: usize,
-  /// Draw calls made, one per run.
-  pub ops: usize,
-  /// The unique IDs of the typefaces text-blob runs keep alive; only the
-  /// first 16 are listed.
-  pub typefaces: [u32; 16],
-  /// How many typefaces the text-blob runs keep alive.
-  pub typeface_count: usize,
-}
-
-impl ParagraphPainted {
-  /// The listed typeface IDs.
-  pub fn listed_typefaces(&self) -> &[u32] {
-    &self.typefaces[..self.typeface_count.min(self.typefaces.len())]
-  }
 }
 
 /// A single-style paragraph laid out by SkParagraph. Line boxes are exactly
@@ -221,8 +200,8 @@ impl Canvas {
     x: f32,
     y: f32,
     paint: &Paint,
-  ) -> ParagraphPainted {
-    let mut painted = ParagraphPainted::default();
+  ) -> Painted {
+    let mut painted = Painted::default();
     unsafe { ffi::effing_paragraph_paint(paragraph.ptr, self.0, paint.0, x, y, &mut painted) };
     painted
   }
