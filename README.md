@@ -1,3 +1,31 @@
+# `@effing/skia`
+
+[![CI](https://github.com/builtbyfew/effing-skia/actions/workflows/CI.yaml/badge.svg)](https://github.com/builtbyfew/effing-skia/actions/workflows/CI.yaml)
+
+Effing's fork of [`@napi-rs/canvas`](https://github.com/napi-rs/canvas), the Skia-backed Canvas for Node.js.
+
+- The main entry is a drop-in for `@napi-rs/canvas`: same classes, same context, same types.
+- `@effing/skia/extensions` adds a native `Paragraph` primitive, painted with `fillParagraph` /
+  `strokeParagraph`, and compositing groups with `beginGroup` / `endGroup`.
+- Under `textRendering = 'geometricPrecision'`, text is laid out unhinted and painted unsnapped, so it
+  lands in the same place at any raster scale.
+
+```bash
+npm install @effing/skia
+```
+
+Prebuilt binaries are published for Linux x64 and arm64 (glibc and musl), macOS x64 and arm64, and
+Windows x64.
+
+[docs/effing.md](./docs/effing.md) documents the extensions, where the fork's code lives, how it hooks
+into upstream, and how releases work.
+
+All credit for the canvas itself goes to [`@napi-rs/canvas`](https://github.com/napi-rs/canvas) and its
+author. Upstream's README follows unchanged; wherever it says `@napi-rs/canvas`, `@effing/skia` works
+the same way, on the platforms listed above.
+
+---
+
 # `skr canvas`
 
 [![CI](https://github.com/Brooooooklyn/canvas/actions/workflows/CI.yaml/badge.svg)](https://github.com/Brooooooklyn/canvas/actions/workflows/CI.yaml)
@@ -19,15 +47,6 @@ npm install @napi-rs/canvas
 ```
 
 # Support matrix
-
-## Effing extensions
-
-This is `@effing/skia`, effing's fork of `@napi-rs/canvas`. The main entry is a drop-in for upstream.
-The fork adds unsnapped text under `textRendering = 'geometricPrecision'` and, in a separate
-`@effing/skia/extensions` entry, a native `Paragraph` primitive with `fillParagraph` /
-`strokeParagraph` and compositing groups with `beginGroup` / `endGroup`. They are documented in
-[docs/effing.md](./docs/effing.md), which also lists where the fork's code lives, how it hooks into
-upstream, and how releases work.
 
 ## System requirement
 
