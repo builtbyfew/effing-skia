@@ -1,3 +1,9 @@
+## [1.0.9-effing.1](https://github.com/builtbyfew/effing-skia/compare/v1.0.9...v1.0.9-effing.1) (2026-10-01)
+
+
+### Features
+
+* unsnapped text, a `Paragraph` primitive and compositing groups ([#1](https://github.com/builtbyfew/effing-skia/issues/1)) ([38a66e7](https://github.com/builtbyfew/effing-skia/commit/38a66e75ccaf2e74f79820b39d497124dbfa7461))
 ## [1.0.9](https://github.com/Brooooooklyn/canvas/compare/v1.0.8...v1.0.9) (2026-09-09)
 
 
