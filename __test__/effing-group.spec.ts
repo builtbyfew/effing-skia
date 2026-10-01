@@ -1,6 +1,6 @@
 import test from 'ava'
 
-import { createCanvas, type SKRSContext2D } from '../index'
+import { SvgExportFlag, createCanvas, type SKRSContext2D } from '../index'
 import { beginGroup, endGroup } from '../extensions'
 
 function pixel(ctx: SKRSContext2D, x: number, y: number) {
@@ -145,4 +145,43 @@ test('restore closes a group too', (t) => {
 test('an invalid blendMode throws', (t) => {
   const ctx = createCanvas(10, 10).getContext('2d')
   t.throws(() => beginGroup(ctx, { blendMode: 'nope' }))
+})
+
+test('a non-numeric opacity and malformed bounds throw', (t) => {
+  const ctx = createCanvas(10, 10).getContext('2d')
+  t.throws(() => beginGroup(ctx, { opacity: NaN }), { message: /opacity/ })
+  const three = [0, 0, 5] as unknown as [number, number, number, number]
+  t.throws(() => beginGroup(ctx, { bounds: three }), { message: /bounds/ })
+  t.throws(() => beginGroup(ctx, { bounds: [0, 0, 5, Infinity] }), { message: /bounds/ })
+  // Out of range is clamped, as an alpha is.
+  ctx.fillStyle = 'black'
+  beginGroup(ctx, { opacity: 2 })
+  ctx.fillRect(0, 0, 10, 10)
+  endGroup(ctx)
+  t.is(pixel(ctx, 5, 5)[3], 255)
+})
+
+test('a group that composites nothing is a plain save on an SVG canvas', (t) => {
+  // SkSVGDevice has no layers, so a group only works there without one.
+  const canvas = createCanvas(50, 50, SvgExportFlag.NoPrettyXML)
+  const ctx = canvas.getContext('2d')
+  ctx.fillStyle = 'red'
+  beginGroup(ctx, { bounds: [0, 0, 20, 20] })
+  ctx.fillRect(5, 5, 10, 10)
+  endGroup(ctx)
+  t.regex(canvas.getContent().toString(), /<rect fill="red"/)
+})
+
+test('a group that composites throws on an SVG canvas', (t) => {
+  const ctx = createCanvas(50, 50, SvgExportFlag.NoPrettyXML).getContext('2d')
+  for (const options of [
+    { opacity: 0.5 },
+    { blendMode: 'multiply' },
+    { filter: 'blur(2px)' },
+    { backdropFilter: 'blur(2px)' },
+  ]) {
+    t.throws(() => beginGroup(ctx, options), { message: /SVG/ })
+  }
+  // And left the context usable, outside any group.
+  t.throws(() => endGroup(ctx), { message: /beginGroup/ })
 })
