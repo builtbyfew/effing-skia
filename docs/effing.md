@@ -80,8 +80,13 @@ top:
 - Every line box is exactly `lineHeight` tall (`normal` is the primary font's
   hhea ascender + descender), and the baseline sits in the box by CSS
   half-leading. Fallback fonts never grow a line.
-- `textAlign` is applied per line relative to the layout width, so `noWrap`
-  lines wider than the box overflow the way CSS does. `justify` is Skia's.
+- `textAlign` is applied per line relative to the layout width. A line wider
+  than the box is start-aligned and overflows the end edge, as in CSS, for
+  every alignment. `justify` is Skia's, for wrapped text only: the lines of
+  `noWrap` text all end at a hard break or the text, which CSS never
+  justifies.
+- `minIntrinsicWidth` is the widest word, or for `noWrap` text the widest
+  line, as CSS min-content is.
 - `noWrap` breaks only at hard breaks; with an `ellipsis` it truncates each
   line to the width instead. `maxLines` truncates with the `ellipsis` too.
   Without either, the `ellipsis` does nothing, as `text-overflow` doesn't on
@@ -119,7 +124,14 @@ value) and CSS `filter`. That is what CSS `opacity`, `mix-blend-mode` and
 `backdropFilter` starts the group from the filtered content behind it,
 clamped at the edges like a browser does at the viewport edge, for CSS
 `backdrop-filter`. `bounds` (`[x, y, width, height]` in the current
-coordinate space) sizes the group's buffer and clips its content.
+coordinate space) sizes the group's buffer and clips its content. A
+non-numeric `opacity`, an unknown `blendMode` or malformed `bounds` throw;
+`opacity` outside 0 to 1 is clamped.
+
+A group that composites nothing (opacity 1, `source-over`, no filters) is a
+plain save with the `bounds` clip, with no offscreen buffer. That is the only
+kind of group an SVG canvas can hold, since Skia's SVG device has no layers;
+`beginGroup` throws on one otherwise.
 
 `beginGroup` saves the context state like `save()`, and `endGroup` restores
 it like `restore()`. `endGroup` throws if the innermost save was not made by
@@ -212,3 +224,15 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   longer reuse the hinted layout of the same text and font from another
   `textRendering`, nor the other way round. Results used to depend on which
   was called first.
+- A `Paragraph` line wider than the layout width is start-aligned, as in
+  CSS; `center` and `right` used to give it a negative `left`.
+- `Paragraph.layout().minIntrinsicWidth` of `noWrap` text is the widest
+  line, no longer the widest word.
+- `justify` lines start where `left` lines do; they used to sit half the
+  `letterSpacing` to the right, past the width. On `noWrap` text, `justify`
+  now paints exactly like `start`, with no half-pixel drift on multi-run RTL
+  lines.
+- `beginGroup` throws on a non-numeric `opacity` or malformed `bounds`
+  instead of taking them as fully transparent or absent, and on an SVG canvas
+  for a group that composites. A group that composites nothing no longer
+  allocates a layer.

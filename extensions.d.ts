@@ -3,7 +3,7 @@
 import type { SKRSContext2D } from './index'
 
 export interface GroupOptions {
-  /** Group opacity, 0 to 1. Defaults to 1. */
+  /** Group opacity, 0 to 1 (clamped). Defaults to 1. */
   opacity?: number
   /** A `globalCompositeOperation` value, e.g. `multiply`. Defaults to `source-over`. */
   blendMode?: string
@@ -18,7 +18,9 @@ export interface GroupOptions {
 /**
  * Starts a compositing group on `ctx`: everything drawn until the matching
  * `endGroup(ctx)` is composited as one with the group's opacity, blend mode
- * and filter. Saves the context state like `save()`.
+ * and filter. Saves the context state like `save()`. Throws on invalid
+ * options, and on an SVG canvas for a group that composites (anything but
+ * opacity 1, `source-over` and no filters): Skia's SVG device has no layers.
  */
 export function beginGroup(ctx: SKRSContext2D, options?: GroupOptions): void
 /** Ends the innermost group on `ctx`, compositing it. Throws if the innermost save is not a group. */
@@ -62,6 +64,7 @@ export interface ParagraphLayout {
   /** `lines.length * lineHeight`. */
   height: number
   longestLine: number
+  /** The widest word, or for `noWrap` text the widest line: CSS min-content. */
   minIntrinsicWidth: number
   maxIntrinsicWidth: number
   didExceedMaxLines: boolean
