@@ -20,7 +20,7 @@ upstream file has at most a few marked hook lines.
 
 | Layer                  | Fork code                                                       | Upstream hooks                                                                                                                                                                        |
 | ---------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,group}.{hpp,cpp}`                | `skia-c/skia_c.cpp` (include + two `text_rendering` checks)                                                                                                                           |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group}.{hpp,cpp}`     | `skia-c/skia_c.cpp` (include + two `text_rendering` checks)                                                                                                                           |
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group}.rs`   | `src/sk.rs` (`mod effing`)                                                                                                                                                            |
 | Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`)                                                                                |
 | Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)         | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`) |
@@ -76,6 +76,7 @@ const paragraph = new Paragraph('The quick brown fox…', {
   textAlign: 'center',
   maxLines: 2,
   ellipsis: '…',
+  overflowWrap: 'break-word',
 })
 const layout = paragraph.layout(320) // { height, lines: [{ left, width, baseline, … }], … }
 fillParagraph(ctx, paragraph, x, y) // top-left corner at (x, y)
@@ -99,6 +100,8 @@ top:
   justifies.
 - `minIntrinsicWidth` is the widest word, or for `noWrap` text the widest
   line, as CSS min-content is.
+- `wordBreak` and `overflowWrap` say where lines may break within and around
+  words (below).
 - `noWrap` breaks only at hard breaks; with an `ellipsis` it truncates each
   line to the width instead. `maxLines` truncates with the `ellipsis` too.
   Without either, the `ellipsis` does nothing, as `text-overflow` doesn't on
@@ -180,6 +183,75 @@ missing or non-numeric `width` or `height`, a negative or non-finite size
 (including one too large for the 32-bit float the layout uses), an unknown
 `verticalAlign`, or an item that is not a string or a placeholder object.
 `null` for `verticalAlign` or `baselineOffset` means the default.
+
+### Word breaking
+
+`wordBreak` and `overflowWrap` follow the CSS properties of the same name,
+and default to `normal` as they do:
+
+| Option         | Value        | Lines break                                                                                                                      |
+| -------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `wordBreak`    | `normal`     | between words                                                                                                                    |
+|                | `break-all`  | between any two letters or digits too                                                                                            |
+|                | `keep-all`   | never between two letters where one is CJK                                                                                       |
+| `overflowWrap` | `normal`     | a word wider than the line sits on a line of its own and overflows it                                                            |
+|                | `break-word` | such a word starts a line of its own and is broken between grapheme clusters where the line is full, the text after it following |
+
+A word is what lies between two line-break opportunities: ICU's, which also
+break after hyphens and between CJK characters, as `wordBreak` adjusts them.
+A placeholder is a word of its own. `minIntrinsicWidth` is the widest word,
+measured from SkParagraph's clusters, so a single letter under `break-all`
+and a run of CJK under `keep-all`. `overflowWrap: 'break-word'` leaves it
+alone, as CSS `overflow-wrap: break-word` does. CSS's deprecated
+`word-break: break-word` is `overflowWrap: 'break-word'` here; Chrome gives
+it, as `overflow-wrap: anywhere`, a single letter as its min-content.
+
+How:
+
+- `break-all` and `keep-all` hand SkParagraph their own line-break
+  opportunities through the SkUnicode it is built with (`word_break.cpp`):
+  ICU's, with every letter taken for an ideograph under `break-all`, so that
+  punctuation stays with its letter as it does next to an ideograph, and
+  without those between two letters where one is CJK under `keep-all`.
+  Emoji are not letters. Characters are classified by probing ICU's line
+  breaker, since SkUnicode doesn't expose line-breaking classes.
+- SkParagraph breaks a word that doesn't fit wherever the line ends, inside
+  grapheme clusters too. So at a width where some word doesn't fit, layout
+  splits the text into pieces, each a paragraph of its own laid out once
+  (`split_around_long_words` in `paragraph.cpp`): under `normal`, the text
+  before the word, the word with the spaces after it, laid out at the
+  unbounded width, and the text after it; under `break-word`, a piece from
+  each such word on, in which a line may also break between any two
+  grapheme clusters of that word. A grapheme cluster wider than the line
+  overflows it whole. The pieces are painted on effing's lines like the
+  whole paragraph, and `layout` at the width it last laid out at returns at
+  once.
+- SkParagraph caches the opportunities with the shaped text, under a key
+  that leaves them out, so the strut's font families carry a tag for each
+  set of them. SkParagraph also leaves out of its cache a paragraph whose
+  first or last 40 bytes are those of the last one it cached (it takes it
+  for text being edited), so laying out the same long text under two modes
+  in turn shapes it anew each time.
+
+The tests in `__test__/effing-word-break.spec.ts` hold Chrome's line breaks.
+Known differences from Chrome:
+
+- A line ending inside a word, or between CJK characters, can differ in
+  width by the kerning between the two characters at the break, which
+  Chrome drops and Skia keeps (0.4px in the tests).
+- Under `justify`, the line before a word too wide for its line is not
+  justified: it ends a piece.
+- `break-all` follows CSS Text, which treats letters as ideographs; Chrome
+  departs from that around some punctuation (it also breaks before `-` and
+  `|` and after `+`, which the fork follows, and not after `–`, which it
+  doesn't), and breaks Devanagari conjuncts (स्|ते) where ICU's grapheme
+  clusters keep them whole. Around punctuation, ICU's and Chrome's
+  opportunities differ anyway, in every mode.
+- With `maxLines` and an `ellipsis`, when the lines run out at a word too
+  wide for its line, the last line is that line's own text with the
+  ellipsis after it, truncated to fit, as Chrome's `-webkit-line-clamp`
+  shows it ("ab…", "Overlong…"). Elsewhere the last line is SkParagraph's
+  truncation.
 
 ## Compositing groups: `beginGroup` / `endGroup`
 
@@ -314,6 +386,18 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   limit. `maxLines` of `Infinity`, like 0 or omitted, is still unlimited.
 - A lone CR and NEL are no longer hard breaks for `noWrap` text with an
   `ellipsis`, matching the rest of the paragraph and SkParagraph.
+- `ParagraphStyle.wordBreak` (`normal`, `break-all` or `keep-all`) and
+  `ParagraphStyle.overflowWrap` (`normal` or `break-word`), as the CSS
+  properties; see word breaking under `Paragraph`.
+- **Breaking:** a word wider than the line overflows it on a line of its
+  own, as CSS's default `overflow-wrap: normal` has it; it used to be broken
+  mid-way. `overflowWrap: 'break-word'` breaks it, but only after starting it
+  on a line of its own (it used to be broken right after the words before
+  it), and only between grapheme clusters.
+- `minIntrinsicWidth` is the widest word, measured from SkParagraph's
+  clusters, where Skia's figure was off: for text without spaces that fits
+  on a line (it was the whole text), and for a word at the end of the text
+  that doesn't fit the line (it was short by its last letter).
 - The bridge is compiled with `SK_RELEASE`, as Skia is. Under `SK_DEBUG` it
   saw classes such as `FontCollection`, `SkTextBlob` and the typefaces at
   other sizes than Skia was built with.
