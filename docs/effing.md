@@ -103,6 +103,10 @@ top:
   line to the width instead. `maxLines` truncates with the `ellipsis` too.
   Without either, the `ellipsis` does nothing, as `text-overflow` doesn't on
   wrapped text.
+- The hard breaks are SkParagraph's: LF, VT, FF, CRLF, LS (U+2028) and PS
+  (U+2029). A lone CR and NEL (U+0085) are not breaks. Chrome's
+  `white-space: pre` breaks at LF and CRLF only and draws VT, FF, LS and PS
+  inline, so a caller after Chrome's result replaces those first.
 - A hard break that ends the text gives an empty last line, as SkParagraph
   lays it out: `'ab\n'` has two lines. Chrome gives `white-space: pre` text
   ending in a newline one line, so a caller that wants that drops the final
@@ -304,6 +308,12 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   `@effing/canvas`'s `lineHeight ?? 0` must become `lineHeight`. A negative
   or non-finite `lineHeight`, or one too large for a 32-bit float, throws
   instead of meaning `normal`.
+- A `fontSize` that is not a finite number > 0, a non-finite
+  `letterSpacing`, and a `maxLines` that is not a whole number from 0 to
+  2³¹ − 1 throw. They used to give NaN metrics, nonsense, or (for a negative
+  or huge `maxLines`) no limit.
+- A lone CR and NEL are no longer hard breaks for `noWrap` text with an
+  `ellipsis`, matching the rest of the paragraph and SkParagraph.
 
 ### 1.0.10-effing.2
 

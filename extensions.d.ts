@@ -29,6 +29,7 @@ export function endGroup(ctx: SKRSContext2D): void
 export interface ParagraphStyle {
   /** CSS font-family list, e.g. `"Inter", sans-serif`. */
   fontFamily: string
+  /** In px; a finite number > 0. */
   fontSize: number
   /** Defaults to 400. */
   fontWeight?: number
@@ -41,7 +42,7 @@ export interface ParagraphStyle {
   direction?: 'ltr' | 'rtl'
   /** Break only at hard line breaks. */
   noWrap?: boolean
-  /** 0 or omitted for unlimited. */
+  /** A whole number of lines; 0 or omitted for unlimited. */
   maxLines?: number
   /** Appended where text is truncated by `maxLines` or `noWrap`, e.g. `…`. */
   ellipsis?: string
@@ -68,9 +69,9 @@ export interface ParagraphPlaceholder {
    * `bottom` align it with the line box; `text-top` and `text-bottom` with
    * the font's ascent and descent. Defaults to `baseline`.
    */
-  verticalAlign?: 'baseline' | 'middle' | 'top' | 'bottom' | 'text-top' | 'text-bottom'
-  /** For `baseline`: from the box's top down to its own baseline. Defaults to `height`, its bottom edge, as for an image. */
-  baselineOffset?: number
+  verticalAlign?: 'baseline' | 'middle' | 'top' | 'bottom' | 'text-top' | 'text-bottom' | null
+  /** For `baseline`: from the box's top down to its own baseline. Defaults to `height`, its bottom edge, as for an image. Null means the default. */
+  baselineOffset?: number | null
 }
 
 /** A paragraph's text: a string, or strings and inline placeholders in order. */

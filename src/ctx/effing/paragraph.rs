@@ -41,7 +41,8 @@ pub struct ParagraphStyle {
   pub direction: Option<String>,
   /// Break only at hard line breaks.
   pub no_wrap: Option<bool>,
-  pub max_lines: Option<u32>,
+  /// A whole number of lines; omitted or 0 for unlimited.
+  pub max_lines: Option<f64>,
   /// Appended where text is truncated by `maxLines` or `noWrap`, e.g. `…`.
   pub ellipsis: Option<String>,
   /// Count spaces and tabs before a hard break or the end of the text in the
@@ -309,14 +310,39 @@ impl Paragraph {
 
   fn with_content(content: Vec<ContentPart>, style: ParagraphStyle) -> Result<Self> {
     let (text, placeholders) = split_content(content)?;
+    let font_size = match finite_f32(style.font_size) {
+      Some(size) if size > 0.0 => size,
+      _ => {
+        return Err(invalid(format!(
+          "fontSize must be a finite number > 0, not {}",
+          style.font_size
+        )));
+      }
+    };
+    let letter_spacing = style.letter_spacing.unwrap_or(0.0);
+    let letter_spacing = finite_f32(letter_spacing).ok_or_else(|| {
+      invalid(format!(
+        "letterSpacing must be a finite number, not {letter_spacing}"
+      ))
+    })?;
+    // Read as a double: napi would wrap a negative or huge number into a u32,
+    // which could come out as 0, unlimited.
+    let max_lines = style.max_lines.unwrap_or(0.0);
+    if !(max_lines >= 0.0 && max_lines <= i32::MAX as f64 && max_lines.fract() == 0.0) {
+      return Err(invalid(format!(
+        "maxLines must be a whole number from 0 to {}, not {max_lines}",
+        i32::MAX
+      )));
+    }
+    let max_lines = max_lines as u32;
     let options = ParagraphOptions {
-      font_size: style.font_size as f32,
+      font_size,
       weight: style.font_weight.unwrap_or(400),
       style: style
         .font_style
         .as_deref()
         .map_or(Ok(FontStyle::Normal), FontStyle::from_str)?,
-      letter_spacing: style.letter_spacing.unwrap_or(0.0) as f32,
+      letter_spacing,
       line_height: match style.line_height {
         Some(Either::A(height)) => match finite_f32(height) {
           Some(height) if height >= 0.0 => Some(height),
@@ -337,7 +363,7 @@ impl Paragraph {
         .as_deref()
         .map_or(Ok(TextDirection::Ltr), TextDirection::from_str)?,
       nowrap: style.no_wrap.unwrap_or(false),
-      max_lines: style.max_lines.unwrap_or(0),
+      max_lines,
       ellipsis: style.ellipsis.as_deref(),
       keep_trailing_whitespace: style.keep_trailing_whitespace.unwrap_or(false),
     };

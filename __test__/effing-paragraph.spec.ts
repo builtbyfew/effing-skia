@@ -300,6 +300,16 @@ test('invalid style values throw', (t) => {
   t.throws(() => new Paragraph(TEXT, { ...STYLE, textAlign: 'middle' }))
   t.throws(() => new Paragraph(TEXT, { ...STYLE, fontStyle: 'bold' }))
   t.throws(() => new Paragraph(TEXT, { ...STYLE, direction: 'down' }))
+  for (const fontSize of [0, -5, 1e39, Infinity, Number.NaN]) {
+    t.throws(() => new Paragraph(TEXT, { ...STYLE, fontSize }), { message: /fontSize/ })
+  }
+  for (const letterSpacing of [1e39, Infinity, Number.NaN]) {
+    t.throws(() => new Paragraph(TEXT, { ...STYLE, letterSpacing }), { message: /letterSpacing/ })
+  }
+  // Not silently unlimited, as napi's wrap to a 32-bit integer made them.
+  for (const maxLines of [-1, 1.5, 2 ** 31, 2 ** 32]) {
+    t.throws(() => new Paragraph(TEXT, { ...STYLE, maxLines }), { message: /maxLines/ })
+  }
 })
 
 test('painting before layout throws', (t) => {

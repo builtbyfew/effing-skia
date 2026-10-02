@@ -122,23 +122,22 @@ TextAlign resolve_align(TextAlign align, TextDirection direction) {
   }
 }
 
-// The length of a hard line break (LF, VT, FF, CR, CRLF, NEL, LS or PS) at
-// `text[i]`, in bytes, or 0 if there is none.
+// The length of a hard line break at `text[i]`, in bytes, or 0 if there is
+// none. These are SkParagraph's: LF, VT, FF, CRLF, LS and PS (ICU's
+// LINE_FEED and MANDATORY_BREAK classes); a lone CR and NEL are not.
 size_t hard_break_at(const char* text, size_t len, size_t i) {
   const auto c = static_cast<unsigned char>(text[i]);
   if (c == '\r') {
-    return i + 1 < len && text[i + 1] == '\n' ? 2 : 1;
+    // A lone CR is not a break to SkParagraph.
+    return i + 1 < len && text[i + 1] == '\n' ? 2 : 0;
   }
   if (c >= '\n' && c <= '\f') {
     return 1;
   }
-  const auto next = [&](size_t k) {
+  const auto byte = [&](size_t k) {
     return i + k < len ? static_cast<unsigned char>(text[i + k]) : 0;
   };
-  if (c == 0xC2 && next(1) == 0x85) {
-    return 2;
-  }
-  if (c == 0xE2 && next(1) == 0x80 && (next(2) == 0xA8 || next(2) == 0xA9)) {
+  if (c == 0xE2 && byte(1) == 0x80 && (byte(2) == 0xA8 || byte(2) == 0xA9)) {
     return 3;
   }
   return 0;

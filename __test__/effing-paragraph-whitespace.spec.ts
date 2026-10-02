@@ -33,7 +33,7 @@ const CHROME_LINES: Array<{
   name: string
   text: string
   width: number
-  style: ParagraphStyle
+  style: Partial<ParagraphStyle>
   lines: Array<[left: number, width: number]>
   // Only for wrapping text: `pre-wrap` alone.
   wraps?: boolean
@@ -191,6 +191,20 @@ const CHROME_LINES: Array<{
       [80, 20],
     ],
   },
+  {
+    // The first line's space hangs at the soft wrap; the second keeps its
+    // spaces before the hard break.
+    name: 'soft wrap then hard break',
+    wraps: true,
+    text: 'abcd ef   \ngh',
+    width: 60,
+    style: { textAlign: 'right' },
+    lines: [
+      [20, 40],
+      [10, 50],
+      [40, 20],
+    ],
+  },
   // A hard break that ends the text is not part of the line before it.
   {
     name: 'final newline',
@@ -254,6 +268,58 @@ test('kept trailing whitespace is in the line text and widths', (t) => {
     ['abc', 'def'],
   )
   near(t, hanging.longestLine, 30)
+})
+
+test('a lone CR or NEL is not a hard break', (t) => {
+  for (const noWrap of [false, true]) {
+    const style = { ...KEEP, noWrap, ellipsis: noWrap ? '…' : undefined }
+    // Measured in Chrome 154 with `white-space: pre` and the text set through
+    // textContent (the HTML parser would turn the CR into LF): one line, 50px
+    // wide, the CR taking no width.
+    const cr = new Paragraph('ab\r   ', style).layout(400)
+    t.deepEqual(
+      cr.lines.map((line) => [line.startIndex, line.endIndex]),
+      [[0, 6]],
+    )
+    near(t, cr.lines[0].width, 50)
+    // NEL draws from a fallback font, whose advance is not Chrome's; the line
+    // is the NEL's line plus the kept spaces.
+    const nel = new Paragraph('ab\u0085   ', style).layout(400)
+    t.deepEqual(
+      nel.lines.map((line) => [line.startIndex, line.endIndex]),
+      [[0, 6]],
+    )
+    const bare = new Paragraph('ab\u0085', style).layout(400)
+    near(t, nel.lines[0].width, bare.lines[0].width + 30)
+  }
+})
+
+test('LF, VT, FF, CRLF, LS and PS are hard breaks', (t) => {
+  for (const separator of ['\n', '\v', '\f', '\r\n', '\u2028', '\u2029']) {
+    const text = `ab  ${separator}cd`
+    for (const noWrap of [false, true]) {
+      const style = { ...KEEP, noWrap, ellipsis: noWrap ? '…' : undefined }
+      const layout = new Paragraph(text, style).layout(400)
+      t.deepEqual(
+        layout.lines.map((line) => [line.startIndex, line.endIndex]),
+        [
+          [0, 4],
+          [4 + separator.length, 6 + separator.length],
+        ],
+        JSON.stringify([separator, noWrap]),
+      )
+      near(t, layout.lines[0].width, 40)
+    }
+  }
+})
+
+test('text of only hard breaks keeps its empty lines', (t) => {
+  for (const text of ['\n', '\n\n', '\r\n\r\n', '\u2028\n']) {
+    const plain = new Paragraph(text, STYLE).layout(400)
+    const kept = new Paragraph(text, KEEP).layout(400)
+    t.deepEqual(kept.lines, plain.lines, JSON.stringify(text))
+    t.true(kept.lines.every((line) => line.width === 0))
+  }
 })
 
 test('a hard break that ends the text stays out of the line before it', (t) => {

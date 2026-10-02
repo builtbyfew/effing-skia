@@ -258,7 +258,7 @@ test('invalid content throws with what is wrong', (t) => {
 
 test('null optional placeholder fields take their defaults', (t) => {
   const content = ['ab', { width: 20, height: 20, verticalAlign: null, baselineOffset: null }, 'cd']
-  const layout = new Paragraph(content as unknown as ParagraphPlaceholder[], STYLE).layout(400)
+  const layout = new Paragraph(content, STYLE).layout(400)
   near(t, layout.placeholders[0]!.y, layout.lines[0].baseline - 20)
 })
 
