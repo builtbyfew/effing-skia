@@ -42,7 +42,7 @@ export interface ParagraphStyle {
   direction?: 'ltr' | 'rtl'
   /** Break only at hard line breaks. */
   noWrap?: boolean
-  /** A whole number of lines; 0 or omitted for unlimited. */
+  /** A whole number of lines; 0, Infinity or omitted for unlimited. */
   maxLines?: number
   /** Appended where text is truncated by `maxLines` or `noWrap`, e.g. `…`. */
   ellipsis?: string

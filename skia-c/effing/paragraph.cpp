@@ -122,14 +122,35 @@ TextAlign resolve_align(TextAlign align, TextDirection direction) {
   }
 }
 
+// Whether one of the `count` placeholders, which are in order, sits at
+// `offset`.
+bool placeholder_at(const effing_paragraph_placeholder* placeholders,
+                    size_t count,
+                    size_t offset) {
+  const auto* end = placeholders + count;
+  const auto* it = std::lower_bound(
+      placeholders, end, offset,
+      [](const effing_paragraph_placeholder& placeholder, size_t at) {
+        return placeholder.offset < at;
+      });
+  return it != end && it->offset == offset;
+}
+
 // The length of a hard line break at `text[i]`, in bytes, or 0 if there is
 // none. These are SkParagraph's: LF, VT, FF, CRLF, LS and PS (ICU's
-// LINE_FEED and MANDATORY_BREAK classes); a lone CR and NEL are not.
-size_t hard_break_at(const char* text, size_t len, size_t i) {
+// LINE_FEED and MANDATORY_BREAK classes); a lone CR and NEL are not. A CR
+// and an LF with a placeholder between them are a lone CR and an LF.
+size_t hard_break_at(const char* text,
+                     size_t len,
+                     size_t i,
+                     const effing_paragraph_placeholder* placeholders,
+                     size_t placeholder_count) {
   const auto c = static_cast<unsigned char>(text[i]);
   if (c == '\r') {
-    // A lone CR is not a break to SkParagraph.
-    return i + 1 < len && text[i + 1] == '\n' ? 2 : 0;
+    return i + 1 < len && text[i + 1] == '\n' &&
+                   !placeholder_at(placeholders, placeholder_count, i + 1)
+               ? 2
+               : 0;
   }
   if (c >= '\n' && c <= '\f') {
     return 1;
@@ -210,7 +231,8 @@ std::vector<size_t> hard_break_indices(
     while (next < placeholder_count && placeholders[next].offset <= i) {
       next++;
     }
-    const size_t brk = hard_break_at(text, len, i);
+    const size_t brk =
+        hard_break_at(text, len, i, placeholders, placeholder_count);
     const size_t step = brk > 0 ? brk : 1;
     if (brk > 0) {
       breaks.push_back(units + next);
@@ -376,7 +398,10 @@ effing_paragraph* effing_paragraph_create(
       s->max_lines > 0 ? static_cast<size_t>(s->max_lines) : SIZE_MAX;
   size_t start = 0;
   for (size_t i = 0; i <= text_len;) {
-    const size_t brk = i < text_len ? hard_break_at(text, text_len, i) : 0;
+    const size_t brk = i < text_len ? hard_break_at(text, text_len, i,
+                                                    placeholders,
+                                                    placeholder_count)
+                                    : 0;
     if (brk == 0 && i < text_len) {
       i++;
       continue;

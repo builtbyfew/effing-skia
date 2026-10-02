@@ -307,8 +307,13 @@ test('invalid style values throw', (t) => {
     t.throws(() => new Paragraph(TEXT, { ...STYLE, letterSpacing }), { message: /letterSpacing/ })
   }
   // Not silently unlimited, as napi's wrap to a 32-bit integer made them.
-  for (const maxLines of [-1, 1.5, 2 ** 31, 2 ** 32]) {
+  for (const maxLines of [-1, -Infinity, 1.5, Number.NaN]) {
     t.throws(() => new Paragraph(TEXT, { ...STYLE, maxLines }), { message: /maxLines/ })
+  }
+  // Infinity, and counts past what fits in 32 bits, are unlimited.
+  const unlimited = new Paragraph(TEXT, STYLE).layout(100).lines.length
+  for (const maxLines of [Infinity, 2 ** 31, 2 ** 32]) {
+    t.is(new Paragraph(TEXT, { ...STYLE, maxLines }).layout(100).lines.length, unlimited)
   }
 })
 

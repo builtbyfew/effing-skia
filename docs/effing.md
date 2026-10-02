@@ -309,9 +309,9 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   or non-finite `lineHeight`, or one too large for a 32-bit float, throws
   instead of meaning `normal`.
 - A `fontSize` that is not a finite number > 0, a non-finite
-  `letterSpacing`, and a `maxLines` that is not a whole number from 0 to
-  2³¹ − 1 throw. They used to give NaN metrics, nonsense, or (for a negative
-  or huge `maxLines`) no limit.
+  `letterSpacing`, and a negative, NaN or fractional `maxLines` throw. They
+  used to give NaN metrics, nonsense, or (for a negative `maxLines`) no
+  limit. `maxLines` of `Infinity`, like 0 or omitted, is still unlimited.
 - A lone CR and NEL are no longer hard breaks for `noWrap` text with an
   `ellipsis`, matching the rest of the paragraph and SkParagraph.
 

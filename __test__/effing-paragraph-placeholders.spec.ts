@@ -283,6 +283,28 @@ test('a placeholder after a surrogate pair', (t) => {
   near(t, layout.placeholders[0]!.x, layout.lines[0].width - 30)
 })
 
+test('a placeholder between CR and LF splits them', (t) => {
+  // SkParagraph reads CR, U+FFFC, LF as a lone CR (no break), the box and a
+  // hard break, so the box stays on the first line after 'ab\r'.
+  for (const noWrap of [false, true]) {
+    const style: ParagraphStyle = { ...STYLE, noWrap, ellipsis: noWrap ? '…' : undefined }
+    for (const after of ['\n', '\ncd']) {
+      const layout = new Paragraph(['ab\r', box(), after], style).layout(400)
+      const label = JSON.stringify([after, noWrap])
+      // The empty line after a final break reports its indices differently
+      // in the two paths, as it did before placeholders; only its count is
+      // compared.
+      t.is(layout.lines.length, 2, label)
+      t.deepEqual([layout.lines[0].startIndex, layout.lines[0].endIndex], [0, 4], label)
+      if (after === '\ncd') {
+        t.deepEqual([layout.lines[1].startIndex, layout.lines[1].endIndex], [5, 7], label)
+      }
+      t.is(layout.placeholders[0]!.line, 0, label)
+      near(t, layout.placeholders[0]!.x, 20)
+    }
+  }
+})
+
 test('a placeholder before kept whitespace and a final newline', (t) => {
   // Measured in Chrome 154 with `white-space: pre`, width 400px: in RTL the
   // line spans 330 to 400, the spaces on its left, and the box sits at 360;

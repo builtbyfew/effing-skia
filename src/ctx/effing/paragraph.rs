@@ -41,7 +41,7 @@ pub struct ParagraphStyle {
   pub direction: Option<String>,
   /// Break only at hard line breaks.
   pub no_wrap: Option<bool>,
-  /// A whole number of lines; omitted or 0 for unlimited.
+  /// A whole number of lines; omitted, 0 or Infinity for unlimited.
   pub max_lines: Option<f64>,
   /// Appended where text is truncated by `maxLines` or `noWrap`, e.g. `…`.
   pub ellipsis: Option<String>,
@@ -327,14 +327,18 @@ impl Paragraph {
     })?;
     // Read as a double: napi would wrap a negative or huge number into a u32,
     // which could come out as 0, unlimited.
+    // Infinity, like 0, is unlimited, and so is any count past what the
+    // bridge's i32 holds.
     let max_lines = style.max_lines.unwrap_or(0.0);
-    if !(max_lines >= 0.0 && max_lines <= i32::MAX as f64 && max_lines.fract() == 0.0) {
+    let max_lines = if max_lines == f64::INFINITY || max_lines > i32::MAX as f64 {
+      0
+    } else if max_lines >= 0.0 && max_lines.fract() == 0.0 {
+      max_lines as u32
+    } else {
       return Err(invalid(format!(
-        "maxLines must be a whole number from 0 to {}, not {max_lines}",
-        i32::MAX
+        "maxLines must be a whole number ≥ 0 or Infinity, not {max_lines}"
       )));
-    }
-    let max_lines = max_lines as u32;
+    };
     let options = ParagraphOptions {
       font_size,
       weight: style.font_weight.unwrap_or(400),
