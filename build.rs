@@ -226,6 +226,12 @@ fn main() {
   build
     .include("./skia-c")
     .include(skia_path)
+    // effing: Skia is built without SK_DEBUG (is_debug=false, so NDEBUG), and
+    // the bridge must see its headers the same way. Under SK_DEBUG they give
+    // FontCollection, ParagraphCache, SkMutex, SkSharedMutex, SkTextBlob and
+    // the SkTypeface subclasses other sizes, and SkRefCnt other inline
+    // checks, than the library was built with.
+    .define("SK_RELEASE", None)
     // https://github.com/rust-lang/rust/pull/93901#issuecomment-1119360260
     .cargo_metadata(false)
     .out_dir(&out_dir)

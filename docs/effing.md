@@ -24,7 +24,7 @@ upstream file has at most a few marked hook lines.
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group}.rs`   | `src/sk.rs` (`mod effing`)                                                                                                                                                            |
 | Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`)                                                                                |
 | Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)         | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`) |
-| Build                  |                                                                 | `build.rs` (`EFFING_SOURCES`)                                                                                                                                                         |
+| Build                  |                                                                 | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                           |
 | JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`         | `js-binding.js` (exports; hand-maintained, like `index.d.ts`)                                                                                                                         |
 | Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)               | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                           |
 
@@ -314,6 +314,9 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   limit. `maxLines` of `Infinity`, like 0 or omitted, is still unlimited.
 - A lone CR and NEL are no longer hard breaks for `noWrap` text with an
   `ellipsis`, matching the rest of the paragraph and SkParagraph.
+- The bridge is compiled with `SK_RELEASE`, as Skia is. Under `SK_DEBUG` it
+  saw classes such as `FontCollection`, `SkTextBlob` and the typefaces at
+  other sizes than Skia was built with.
 
 ### 1.0.10-effing.2
 
