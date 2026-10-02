@@ -122,19 +122,41 @@ impl Context {
       backdrop,
       bounds,
     } = group;
-    self.save_with(|canvas| canvas.save_group(paint.as_ref(), backdrop.as_ref(), bounds));
+    // In a recording, a group is drawn on its own and its layer sized to
+    // what it drew when it ends (see src/page_recorder/effing.rs), unless
+    // the layer has to cover more: a backdrop fills the whole layer, and some
+    // blend modes and filters change what is behind it outside the content.
+    let fits_content = self.page_recorder.is_some()
+      && backdrop.is_none()
+      && paint
+        .as_ref()
+        .is_some_and(|paint| paint.group_fits_content(&self.state.transform));
+    if fits_content {
+      self.save_with(|canvas| canvas.save());
+    } else {
+      self.save_with(|canvas| canvas.save_group(paint.as_ref(), backdrop.as_ref(), bounds));
+    }
     self.group_saves.push(self.states.len() - 1);
     if let Some(ref recorder) = self.page_recorder {
-      recorder.borrow_mut().set_group(GroupLayer {
+      let layer = GroupLayer {
         paint,
         bounds,
         transform: self.state.transform.clone(),
         clip: self.state.clip_path.clone(),
-      });
+      };
+      recorder.borrow_mut().begin_group(layer, fits_content);
     }
     // save()'s closing flush, now that a flush would reopen the layer.
     self.flush_if_recording_limit_exceeded();
     Ok(())
+  }
+
+  /// The `restore()` hook for a group's save, before it is restored:
+  /// composites a group drawn on its own.
+  pub(crate) fn end_group_content(&self) {
+    if let Some(ref recorder) = self.page_recorder {
+      recorder.borrow_mut().end_group();
+    }
   }
 
   /// Whether the innermost save was made by `begin_group`.
@@ -172,6 +194,8 @@ pub fn end_group(ctx: &mut CanvasRenderingContext2D) -> Result<()> {
     ));
   }
   ctx.context.restore();
+  // The recording limit waits for open groups; this one may have held it.
+  ctx.context.flush_if_recording_limit_exceeded();
   Ok(())
 }
 
@@ -203,24 +227,100 @@ mod tests {
     let mut ctx = Context::new(4, 4, ColorSpace::default()).expect("raster context");
     let pending = ctx.page_recorder.as_ref().unwrap().borrow().pending_bytes();
     set_recording_limit(&ctx, pending + 1);
-    let options = GroupOptions {
+    ctx
+      .begin_group(parse_group(&translucent()).unwrap())
+      .unwrap();
+    ctx.fill_rect(0.0, 0.0, 4.0, 4.0).unwrap();
+    ctx.restore();
+    let alpha = alpha_at(&mut ctx, 1.0, 1.0);
+    assert!((127..=129).contains(&alpha), "alpha {alpha}");
+  }
+
+  fn translucent() -> GroupOptions {
+    GroupOptions {
       opacity: Some(0.5),
       blend_mode: None,
       filter: None,
       backdrop_filter: None,
       bounds: None,
-    };
-    ctx.begin_group(parse_group(&options).unwrap()).unwrap();
-    let recorder = ctx.page_recorder.as_ref().unwrap();
-    assert_eq!(
-      recorder.borrow().consolidations(),
-      1,
-      "the group's save flushed"
-    );
-    set_recording_limit(&ctx, usize::MAX);
+    }
+  }
+
+  fn consolidations(ctx: &Context) -> u64 {
+    ctx
+      .page_recorder
+      .as_ref()
+      .unwrap()
+      .borrow()
+      .consolidations()
+  }
+
+  // A group's layer is sized to what it draws unless the layer has to cover
+  // more: a backdrop, a blend mode that changes what is behind the group
+  // where it draws nothing, or a filter under a rotation, which resamples.
+  #[test]
+  fn groups_fit_their_content_where_compositing_allows() {
+    let options =
+      |opacity, blend_mode: Option<&str>, filter: Option<&str>, backdrop: bool| GroupOptions {
+        opacity,
+        blend_mode: blend_mode.map(str::to_owned),
+        filter: filter.map(str::to_owned),
+        backdrop_filter: backdrop.then(|| "blur(2px)".to_owned()),
+        bounds: None,
+      };
+    let cases = [
+      (options(Some(0.5), None, None, false), false, true),
+      (options(None, Some("multiply"), None, false), false, true),
+      (options(None, None, Some("blur(2px)"), false), false, true),
+      (options(None, None, Some("blur(2px)"), false), true, false),
+      (options(None, Some("copy"), None, false), false, false),
+      (
+        options(None, Some("destination-in"), None, false),
+        false,
+        false,
+      ),
+      (options(None, None, None, true), false, false),
+      (options(None, None, None, false), false, false),
+    ];
+    for (options, rotated, fits) in cases {
+      let mut ctx = Context::new(8, 8, ColorSpace::default()).expect("raster context");
+      if rotated {
+        ctx.rotate(0.3);
+      }
+      ctx.begin_group(parse_group(&options).unwrap()).unwrap();
+      let recorder = ctx.page_recorder.as_ref().unwrap().borrow();
+      assert_eq!(
+        recorder.groups_fitting_content(),
+        [fits],
+        "{:?} {:?} {:?} rotated: {rotated}",
+        options.opacity,
+        options.blend_mode,
+        options.filter
+      );
+    }
+  }
+
+  // Flushing an open group would composite it in parts; the recording limit
+  // waits for it to end. Overlapping draws then composite once: the second
+  // rect hides the first.
+  #[test]
+  fn the_recording_limit_waits_for_an_open_group() {
+    let mut ctx = Context::new(4, 4, ColorSpace::default()).expect("raster context");
+    ctx
+      .begin_group(parse_group(&translucent()).unwrap())
+      .unwrap();
+    set_recording_limit(&ctx, 1);
     ctx.fill_rect(0.0, 0.0, 4.0, 4.0).unwrap();
+    ctx.state.fill_style = crate::pattern::Pattern::from_color("#00f").unwrap();
+    ctx.fill_rect(0.0, 0.0, 4.0, 4.0).unwrap();
+    assert_eq!(consolidations(&ctx), 0, "no flush while the group is open");
     ctx.restore();
-    let alpha = alpha_at(&mut ctx, 1.0, 1.0);
-    assert!((127..=129).contains(&alpha), "alpha {alpha}");
+    ctx.flush_if_recording_limit_exceeded();
+    assert_eq!(consolidations(&ctx), 1, "the flush comes once it ends");
+    let data = ctx
+      .get_image_data(1.0, 1.0, 1.0, 1.0, ColorSpace::default())
+      .expect("pixels");
+    assert_eq!(data[0], 0, "no black from the first rect: {data:?}");
+    assert!((127..=129).contains(&data[3]), "alpha: {data:?}");
   }
 }

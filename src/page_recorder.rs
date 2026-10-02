@@ -2,8 +2,9 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::picture_recorder::PictureRecorder;
-use crate::sk::effing::group::GroupLayer;
 use crate::sk::{Canvas, FilterQuality, Matrix, Path as SkPath, SkImage, SkPicture};
+
+mod effing;
 
 /// Monotonic identity for chargeable resources (canvas contexts, image
 /// patterns). Raw backing pointers are NOT usable as identities: a dropped
@@ -103,7 +104,7 @@ pub struct PageRecorder {
   current_transform: Option<Matrix>, // Transform to restore after layer promotion
   current_clip: Option<SkPath>,      // Clip path to restore after layer promotion
   save_count: usize,                 // Track save stack depth to restore after layer promotion
-  groups: Vec<(usize, GroupLayer)>,  // effing: the save depths that open a group, and its layer
+  groups: Vec<effing::OpenGroup>,    // effing: the groups open in the recording
   // Byte cap that trips flush_if_recording_limit_exceeded. A field rather
   // than MAX_RECORDED_BYTES so tests can shrink it and exercise the flush
   // path in a handful of ops instead of filling 32 MiB.
@@ -146,14 +147,9 @@ impl PageRecorder {
     self
       .current
       .begin_recording(0.0, 0.0, self.width, self.height);
-    if let Some(canvas) = self.current.get_recording_canvas() {
-      for depth in 0..self.save_count {
-        // effing: a group's save opens its layer again.
-        match self.groups.iter().find(|(d, _)| *d == depth) {
-          Some((_, group)) => group.reopen(canvas),
-          None => canvas.save(),
-        }
-      }
+    self.replay_saves(); // effing: opens the groups again
+    // effing: the innermost recording is a group's own when one is open
+    if let Some(canvas) = effing::innermost(&mut self.groups, &mut self.current) {
       if let Some(ref clip_path) = self.current_clip {
         canvas.reset_transform();
         canvas.set_clip_path(clip_path);
@@ -187,6 +183,7 @@ impl PageRecorder {
   /// Promote current recording to a layer if changed (lazy finalization)
   fn promote_layer(&mut self) {
     if self.changed {
+      self.close_group_content(); // effing
       // Finalize the current recording as a picture
       match self.current.finish_recording_as_picture() {
         Some(picture) => {
@@ -222,12 +219,7 @@ impl PageRecorder {
   /// Decrement save count (called when ctx.restore() is invoked)
   pub fn decrement_save(&mut self) {
     self.save_count = self.save_count.saturating_sub(1);
-    self.groups.retain(|(depth, _)| *depth < self.save_count);
-  }
-
-  /// effing: marks the latest save as opening `group`'s layer.
-  pub fn set_group(&mut self, group: GroupLayer) {
-    self.groups.push((self.save_count.saturating_sub(1), group));
+    self.groups.retain(|group| group.depth < self.save_count); // effing
   }
 
   /// Get composite picture of all layers (for drawCanvas)
@@ -387,6 +379,7 @@ impl PageRecorder {
   where
     F: FnOnce(&mut Canvas),
   {
+    self.close_group_content(); // effing
     // Step 1: Always end the current recording before starting the
     // pixel-data record. SkPictureRecorder reuses the same SkRecord until
     // finishRecordingAsPicture moves it out, so beginning without ending the
@@ -437,7 +430,7 @@ impl PageRecorder {
   pub fn get_recording_canvas(&mut self) -> Option<&mut Canvas> {
     self.changed = true;
     self.pending_bytes += BYTES_PER_RECORDED_OP;
-    self.current.get_recording_canvas()
+    effing::innermost(&mut self.groups, &mut self.current) // effing: a group's own recording
   }
 
   /// Bump the content generation for a recorded op that can alter pixels --
@@ -521,7 +514,7 @@ impl PageRecorder {
   /// Whether the pending recording has grown past the configured limit and
   /// should be flushed. See Context::flush_if_recording_limit_exceeded.
   pub fn recording_limit_exceeded(&self) -> bool {
-    self.pending_bytes >= self.recording_limit
+    self.pending_bytes >= self.recording_limit && !self.holds_composited_group() // effing: it would composite in parts
   }
 
   /// Override the byte cap that trips the recording flush. Test-only hook:

@@ -811,6 +811,7 @@ impl Context {
     if let Some(s) = self.states.pop() {
       if self.group_saves.last() == Some(&self.states.len()) {
         self.group_saves.pop();
+        self.end_group_content(); // effing
       }
       self.flush_if_recording_limit_exceeded();
       self.path.transform_self(&self.state.transform);
