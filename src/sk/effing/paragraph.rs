@@ -84,8 +84,9 @@ pub struct ParagraphOptions<'a> {
   pub weight: u32,
   pub style: FontStyle,
   pub letter_spacing: f32,
-  /// Line box height in px; 0 for `normal` (hhea ascender + descender).
-  pub line_height: f32,
+  /// Line box height in px, 0 included; `None` for `normal` (hhea ascender +
+  /// descender).
+  pub line_height: Option<f32>,
   /// `Start` and `End` follow `direction`.
   pub align: TextAlign,
   pub direction: TextDirection,
@@ -207,7 +208,7 @@ impl Paragraph {
       weight: options.weight as i32,
       slant: options.style as i32,
       letter_spacing: options.letter_spacing,
-      line_height: options.line_height,
+      line_height: options.line_height.unwrap_or(-1.0),
       align: options.align as i32,
       direction: options.direction.as_sk_direction(),
       nowrap: options.nowrap,

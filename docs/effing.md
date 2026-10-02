@@ -86,9 +86,12 @@ A `Paragraph` is a single-style paragraph laid out natively by SkParagraph
 (line breaking, shaping, bidi, font fallback), with effing's CSS line model on
 top:
 
-- Every line box is exactly `lineHeight` tall (`normal` is the primary font's
-  hhea ascender + descender), and the baseline sits in the box by CSS
-  half-leading. Fallback fonts never grow a line.
+- Every line box is exactly `lineHeight` tall (`normal`, when it is omitted,
+  is the primary font's hhea ascender + descender), and the baseline sits in
+  the box by CSS half-leading. Fallback fonts never grow a line. A
+  `lineHeight` of 0 collapses the line boxes, as CSS `line-height: 0` does:
+  the paragraph is 0px tall and every line's baseline sits at
+  `(ascent - descent) / 2`, the glyphs overflowing above and below.
 - `textAlign` is applied per line relative to the layout width. A line wider
   than the box is start-aligned and overflows the end edge, as in CSS, for
   every alignment. `justify` is Skia's, for wrapped text only: the lines of
@@ -285,6 +288,9 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 - `ParagraphStyle.keepTrailingWhitespace` counts spaces and tabs before a
   hard break or the end of the text in the line's width and alignment, for
   `white-space: pre` and `pre-wrap`.
+- `lineHeight: 0` collapses the line boxes instead of meaning `normal`; omit
+  `lineHeight` for `normal`. A negative or non-finite `lineHeight` throws
+  instead of meaning `normal`.
 
 ### 1.0.10-effing.2
 

@@ -31,7 +31,8 @@ pub struct ParagraphStyle {
   /// `normal`, `italic` or `oblique`.
   pub font_style: Option<String>,
   pub letter_spacing: Option<f64>,
-  /// Line box height in px; omitted or 0 for `normal` (hhea ascent + descent).
+  /// Line box height in px, where 0 collapses the line boxes; omitted for
+  /// `normal` (hhea ascent + descent).
   pub line_height: Option<f64>,
   /// `left`, `right`, `center`, `justify`, or `start` / `end`, which follow
   /// `direction`.
@@ -204,7 +205,15 @@ impl Paragraph {
         .as_deref()
         .map_or(Ok(FontStyle::Normal), FontStyle::from_str)?,
       letter_spacing: style.letter_spacing.unwrap_or(0.0) as f32,
-      line_height: style.line_height.unwrap_or(0.0) as f32,
+      line_height: match style.line_height {
+        Some(height) if !(height >= 0.0 && height.is_finite()) => {
+          return Err(Error::new(
+            Status::InvalidArg,
+            format!("lineHeight must be a finite number ≥ 0, not {height}"),
+          ));
+        }
+        height => height.map(|height| height as f32),
+      },
       align: style
         .text_align
         .as_deref()

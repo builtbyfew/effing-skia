@@ -50,6 +50,37 @@ test('lineHeight sets every line box', (t) => {
   }
 })
 
+test('lineHeight 0 collapses every line box', (t) => {
+  // Measured in Chrome 154 (headless, macOS) from `<div style="font: 20px
+  // <this font>; line-height: 0">abc<br>def</div>`: the div is 0px tall, and
+  // Range.getClientRects() puts both lines' text at the same place, its
+  // content area from -12 to 12 around the div's top, so the baseline at 8.
+  // That is this half-leading with Chrome's ascent and descent rounded to
+  // whole pixels: (0 + 20 - 4) / 2.
+  const layout = new Paragraph(TEXT, { ...STYLE, lineHeight: 0 }).layout(200)
+  t.true(layout.lines.length > 1)
+  t.is(layout.lineHeight, 0)
+  t.is(layout.height, 0)
+  for (const line of layout.lines) {
+    near(t, line.baseline, (layout.ascent - layout.descent) / 2)
+    near(t, line.baseline, 8, 0.5)
+  }
+  // Omitted is `normal`.
+  const normal = new Paragraph(TEXT, { ...STYLE, lineHeight: undefined }).layout(200)
+  near(t, normal.lineHeight, normal.ascent + normal.descent)
+  const ctx = createCanvas(200, 40).getContext('2d')
+  const paragraph = new Paragraph(TEXT, { ...STYLE, lineHeight: 0 })
+  paragraph.layout(200)
+  fillParagraph(ctx, paragraph, 0, 20)
+  t.true(inkSum(ctx) > 0)
+})
+
+test('lineHeight must be a finite number of at least 0', (t) => {
+  t.throws(() => new Paragraph(TEXT, { ...STYLE, lineHeight: -1 }), { message: /lineHeight/ })
+  t.throws(() => new Paragraph(TEXT, { ...STYLE, lineHeight: Number.NaN }), { message: /lineHeight/ })
+  t.throws(() => new Paragraph(TEXT, { ...STYLE, lineHeight: Infinity }), { message: /lineHeight/ })
+})
+
 test('noWrap only breaks at hard breaks', (t) => {
   const layout = new Paragraph(`${TEXT}\n${TEXT}`, { ...STYLE, noWrap: true }).layout(50)
   t.is(layout.lines.length, 2)

@@ -231,7 +231,7 @@ effing_paragraph* effing_paragraph_create(
     out->descent = m.fDescent;
   }
   out->line_height =
-      s->line_height > 0 ? s->line_height : out->ascent + out->descent;
+      s->line_height >= 0 ? s->line_height : out->ascent + out->descent;
   out->x_height = placeholder_count > 0 ? x_height(primary, s->font_size) : 0;
 
   TextStyle text_style;
