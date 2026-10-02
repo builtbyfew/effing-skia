@@ -1,5 +1,6 @@
 //! The paragraph primitive: `new Paragraph(text, style)` lays out a
-//! single-style paragraph natively, `layout(width)` reports its lines, and
+//! single-style paragraph natively, with inline placeholder boxes where the
+//! text is an array, `layout(width)` reports its lines, and
 //! `fillParagraph(ctx, …)` / `strokeParagraph(ctx, …)` from `extensions.js`
 //! paint it with the context's current paint, shadow, filter, clip and
 //! transform.
@@ -14,7 +15,9 @@ use super::super::{CanvasRenderingContext2D, Context, DrawContent, ShadowSource}
 use crate::error::SkError;
 use crate::font::FontStyle;
 use crate::global_fonts::get_font;
-use crate::sk::effing::paragraph::{Paragraph as SkParagraph, ParagraphOptions};
+use crate::sk::effing::paragraph::{
+  Paragraph as SkParagraph, ParagraphOptions, Placeholder, PlaceholderAlign,
+};
 use crate::sk::effing::text::Painted;
 use crate::sk::{Paint, TextAlign, TextDirection};
 
@@ -40,6 +43,32 @@ pub struct ParagraphStyle {
   pub max_lines: Option<u32>,
   /// Appended where text is truncated by `maxLines` or `noWrap`, e.g. `…`.
   pub ellipsis: Option<String>,
+}
+
+/// An inline box in a paragraph's text, e.g. for an image: it takes `width`
+/// on its line, can break from the text on either side, and draws nothing.
+#[napi(object)]
+pub struct ParagraphPlaceholder {
+  pub width: f64,
+  pub height: f64,
+  /// A CSS `vertical-align` keyword: `baseline` (the default), `middle`,
+  /// `top`, `bottom`, `text-top` or `text-bottom`.
+  pub vertical_align: Option<String>,
+  /// For `baseline`: the distance from the box's top down to its own
+  /// baseline, which sits on the text's. Defaults to `height`, the bottom
+  /// edge, as for an image.
+  pub baseline_offset: Option<f64>,
+}
+
+/// Where layout put a placeholder, from the paragraph's top-left corner.
+#[napi(object)]
+pub struct ParagraphPlaceholderBox {
+  pub x: f64,
+  pub y: f64,
+  pub width: f64,
+  pub height: f64,
+  /// The index of its line in `lines`.
+  pub line: u32,
 }
 
 #[napi(object)]
@@ -70,6 +99,69 @@ pub struct ParagraphLayout {
   pub ascent: f64,
   pub descent: f64,
   pub lines: Vec<ParagraphLine>,
+  /// One per placeholder, in order; null for one that `maxLines` or an
+  /// ellipsis cut off.
+  pub placeholders: Vec<Option<ParagraphPlaceholderBox>>,
+}
+
+impl FromStr for PlaceholderAlign {
+  type Err = SkError;
+
+  fn from_str(value: &str) -> result::Result<Self, SkError> {
+    match value {
+      "baseline" => Ok(Self::Baseline),
+      "middle" => Ok(Self::Middle),
+      "top" => Ok(Self::Top),
+      "bottom" => Ok(Self::Bottom),
+      "text-top" => Ok(Self::TextTop),
+      "text-bottom" => Ok(Self::TextBottom),
+      _ => Err(SkError::Generic(format!(
+        "{value} is not a valid placeholder verticalAlign"
+      ))),
+    }
+  }
+}
+
+/// A paragraph's content as its text and the placeholders in it, each at the
+/// UTF-8 offset where it sits.
+fn split_content(
+  content: Either<String, Vec<Either<String, ParagraphPlaceholder>>>,
+) -> Result<(String, Vec<Placeholder>)> {
+  let parts = match content {
+    Either::A(text) => return Ok((text, Vec::new())),
+    Either::B(parts) => parts,
+  };
+  let mut text = String::new();
+  let mut placeholders = Vec::new();
+  for part in parts {
+    match part {
+      Either::A(run) => text.push_str(&run),
+      Either::B(placeholder) => {
+        let width = placeholder.width;
+        let height = placeholder.height;
+        let baseline_offset = placeholder.baseline_offset.unwrap_or(height);
+        if !(width >= 0.0 && height >= 0.0 && width.is_finite() && height.is_finite())
+          || !baseline_offset.is_finite()
+        {
+          return Err(Error::new(
+            Status::InvalidArg,
+            "A placeholder needs a finite, non-negative width and height, and a finite baselineOffset",
+          ));
+        }
+        placeholders.push(Placeholder {
+          offset: text.len(),
+          width: width as f32,
+          height: height as f32,
+          align: placeholder
+            .vertical_align
+            .as_deref()
+            .map_or(Ok(PlaceholderAlign::Baseline), PlaceholderAlign::from_str)?,
+          baseline_offset: baseline_offset as f32,
+        });
+      }
+    }
+  }
+  Ok((text, placeholders))
 }
 
 /// A CSS font-family list as the comma-separated, unquoted names the bridge
@@ -91,8 +183,13 @@ pub struct Paragraph {
 
 #[napi]
 impl Paragraph {
+  /// `text` is a string, or an array of strings and placeholders.
   #[napi(constructor)]
-  pub fn new(text: String, style: ParagraphStyle) -> Result<Self> {
+  pub fn new(
+    text: Either<String, Vec<Either<String, ParagraphPlaceholder>>>,
+    style: ParagraphStyle,
+  ) -> Result<Self> {
+    let (text, placeholders) = split_content(text)?;
     let options = ParagraphOptions {
       font_size: style.font_size as f32,
       weight: style.font_weight.unwrap_or(400),
@@ -119,6 +216,7 @@ impl Paragraph {
     let collection = get_font().map_err(SkError::from)?;
     let inner = SkParagraph::new(
       &text,
+      &placeholders,
       &normalize_font_family(&style.font_family),
       &collection,
       &options,
@@ -149,6 +247,20 @@ impl Paragraph {
         hard_break: line.hard_break,
       })
       .collect();
+    let placeholders = self
+      .inner
+      .placeholders()
+      .into_iter()
+      .map(|placeholder| {
+        placeholder.visible.then(|| ParagraphPlaceholderBox {
+          x: placeholder.x as f64,
+          y: placeholder.y as f64,
+          width: placeholder.width as f64,
+          height: placeholder.height as f64,
+          line: placeholder.line.max(0) as u32,
+        })
+      })
+      .collect();
     Ok(ParagraphLayout {
       height: metrics.height as f64,
       longest_line: metrics.longest_line as f64,
@@ -159,6 +271,7 @@ impl Paragraph {
       ascent: metrics.ascent as f64,
       descent: metrics.descent as f64,
       lines,
+      placeholders,
     })
   }
 }
@@ -300,7 +413,7 @@ mod tests {
       let fonts = get_font().unwrap();
       fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None);
     }
-    let mut paragraph = Paragraph::new(text.to_owned(), style("Lato")).unwrap();
+    let mut paragraph = Paragraph::new(Either::A(text.to_owned()), style("Lato")).unwrap();
     paragraph.layout(64.0).unwrap();
     paragraph
   }
@@ -341,7 +454,7 @@ mod tests {
       let fonts = get_font().unwrap();
       fonts.register_from_path("__test__/fonts/COLR-v1.ttf", Some("Colrv1".to_owned()));
     }
-    let mut paragraph = Paragraph::new("abc".to_owned(), style("Colrv1")).unwrap();
+    let mut paragraph = Paragraph::new(Either::A("abc".to_owned()), style("Colrv1")).unwrap();
     paragraph.layout(400.0).unwrap();
     let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
     fill(&mut ctx, &paragraph);
@@ -357,6 +470,29 @@ mod tests {
     let pending0 = recorder(&ctx).pending_bytes();
     fill(&mut ctx, &paragraph);
     // Only the base charge of touching the recording canvas.
+    assert!(recorder(&ctx).pending_bytes() - pending0 <= BYTES_PER_RECORDED_OP);
+  }
+
+  // A placeholder draws nothing, so a paragraph of placeholders alone
+  // charges no more than an empty one.
+  #[test]
+  fn draw_paragraph_of_placeholders_charges_nothing() {
+    laid_out_paragraph("");
+    let placeholder = || {
+      Either::B(ParagraphPlaceholder {
+        width: 16.0,
+        height: 16.0,
+        vertical_align: None,
+        baseline_offset: None,
+      })
+    };
+    let content = Either::B(vec![placeholder(), placeholder()]);
+    let mut paragraph = Paragraph::new(content, style("Lato")).unwrap();
+    let layout = paragraph.layout(64.0).unwrap();
+    assert_eq!(layout.placeholders.iter().flatten().count(), 2);
+    let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
+    let pending0 = recorder(&ctx).pending_bytes();
+    fill(&mut ctx, &paragraph);
     assert!(recorder(&ctx).pending_bytes() - pending0 <= BYTES_PER_RECORDED_OP);
   }
 

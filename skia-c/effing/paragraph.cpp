@@ -34,6 +34,16 @@ struct effing_paragraph {
   float line_height = 0;
   float ascent = 0;
   float descent = 0;
+  // The primary font's x-height, for middle-aligned placeholders.
+  float x_height = 0;
+  // Each placeholder, in order, with the paragraph it went into (SIZE_MAX if
+  // its line was dropped) and its UTF-16 index in that paragraph's text.
+  struct Placeholder {
+    effing_paragraph_placeholder spec;
+    size_t paragraph = SIZE_MAX;
+    size_t index = 0;
+  };
+  std::vector<Placeholder> placeholders;
   // Filled by layout, per line, indices relative to the whole text.
   std::vector<LineMetrics> lines;
   std::vector<float> line_widths;
@@ -41,6 +51,8 @@ struct effing_paragraph {
   std::vector<SkPoint> line_origins;
   // The index in `lines` of each paragraph's first line.
   std::vector<size_t> first_lines;
+  // Where each placeholder landed.
+  std::vector<effing_paragraph_placeholder_box> placeholder_boxes;
 };
 
 namespace {
@@ -137,15 +149,54 @@ size_t utf16_length(const char* text, size_t len) {
   return units;
 }
 
+// The font's x-height in px, as CSS `vertical-align: middle` uses it: from
+// the OS/2 table, or else the height of the glyph 'x'.
+float x_height(const sk_sp<SkTypeface>& typeface, float font_size) {
+  SkFont font(typeface, font_size);
+  font.setHinting(SkFontHinting::kNone);
+  SkFontMetrics m;
+  font.getMetrics(&m);
+  if (m.fXHeight != 0) {
+    return std::abs(m.fXHeight);
+  }
+  const SkGlyphID x = font.unicharToGlyph('x');
+  return std::max(0.f, -font.getBounds(x, nullptr).fTop);
+}
+
+// The top of a placeholder of `spec` on a line whose box starts at `top`,
+// `line_height` tall, with its baseline at `baseline`.
+float placeholder_top(const effing_paragraph* p,
+                      const effing_paragraph_placeholder& spec,
+                      float top,
+                      float baseline) {
+  switch (spec.align) {
+    case EFFING_PLACEHOLDER_MIDDLE:
+      return baseline - p->x_height / 2 - spec.height / 2;
+    case EFFING_PLACEHOLDER_TOP:
+      return top;
+    case EFFING_PLACEHOLDER_BOTTOM:
+      return top + p->line_height - spec.height;
+    case EFFING_PLACEHOLDER_TEXT_TOP:
+      return baseline - p->ascent;
+    case EFFING_PLACEHOLDER_TEXT_BOTTOM:
+      return baseline + p->descent - spec.height;
+    default:
+      return baseline - spec.baseline_offset;
+  }
+}
+
 }  // namespace
 
 extern "C" {
 
-effing_paragraph* effing_paragraph_create(const char* text,
-                                          size_t text_len,
-                                          skiac_font_collection* c_collection,
-                                          const char* font_family,
-                                          const effing_paragraph_style* s) {
+effing_paragraph* effing_paragraph_create(
+    const char* text,
+    size_t text_len,
+    skiac_font_collection* c_collection,
+    const char* font_family,
+    const effing_paragraph_style* s,
+    const effing_paragraph_placeholder* placeholders,
+    size_t placeholder_count) {
   c_collection->flushCachesIfDirty();
   auto font_collection = c_collection->collection;
   const auto families = split_families(font_family);
@@ -175,6 +226,7 @@ effing_paragraph* effing_paragraph_create(const char* text,
   }
   out->line_height =
       s->line_height > 0 ? s->line_height : out->ascent + out->descent;
+  out->x_height = placeholder_count > 0 ? x_height(primary, s->font_size) : 0;
 
   TextStyle text_style;
   text_style.setFontFamilies(families);
@@ -216,12 +268,45 @@ effing_paragraph* effing_paragraph_create(const char* text,
     paragraph_style.setEllipsis(SkString(s->ellipsis, s->ellipsis_len));
   }
 
+  out->placeholders.reserve(placeholder_count);
+  for (size_t i = 0; i < placeholder_count; i++) {
+    out->placeholders.push_back({placeholders[i]});
+  }
+  // The next placeholder to place; each takes one UTF-16 unit (U+FFFC).
+  size_t next = 0;
   const auto unicode = SkUnicodes::ICU::Make();
+  // Builds a paragraph of text[start, end), with the placeholders up to `end`
+  // in it.
   const auto add = [&](size_t start, size_t end) {
     ParagraphBuilderImpl builder(paragraph_style, font_collection, unicode);
-    builder.addText(text + start, end - start);
+    out->offsets.push_back(utf16_length(text, start) + next);
+    const size_t k = out->paragraphs.size();
+    size_t at = start;
+    size_t index = 0;
+    for (; next < placeholder_count && placeholders[next].offset <= end;
+         next++) {
+      const auto& spec = placeholders[next];
+      const size_t offset = std::max(spec.offset, at);
+      if (offset > at) {
+        builder.addText(text + at, offset - at);
+        index += utf16_length(text + at, offset - at);
+        at = offset;
+      }
+      // Its height and alignment only matter to Skia for line heights, which
+      // the forced strut fixes; effing places it vertically itself. Skia
+      // loses track of a placeholder with no width and no height, so it
+      // always gets one.
+      const float height = std::max(spec.height, 1.f);
+      builder.addPlaceholder(
+          PlaceholderStyle(spec.width, height, PlaceholderAlignment::kBaseline,
+                           TextBaseline::kAlphabetic, height));
+      out->placeholders[next].paragraph = k;
+      out->placeholders[next].index = index++;
+    }
+    if (end > at) {
+      builder.addText(text + at, end - at);
+    }
     out->paragraphs.push_back(builder.Build());
-    out->offsets.push_back(utf16_length(text, start));
   };
   if (!(out->nowrap && out->ellipsized)) {
     if (s->max_lines > 0) {
@@ -334,6 +419,45 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
     }
     p->line_origins[i] = {left, i * p->line_height + baseline_in_box};
   }
+
+  // Skia puts each placeholder in its line; effing moves it with the line,
+  // and places it vertically by its alignment in effing's line box.
+  p->placeholder_boxes.assign(p->placeholders.size(), {});
+  for (size_t j = 0; j < p->placeholders.size(); j++) {
+    const auto& placeholder = p->placeholders[j];
+    const size_t k = placeholder.paragraph;
+    if (k >= p->paragraphs.size()) {
+      continue;
+    }
+    // Its line, unless max_lines or an ellipsis cut it off.
+    const size_t index = p->offsets[k] + placeholder.index;
+    const size_t end =
+        k + 1 < p->first_lines.size() ? p->first_lines[k + 1] : n;
+    size_t i = p->first_lines[k];
+    while (i < end && !(p->lines[i].fStartIndex <= index &&
+                        index < p->lines[i].fEndIndex)) {
+      i++;
+    }
+    if (i == end) {
+      continue;
+    }
+    const auto rects = p->paragraphs[k]->getRectsForRange(
+        placeholder.index, placeholder.index + 1, RectHeightStyle::kTight,
+        RectWidthStyle::kTight);
+    if (rects.empty()) {
+      continue;
+    }
+    const SkPoint origin = p->line_origins[i];
+    const auto& spec = placeholder.spec;
+    auto& box = p->placeholder_boxes[j];
+    box.visible = true;
+    box.x = origin.fX + rects.front().rect.fLeft -
+            static_cast<float>(p->lines[i].fLeft);
+    box.y = placeholder_top(p, spec, i * p->line_height, origin.fY);
+    box.width = spec.width;
+    box.height = spec.height;
+    box.line = static_cast<int>(i);
+  }
 }
 
 void effing_paragraph_get_metrics(effing_paragraph* p,
@@ -379,6 +503,14 @@ void effing_paragraph_get_lines(effing_paragraph* p,
     out[i].end_index = line.fEndExcludingWhitespaces;
     out[i].hard_break = line.fHardBreak;
   }
+}
+
+void effing_paragraph_get_placeholders(effing_paragraph* p,
+                                       effing_paragraph_placeholder_box* out,
+                                       int count) {
+  const int n =
+      std::min(count, static_cast<int>(p->placeholder_boxes.size()));
+  std::copy_n(p->placeholder_boxes.begin(), std::max(n, 0), out);
 }
 
 void effing_paragraph_paint(effing_paragraph* p,

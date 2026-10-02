@@ -115,6 +115,42 @@ style, line settings, shadow, filter, clip and transform, like `fillText`.
 The style's own font settings are all a paragraph has; `ctx.font`,
 `ctx.letterSpacing` and friends are ignored.
 
+### Inline placeholders
+
+```ts
+const em = 20
+const paragraph = new Paragraph(['Hello ', { width: em, height: em }, ' world'], style)
+const { placeholders } = paragraph.layout(320) // [{ x, y, width, height, line }]
+fillParagraph(ctx, paragraph, x, y)
+ctx.drawImage(emoji, x + placeholders[0].x, y + placeholders[0].y, em, em)
+```
+
+The text can be an array of strings and placeholders: inline boxes that take
+their `width` on the line, with a break opportunity on either side as
+Chrome gives an inline-block, and draw nothing, for whatever the caller
+draws there, such as emoji images. `layout()` returns one entry per
+placeholder in `placeholders`, in order: its box from the paragraph's
+top-left corner and its line, or `null` when `maxLines` or an ellipsis cut it
+off. In the lines' `startIndex`/`endIndex`, each placeholder counts as one
+UTF-16 unit, as if the text had U+FFFC in its place.
+
+Skia places a placeholder along its line; effing places it vertically by its
+`verticalAlign`, the CSS `vertical-align` keywords, in effing's line box:
+`baseline` (the default) puts the box's own baseline, `baselineOffset` below
+its top (defaulting to its `height`: the bottom edge, as for an image), on
+the line's baseline; `middle` puts its middle half the primary font's
+x-height above the baseline; `top`/`bottom` align it with the line box; and
+`text-top`/`text-bottom` with the primary font's hhea ascent/descent. These
+match Chrome's inline-block placement (`__test__/effing-paragraph-placeholders.spec.ts`),
+except that Chrome rounds the ascent and descent to whole pixels. A CSS
+`vertical-align: <length>` is a `baselineOffset` of the box's height plus
+that length. Letter spacing is not added to a placeholder, as Chrome doesn't
+add it to an inline-block.
+
+Unlike in CSS, a placeholder never grows its line box: lines stay exactly
+`lineHeight` tall, as with fallback fonts, and a box taller than its place
+in the line overflows it.
+
 ## Compositing groups: `beginGroup` / `endGroup`
 
 ```ts
@@ -227,6 +263,13 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### Unreleased
+
+- `new Paragraph(text, style)` takes an array of strings and placeholders
+  (`{ width, height, verticalAlign?, baselineOffset? }`) as its text, and
+  `layout()` returns where each placeholder went in `placeholders`. A plain
+  string works as before; `layout()` then returns `placeholders: []`.
 
 ### 1.0.10-effing.2
 

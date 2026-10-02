@@ -47,6 +47,39 @@ export interface ParagraphStyle {
   ellipsis?: string
 }
 
+/**
+ * An inline box in a paragraph's text, e.g. for an image or an emoji drawn as
+ * one: it takes `width` on its line, can break from the text on either side,
+ * and draws nothing. It never grows its line box.
+ */
+export interface ParagraphPlaceholder {
+  width: number
+  height: number
+  /**
+   * How the box sits on its line, as CSS `vertical-align`: `baseline` puts its
+   * own baseline (`baselineOffset` below its top) on the text's; `middle` puts
+   * its middle half the font's x-height above the baseline; `top` and
+   * `bottom` align it with the line box; `text-top` and `text-bottom` with
+   * the font's ascent and descent. Defaults to `baseline`.
+   */
+  verticalAlign?: 'baseline' | 'middle' | 'top' | 'bottom' | 'text-top' | 'text-bottom'
+  /** For `baseline`: from the box's top down to its own baseline. Defaults to `height`, its bottom edge, as for an image. */
+  baselineOffset?: number
+}
+
+/** A paragraph's text: a string, or strings and inline placeholders in order. */
+export type ParagraphContent = string | ReadonlyArray<string | ParagraphPlaceholder>
+
+/** Where layout put a placeholder, from the paragraph's top-left corner. */
+export interface ParagraphPlaceholderBox {
+  x: number
+  y: number
+  width: number
+  height: number
+  /** The index of its line in `lines`. */
+  line: number
+}
+
 export interface ParagraphLine {
   /** Left edge of the line, alignment included. */
   left: number
@@ -54,7 +87,10 @@ export interface ParagraphLine {
   width: number
   /** Baseline, from the top of the paragraph. */
   baseline: number
-  /** UTF-16 offsets of the line's text (JS string indices), trailing whitespace excluded. */
+  /**
+   * UTF-16 offsets of the line's text (JS string indices), trailing whitespace
+   * excluded. Each placeholder counts as one unit, as if it were U+FFFC.
+   */
   startIndex: number
   endIndex: number
   hardBreak: boolean
@@ -74,6 +110,8 @@ export interface ParagraphLayout {
   ascent: number
   descent: number
   lines: ParagraphLine[]
+  /** One per placeholder, in order; null for one cut off by `maxLines` or an ellipsis. */
+  placeholders: Array<ParagraphPlaceholderBox | null>
 }
 
 /**
@@ -83,7 +121,7 @@ export interface ParagraphLayout {
  * lands in the same place at any raster scale.
  */
 export class Paragraph {
-  constructor(text: string, style: ParagraphStyle)
+  constructor(text: ParagraphContent, style: ParagraphStyle)
   /** Lays the paragraph out in `width` px (non-finite or ≤ 0 for unbounded) and reports its lines. */
   layout(width: number): ParagraphLayout
 }

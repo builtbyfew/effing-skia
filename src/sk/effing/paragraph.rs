@@ -10,7 +10,7 @@ use crate::font::FontStyle;
 mod ffi {
   use std::ffi::c_char;
 
-  use super::{Painted, ParagraphLine, ParagraphMetrics};
+  use super::{Painted, ParagraphLine, ParagraphMetrics, PlaceholderBox};
   use crate::sk::ffi::{skiac_canvas, skiac_font_collection, skiac_paint};
 
   #[repr(C)]
@@ -33,6 +33,15 @@ mod ffi {
     pub ellipsis_len: usize,
   }
 
+  #[repr(C)]
+  pub struct effing_paragraph_placeholder {
+    pub offset: usize,
+    pub width: f32,
+    pub height: f32,
+    pub align: i32,
+    pub baseline_offset: f32,
+  }
+
   unsafe extern "C" {
     pub fn effing_paragraph_create(
       text: *const c_char,
@@ -40,12 +49,19 @@ mod ffi {
       collection: *mut skiac_font_collection,
       font_family: *const c_char,
       style: *const effing_paragraph_style,
+      placeholders: *const effing_paragraph_placeholder,
+      placeholder_count: usize,
     ) -> *mut effing_paragraph;
     pub fn effing_paragraph_layout(p: *mut effing_paragraph, width: f32);
     pub fn effing_paragraph_get_metrics(p: *mut effing_paragraph, metrics: *mut ParagraphMetrics);
     pub fn effing_paragraph_get_lines(
       p: *mut effing_paragraph,
       lines: *mut ParagraphLine,
+      count: i32,
+    );
+    pub fn effing_paragraph_get_placeholders(
+      p: *mut effing_paragraph,
+      boxes: *mut PlaceholderBox,
       count: i32,
     );
     pub fn effing_paragraph_paint(
@@ -78,6 +94,50 @@ pub struct ParagraphOptions<'a> {
   pub max_lines: u32,
   /// Appended where text is truncated.
   pub ellipsis: Option<&'a str>,
+}
+
+/// How a placeholder sits on its line: CSS `vertical-align` keywords.
+/// Mirrors `effing_placeholder_align`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceholderAlign {
+  /// Its own baseline, `baseline_offset` below its top, on the line's.
+  Baseline = 0,
+  /// Its middle half the primary font's x-height above the baseline.
+  Middle = 1,
+  /// Its top on the line box's top.
+  Top = 2,
+  /// Its bottom on the line box's bottom.
+  Bottom = 3,
+  /// Its top on the primary font's ascent.
+  TextTop = 4,
+  /// Its bottom on the primary font's descent.
+  TextBottom = 5,
+}
+
+/// An inline box in a paragraph's text: it takes `width` on its line and
+/// draws nothing.
+#[derive(Debug, Clone, Copy)]
+pub struct Placeholder {
+  /// Where it sits in the text, in UTF-8 bytes.
+  pub offset: usize,
+  pub width: f32,
+  pub height: f32,
+  pub align: PlaceholderAlign,
+  /// For `Baseline`: its baseline's distance from its top.
+  pub baseline_offset: f32,
+}
+
+/// Mirrors `effing_paragraph_placeholder_box`.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PlaceholderBox {
+  /// False when `max_lines` or an ellipsis cut the placeholder off.
+  pub visible: bool,
+  pub x: f32,
+  pub y: f32,
+  pub width: f32,
+  pub height: f32,
+  pub line: i32,
 }
 
 /// Mirrors `effing_paragraph_metrics`.
@@ -118,12 +178,17 @@ pub struct ParagraphLine {
 pub struct Paragraph {
   ptr: *mut ffi::effing_paragraph,
   laid_out: bool,
+  placeholder_count: usize,
 }
 
 impl Paragraph {
   /// `font_family` is a comma-separated list of family names, unquoted.
+  /// `placeholders` are in order of their offsets, which must be char
+  /// boundaries of `text`; each takes one UTF-16 unit (U+FFFC) in line
+  /// indices.
   pub fn new(
     text: &str,
+    placeholders: &[Placeholder],
     font_family: &str,
     collection: &FontCollection,
     options: &ParagraphOptions,
@@ -144,6 +209,16 @@ impl Paragraph {
       ellipsis: ellipsis.as_ptr().cast(),
       ellipsis_len: ellipsis.len(),
     };
+    let placeholders: Vec<_> = placeholders
+      .iter()
+      .map(|p| ffi::effing_paragraph_placeholder {
+        offset: p.offset.min(text.len()),
+        width: p.width,
+        height: p.height,
+        align: p.align as i32,
+        baseline_offset: p.baseline_offset,
+      })
+      .collect();
     let ptr = unsafe {
       ffi::effing_paragraph_create(
         text.as_ptr().cast(),
@@ -151,11 +226,14 @@ impl Paragraph {
         collection.0,
         c_family.as_ptr(),
         &style,
+        placeholders.as_ptr(),
+        placeholders.len(),
       )
     };
     Ok(Paragraph {
       ptr,
       laid_out: false,
+      placeholder_count: placeholders.len(),
     })
   }
 
@@ -182,6 +260,15 @@ impl Paragraph {
     let mut lines = vec![ParagraphLine::default(); count];
     unsafe { ffi::effing_paragraph_get_lines(self.ptr, lines.as_mut_ptr(), count as i32) };
     lines
+  }
+
+  /// Where layout put each placeholder, in the order they were given.
+  pub fn placeholders(&self) -> Vec<PlaceholderBox> {
+    let mut boxes = vec![PlaceholderBox::default(); self.placeholder_count];
+    unsafe {
+      ffi::effing_paragraph_get_placeholders(self.ptr, boxes.as_mut_ptr(), boxes.len() as i32)
+    };
+    boxes
   }
 }
 
