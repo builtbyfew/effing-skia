@@ -208,7 +208,7 @@ the CI matrix.
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
-### 1.0.10-effing.1 (unreleased)
+### 1.0.10-effing.1
 
 - Based on upstream 1.0.10: Skia chrome/m156, a use-after-free fix for
   `restore()` reviving a garbage-collected `CanvasPattern`, and a 32 MiB cap

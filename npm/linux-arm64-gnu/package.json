@@ -1,6 +1,6 @@
 {
   "name": "@effing/skia-linux-arm64-gnu",
-  "version": "1.0.9-effing.1",
+  "version": "1.0.10-effing.1",
   "cpu": [
     "arm64"
   ],

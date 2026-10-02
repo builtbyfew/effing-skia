@@ -1,3 +1,16 @@
+## [1.0.10-effing.1](https://github.com/builtbyfew/effing-skia/compare/v1.0.10...v1.0.10-effing.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* charge geometricPrecision fillText by the outlines it records ([1f92e50](https://github.com/builtbyfew/effing-skia/commit/1f92e5055f0773e401b53401d35728788d1627e0))
+* charge paragraph draws by what they record ([9d45556](https://github.com/builtbyfew/effing-skia/commit/9d45556ca95359c5f59f968c1b8a3c876528794d))
+* keep a group's compositing when its save reaches the recording cap ([0afce69](https://github.com/builtbyfew/effing-skia/commit/0afce69a272a8e5889c8487000f7c28861fbdb3f))
+
+
+### Features
+
+* merge upstream napi-rs/canvas 1.0.10 (Skia chrome/m156) ([#5](https://github.com/builtbyfew/effing-skia/issues/5)) ([e7d47fa](https://github.com/builtbyfew/effing-skia/commit/e7d47faded55bb233c4b3630374cfa93c9e464c3))
 ## [1.0.10](https://github.com/Brooooooklyn/canvas/compare/v1.0.9...v1.0.10) (2026-10-01)
 
 
