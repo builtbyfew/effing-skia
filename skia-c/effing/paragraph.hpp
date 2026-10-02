@@ -35,6 +35,12 @@ struct effing_paragraph_style {
   // the line's width and alignment instead of hanging (white-space: pre and
   // pre-wrap). Spaces at a soft wrap still hang.
   bool keep_trailing_whitespace;
+  // An effing::WordBreak (word_break.hpp): where lines may break between
+  // letters (CSS word-break).
+  int word_break;
+  // An effing::OverflowWrap (word_break.hpp): what happens to a word wider
+  // than the line (CSS overflow-wrap).
+  int overflow_wrap;
 };
 
 // How a placeholder sits on its line: CSS vertical-align keywords.

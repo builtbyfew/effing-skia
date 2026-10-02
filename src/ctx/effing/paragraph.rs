@@ -16,7 +16,8 @@ use crate::error::SkError;
 use crate::font::FontStyle;
 use crate::global_fonts::get_font;
 use crate::sk::effing::paragraph::{
-  Paragraph as SkParagraph, ParagraphOptions, Placeholder, PlaceholderAlign,
+  OverflowWrap, Paragraph as SkParagraph, ParagraphOptions, Placeholder, PlaceholderAlign,
+  WordBreak,
 };
 use crate::sk::effing::text::Painted;
 use crate::sk::{Paint, TextAlign, TextDirection};
@@ -49,6 +50,10 @@ pub struct ParagraphStyle {
   /// line's width and alignment instead of hanging them, as CSS
   /// `white-space: pre` and `pre-wrap` do. Spaces at a soft wrap still hang.
   pub keep_trailing_whitespace: Option<bool>,
+  /// CSS `word-break`: `normal` (the default), `break-all` or `keep-all`.
+  pub word_break: Option<String>,
+  /// CSS `overflow-wrap`: `normal` (the default) or `break-word`.
+  pub overflow_wrap: Option<String>,
 }
 
 /// An inline box in a paragraph's text, e.g. for an image: it takes `width`
@@ -370,6 +375,14 @@ impl Paragraph {
       max_lines,
       ellipsis: style.ellipsis.as_deref(),
       keep_trailing_whitespace: style.keep_trailing_whitespace.unwrap_or(false),
+      word_break: style
+        .word_break
+        .as_deref()
+        .map_or(Ok(WordBreak::default()), WordBreak::from_str)?,
+      overflow_wrap: style
+        .overflow_wrap
+        .as_deref()
+        .map_or(Ok(OverflowWrap::default()), OverflowWrap::from_str)?,
     };
     // Font lookup goes through the shared collection, which font registration
     // mutates under the same lock.
@@ -566,6 +579,8 @@ mod tests {
       max_lines: None,
       ellipsis: None,
       keep_trailing_whitespace: None,
+      word_break: None,
+      overflow_wrap: None,
     }
   }
 
@@ -606,6 +621,37 @@ mod tests {
     assert!(pending1 - pending0 > BYTES_PER_RECORDED_OP + 5 * 16);
     assert_eq!(pending2 - pending1, pending1 - pending0);
     assert_eq!(recorder(&ctx).retained_raster_count(), 0);
+  }
+
+  // A word wider than the line splits the text into pieces, each its own
+  // SkParagraph: painting them charges every piece's outlines, as painting
+  // the text unsplit does.
+  #[test]
+  fn draw_paragraph_charges_the_pieces_of_a_split_paragraph() {
+    let text = "ab Overlongwordhere cd";
+    let split = laid_out_paragraph(text);
+    assert_eq!(split.inner.lines().len(), 3);
+    let mut whole = laid_out_paragraph(text);
+    whole.layout(1000.0).unwrap();
+    assert_eq!(whole.inner.lines().len(), 1);
+    let charge = |paragraph: &Paragraph| {
+      let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
+      let pending0 = recorder(&ctx).pending_bytes();
+      fill(&mut ctx, paragraph);
+      let pending1 = recorder(&ctx).pending_bytes();
+      fill(&mut ctx, paragraph);
+      let pending2 = recorder(&ctx).pending_bytes();
+      assert_eq!(pending2 - pending1, pending1 - pending0);
+      assert_eq!(recorder(&ctx).retained_raster_count(), 0);
+      pending1 - pending0
+    };
+    let split_charge = charge(&split);
+    // Twenty glyph outlines, at well over a point per glyph.
+    assert!(split_charge > BYTES_PER_RECORDED_OP + 20 * 16);
+    // The same outlines, in three pieces rather than one.
+    let whole_charge = charge(&whole);
+    assert!(split_charge >= whole_charge);
+    assert!(split_charge <= whole_charge + 2 * BYTES_PER_RECORDED_OP);
   }
 
   // Color glyphs have no outline and are drawn as text blobs, which keep
