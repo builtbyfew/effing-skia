@@ -1,3 +1,14 @@
+## [1.0.10-effing.2](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.1...v1.0.10-effing.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* keep a compositing group whole past the 32 MiB recording cap ([#6](https://github.com/builtbyfew/effing-skia/issues/6)) ([3cda6da](https://github.com/builtbyfew/effing-skia/commit/3cda6da3afb3cc9a66a8d86c24d47588398781ea))
+
+
+### Performance Improvements
+
+* size group layers to their content ([#6](https://github.com/builtbyfew/effing-skia/issues/6)) ([3cda6da](https://github.com/builtbyfew/effing-skia/commit/3cda6da3afb3cc9a66a8d86c24d47588398781ea))
 ## [1.0.10-effing.1](https://github.com/builtbyfew/effing-skia/compare/v1.0.10...v1.0.10-effing.1) (2026-10-02)
 
 
