@@ -146,8 +146,9 @@ filters included). A group's filter still takes in what is drawn past the
 clip or the canvas edge, as an up-front buffer would. The buffer covers the
 canvas instead, as Skia sizes it, where it has to: with a `backdropFilter`,
 which paints the backdrop across the whole buffer; with a `blendMode` that
-changes what is behind the group where it draws nothing (`copy`,
-`source-in`, `source-out`, `destination-in`, `destination-atop`); with a
+changes what is behind the group where it draws nothing (`clear`, `copy`,
+`source-in`, `source-out`, `destination-in`, `destination-atop`,
+`modulate`); with a
 filter whose output bounds Skia can't compute, or one under a rotation or
 skew, where the filtered buffer is resampled and the result would depend on
 where it starts; and on a PDF canvas.
@@ -161,12 +162,14 @@ kind of group an SVG canvas can hold, since Skia's SVG device has no layers;
 it like `restore()`. `endGroup` throws if the innermost save was not made by
 `beginGroup`; a plain `restore()` closes a group as well. Reading the
 canvas's pixels while a group is open (`getImageData`, encoding, drawing the
-canvas into another) composites what the group holds so far; the rest of
-the group is composited on its own when it ends, with the same options but
-no backdrop filter, which the content behind it already has. The deferred
-recording's 32 MiB cap (from upstream 1.0.10) waits while a group that
-composites is open, so a group holding a lot, such as a large photo, is not
-split; the recording is flushed once the group ends.
+canvas into another) or writing them (`putImageData`) composites what the
+group holds so far; the rest of the group is composited on its own when it
+ends, with the same options but no backdrop filter, which the content behind
+it already has. The deferred recording's 32 MiB cap (from upstream 1.0.10)
+is suspended while a group that composites is open, so a group holding a
+lot, such as a large photo, is not split; the recording is flushed once the
+group ends. Until then everything the group draws stays in memory, so a
+group left open across a long run of large images holds all of them.
 
 This is deliberately not the proposed Canvas 2D `beginLayer`/`endLayer`: that
 API takes the layer's alpha and blend mode from `globalAlpha` and

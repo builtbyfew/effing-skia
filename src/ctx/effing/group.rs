@@ -194,8 +194,6 @@ pub fn end_group(ctx: &mut CanvasRenderingContext2D) -> Result<()> {
     ));
   }
   ctx.context.restore();
-  // The recording limit waits for open groups; this one may have held it.
-  ctx.context.flush_if_recording_limit_exceeded();
   Ok(())
 }
 
