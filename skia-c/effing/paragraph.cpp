@@ -128,11 +128,10 @@ bool placeholder_at(const effing_paragraph_placeholder* placeholders,
                     size_t count,
                     size_t offset) {
   const auto* end = placeholders + count;
-  const auto* it = std::lower_bound(
-      placeholders, end, offset,
-      [](const effing_paragraph_placeholder& placeholder, size_t at) {
-        return placeholder.offset < at;
-      });
+  const auto* it =
+      std::lower_bound(placeholders, end, offset,
+                       [](const effing_paragraph_placeholder& placeholder,
+                          size_t at) { return placeholder.offset < at; });
   return it != end && it->offset == offset;
 }
 
@@ -398,10 +397,10 @@ effing_paragraph* effing_paragraph_create(
       s->max_lines > 0 ? static_cast<size_t>(s->max_lines) : SIZE_MAX;
   size_t start = 0;
   for (size_t i = 0; i <= text_len;) {
-    const size_t brk = i < text_len ? hard_break_at(text, text_len, i,
-                                                    placeholders,
-                                                    placeholder_count)
-                                    : 0;
+    const size_t brk =
+        i < text_len
+            ? hard_break_at(text, text_len, i, placeholders, placeholder_count)
+            : 0;
     if (brk == 0 && i < text_len) {
       i++;
       continue;
@@ -453,8 +452,8 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
       line.fEndIncludingNewline += offset;
       // Skia counts a hard break that ends the text in the line before it;
       // the line's text stops at its first hard break.
-      const auto brk = std::lower_bound(
-          p->hard_breaks.begin(), p->hard_breaks.end(), line.fStartIndex);
+      const auto brk = std::lower_bound(p->hard_breaks.begin(),
+                                        p->hard_breaks.end(), line.fStartIndex);
       if (brk != p->hard_breaks.end()) {
         line.fEndIndex = std::max(line.fEndExcludingWhitespaces,
                                   std::min(line.fEndIndex, *brk));
@@ -629,8 +628,7 @@ void effing_paragraph_get_lines(effing_paragraph* p,
 void effing_paragraph_get_placeholders(effing_paragraph* p,
                                        effing_paragraph_placeholder_box* out,
                                        int count) {
-  const int n =
-      std::min(count, static_cast<int>(p->placeholder_boxes.size()));
+  const int n = std::min(count, static_cast<int>(p->placeholder_boxes.size()));
   std::copy_n(p->placeholder_boxes.begin(), std::max(n, 0), out);
 }
 
