@@ -31,6 +31,7 @@ mod ffi {
     pub max_lines: i32,
     pub ellipsis: *const c_char,
     pub ellipsis_len: usize,
+    pub keep_trailing_whitespace: bool,
   }
 
   #[repr(C)]
@@ -94,6 +95,9 @@ pub struct ParagraphOptions<'a> {
   pub max_lines: u32,
   /// Appended where text is truncated.
   pub ellipsis: Option<&'a str>,
+  /// Count whitespace before a hard break or the end of the text in its
+  /// line's width and alignment instead of hanging it.
+  pub keep_trailing_whitespace: bool,
 }
 
 /// How a placeholder sits on its line: CSS `vertical-align` keywords.
@@ -162,11 +166,13 @@ pub struct ParagraphMetrics {
 pub struct ParagraphLine {
   /// Left edge of the line, alignment included.
   pub left: f32,
-  /// Advance width without trailing whitespace, letter spacing included.
+  /// Advance width without trailing whitespace unless it is kept, letter
+  /// spacing included.
   pub width: f32,
   /// Baseline, from the top of the paragraph.
   pub baseline: f32,
-  /// UTF-16 offsets of the line's text (JS string indices), trailing whitespace excluded.
+  /// UTF-16 offsets of the line's text (JS string indices), trailing whitespace
+  /// excluded unless it is kept.
   pub start_index: usize,
   pub end_index: usize,
   pub hard_break: bool,
@@ -208,6 +214,7 @@ impl Paragraph {
       max_lines: options.max_lines as i32,
       ellipsis: ellipsis.as_ptr().cast(),
       ellipsis_len: ellipsis.len(),
+      keep_trailing_whitespace: options.keep_trailing_whitespace,
     };
     let placeholders: Vec<_> = placeholders
       .iter()

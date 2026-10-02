@@ -30,6 +30,10 @@ struct effing_paragraph_style {
   // empty for none. Not NUL-terminated.
   const char* ellipsis;
   size_t ellipsis_len;
+  // Spaces and tabs before a hard break or the end of the text count toward
+  // the line's width and alignment instead of hanging (white-space: pre and
+  // pre-wrap). Spaces at a soft wrap still hang.
+  bool keep_trailing_whitespace;
 };
 
 // How a placeholder sits on its line: CSS vertical-align keywords.
@@ -88,12 +92,13 @@ struct effing_paragraph_metrics {
 struct effing_paragraph_line {
   // Left edge of the line, alignment included.
   float left;
-  // Advance width without trailing whitespace, letter spacing included.
+  // Advance width without trailing whitespace, unless it is kept, letter
+  // spacing included.
   float width;
   // Baseline, from the top of the paragraph.
   float baseline;
   // UTF-16 offsets of the line's text (JS string indices), trailing whitespace
-  // excluded.
+  // excluded unless it is kept.
   size_t start_index;
   size_t end_index;
   bool hard_break;

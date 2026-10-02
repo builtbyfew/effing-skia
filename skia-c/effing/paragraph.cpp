@@ -31,6 +31,7 @@ struct effing_paragraph {
   bool rtl = false;
   bool nowrap = false;
   bool ellipsized = false;
+  bool keep_trailing_whitespace = false;
   float line_height = 0;
   float ascent = 0;
   float descent = 0;
@@ -46,8 +47,12 @@ struct effing_paragraph {
   std::vector<Placeholder> placeholders;
   // Filled by layout, per line, indices relative to the whole text.
   std::vector<LineMetrics> lines;
+  // Trailing whitespace included where it is kept.
   std::vector<float> line_widths;
-  // Where effing puts each line's left edge and baseline.
+  // The width of each line's kept trailing whitespace, which in RTL lies
+  // left of its glyphs.
+  std::vector<float> kept_whitespace;
+  // Where effing puts each line's glyphs: their left edge and baseline.
   std::vector<SkPoint> line_origins;
   // The index in `lines` of each paragraph's first line.
   std::vector<size_t> first_lines;
@@ -209,6 +214,7 @@ effing_paragraph* effing_paragraph_create(
   out->align = resolve_align(static_cast<TextAlign>(s->align), direction);
   out->rtl = direction == TextDirection::kRtl;
   out->nowrap = s->nowrap;
+  out->keep_trailing_whitespace = s->keep_trailing_whitespace;
   // Only max_lines and nowrap truncate; Skia would otherwise stop at the
   // first line.
   out->ellipsized = s->ellipsis_len > 0 && (s->max_lines > 0 || s->nowrap);
@@ -350,6 +356,7 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
 
   p->lines.clear();
   p->line_widths.clear();
+  p->kept_whitespace.clear();
   p->first_lines.clear();
   for (size_t k = 0; k < p->paragraphs.size(); k++) {
     Paragraph* paragraph = p->paragraphs[k].get();
@@ -365,6 +372,18 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
       lines.back().fHardBreak = true;
     }
     for (LineMetrics& line : lines) {
+      // Whitespace before a hard break or the end of the text is kept as
+      // white-space: pre and pre-wrap keep it; Skia lets it hang. Spaces
+      // draw nothing, so their width is all there is to add.
+      float kept = 0;
+      if (p->keep_trailing_whitespace && line.fHardBreak &&
+          line.fEndIndex > line.fEndExcludingWhitespaces) {
+        for (const auto& box : paragraph->getRectsForRange(
+                 line.fEndExcludingWhitespaces, line.fEndIndex,
+                 RectHeightStyle::kTight, RectWidthStyle::kTight)) {
+          kept += box.rect.width();
+        }
+      }
       const size_t offset = p->offsets[k];
       line.fStartIndex += offset;
       line.fEndIndex += offset;
@@ -372,7 +391,8 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
       line.fEndIncludingNewline += offset;
       line.fLineNumber = p->lines.size();
       p->lines.push_back(line);
-      p->line_widths.push_back(static_cast<float>(line.fWidth));
+      p->line_widths.push_back(static_cast<float>(line.fWidth) + kept);
+      p->kept_whitespace.push_back(kept);
     }
     if (p->ellipsized) {
       // A line's metrics leave out an ellipsis Skia appended to it; the
@@ -385,7 +405,8 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
         const float right =
             run->advanceX - static_cast<float>(lines[line].fLeft);
         float& line_width = p->line_widths[first + line];
-        line_width = std::max(line_width, right);
+        line_width =
+            std::max(line_width, right + p->kept_whitespace[first + line]);
       });
     }
   }
@@ -416,6 +437,10 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
       // not used: it includes half the letter spacing, which the painter
       // cancels for every other alignment.
       left = p->rtl ? slack : 0;
+    }
+    // Kept whitespace ends the line, which in RTL is its left end.
+    if (p->rtl) {
+      left += p->kept_whitespace[i];
     }
     p->line_origins[i] = {left, i * p->line_height + baseline_in_box};
   }
@@ -468,6 +493,13 @@ void effing_paragraph_get_metrics(effing_paragraph* p,
   m->min_intrinsic_width = 0;
   m->max_intrinsic_width = 0;
   m->did_exceed_max_lines = p->dropped_lines;
+  // Skia's longest line leaves trailing whitespace out, even where it is
+  // kept.
+  if (p->keep_trailing_whitespace) {
+    for (const float width : p->line_widths) {
+      m->longest_line = std::max(m->longest_line, width);
+    }
+  }
   for (const auto& paragraph : p->paragraphs) {
     m->longest_line = std::max(m->longest_line, paragraph->getLongestLine());
     m->min_intrinsic_width =
@@ -496,11 +528,12 @@ void effing_paragraph_get_lines(effing_paragraph* p,
   const int n = std::min(count, static_cast<int>(p->lines.size()));
   for (int i = 0; i < n; i++) {
     const LineMetrics& line = p->lines[i];
-    out[i].left = p->line_origins[i].fX;
+    const bool kept = p->keep_trailing_whitespace && line.fHardBreak;
+    out[i].left = p->line_origins[i].fX - (p->rtl ? p->kept_whitespace[i] : 0);
     out[i].width = p->line_widths[i];
     out[i].baseline = p->line_origins[i].fY;
     out[i].start_index = line.fStartIndex;
-    out[i].end_index = line.fEndExcludingWhitespaces;
+    out[i].end_index = kept ? line.fEndIndex : line.fEndExcludingWhitespaces;
     out[i].hard_break = line.fHardBreak;
   }
 }

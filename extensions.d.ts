@@ -45,6 +45,12 @@ export interface ParagraphStyle {
   maxLines?: number
   /** Appended where text is truncated by `maxLines` or `noWrap`, e.g. `…`. */
   ellipsis?: string
+  /**
+   * Count spaces and tabs before a hard break or the end of the text in the
+   * line's `width` and alignment instead of hanging them, as CSS
+   * `white-space: pre` and `pre-wrap` do. Spaces at a soft wrap still hang.
+   */
+  keepTrailingWhitespace?: boolean
 }
 
 /**
@@ -83,13 +89,14 @@ export interface ParagraphPlaceholderBox {
 export interface ParagraphLine {
   /** Left edge of the line, alignment included. */
   left: number
-  /** Advance width without trailing whitespace, letter spacing included. */
+  /** Advance width without trailing whitespace (unless `keepTrailingWhitespace` keeps it), letter spacing included. */
   width: number
   /** Baseline, from the top of the paragraph. */
   baseline: number
   /**
    * UTF-16 offsets of the line's text (JS string indices), trailing whitespace
-   * excluded. Each placeholder counts as one unit, as if it were U+FFFC.
+   * excluded unless `keepTrailingWhitespace` keeps it. Each placeholder counts
+   * as one unit, as if it were U+FFFC.
    */
   startIndex: number
   endIndex: number

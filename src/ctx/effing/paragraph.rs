@@ -43,6 +43,10 @@ pub struct ParagraphStyle {
   pub max_lines: Option<u32>,
   /// Appended where text is truncated by `maxLines` or `noWrap`, e.g. `…`.
   pub ellipsis: Option<String>,
+  /// Count spaces and tabs before a hard break or the end of the text in the
+  /// line's width and alignment instead of hanging them, as CSS
+  /// `white-space: pre` and `pre-wrap` do. Spaces at a soft wrap still hang.
+  pub keep_trailing_whitespace: Option<bool>,
 }
 
 /// An inline box in a paragraph's text, e.g. for an image: it takes `width`
@@ -75,11 +79,13 @@ pub struct ParagraphPlaceholderBox {
 pub struct ParagraphLine {
   /// Left edge of the line, alignment included.
   pub left: f64,
-  /// Advance width without trailing whitespace, letter spacing included.
+  /// Advance width without trailing whitespace unless it is kept, letter
+  /// spacing included.
   pub width: f64,
   /// Baseline, from the top of the paragraph.
   pub baseline: f64,
-  /// UTF-16 offsets of the line's text (JS string indices), trailing whitespace excluded.
+  /// UTF-16 offsets of the line's text (JS string indices), trailing whitespace
+  /// excluded unless it is kept.
   pub start_index: u32,
   pub end_index: u32,
   pub hard_break: bool,
@@ -210,6 +216,7 @@ impl Paragraph {
       nowrap: style.no_wrap.unwrap_or(false),
       max_lines: style.max_lines.unwrap_or(0),
       ellipsis: style.ellipsis.as_deref(),
+      keep_trailing_whitespace: style.keep_trailing_whitespace.unwrap_or(false),
     };
     // Font lookup goes through the shared collection, which font registration
     // mutates under the same lock.
@@ -405,6 +412,7 @@ mod tests {
       no_wrap: None,
       max_lines: None,
       ellipsis: None,
+      keep_trailing_whitespace: None,
     }
   }
 

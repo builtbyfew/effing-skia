@@ -100,15 +100,27 @@ top:
   line to the width instead. `maxLines` truncates with the `ellipsis` too.
   Without either, the `ellipsis` does nothing, as `text-overflow` doesn't on
   wrapped text.
+- Whitespace at the end of a line hangs: it is left out of the line's width
+  and alignment, as CSS does for `white-space: normal`. With
+  `keepTrailingWhitespace`, spaces and tabs before a hard break or the end of
+  the text count instead, as `white-space: pre` and `pre-wrap` keep them;
+  spaces at a soft wrap still hang. The line then includes them in its
+  `width` and `endIndex` and in `longestLine`, and is aligned and, when it
+  overflows, start-aligned with them; in RTL they lie left of the text. This
+  matches Chrome, which treats `pre` and `pre-wrap` alike here
+  (`__test__/effing-paragraph-whitespace.spec.ts`), except that a tab is one
+  space wide (SkParagraph replaces it), where Chrome advances to the next tab
+  stop, and that whether an `ellipsis` truncates a line ignores its kept
+  whitespace.
 - Glyphs are unhinted and painted unsnapped, exactly as `fillText` does under
   `geometricPrecision`; the two agree pixel for pixel.
 
 `layout(width)` must be called before painting, which throws otherwise. It
 returns the paragraph's
 metrics and one entry per line: `left` and `baseline` from the paragraph's
-top-left corner, the advance `width` without trailing whitespace, the range
-of the line's text in UTF-16 units (JS string indices), and whether it ends
-at a hard break.
+top-left corner, the advance `width` without trailing whitespace (unless
+it is kept), the range of the line's text in UTF-16 units (JS string
+indices), and whether it ends at a hard break.
 
 `fillParagraph`/`strokeParagraph` use the context's current fill or stroke
 style, line settings, shadow, filter, clip and transform, like `fillText`.
@@ -270,6 +282,9 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   (`{ width, height, verticalAlign?, baselineOffset? }`) as its text, and
   `layout()` returns where each placeholder went in `placeholders`. A plain
   string works as before; `layout()` then returns `placeholders: []`.
+- `ParagraphStyle.keepTrailingWhitespace` counts spaces and tabs before a
+  hard break or the end of the text in the line's width and alignment, for
+  `white-space: pre` and `pre-wrap`.
 
 ### 1.0.10-effing.2
 
