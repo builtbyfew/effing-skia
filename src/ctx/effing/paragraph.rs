@@ -31,9 +31,9 @@ pub struct ParagraphStyle {
   /// `normal`, `italic` or `oblique`.
   pub font_style: Option<String>,
   pub letter_spacing: Option<f64>,
-  /// Line box height in px, where 0 collapses the line boxes; omitted for
-  /// `normal` (hhea ascent + descent).
-  pub line_height: Option<f64>,
+  /// Line box height in px, where 0 collapses the line boxes; omitted or null
+  /// for `normal` (hhea ascent + descent).
+  pub line_height: Option<Either<f64, Null>>,
   /// `left`, `right`, `center`, `justify`, or `start` / `end`, which follow
   /// `direction`.
   pub text_align: Option<String>,
@@ -129,46 +129,154 @@ impl FromStr for PlaceholderAlign {
   }
 }
 
+/// A finite px value that stays finite as the f32 the bridge takes.
+fn finite_f32(value: f64) -> Option<f32> {
+  let narrowed = value as f32;
+  narrowed.is_finite().then_some(narrowed)
+}
+
+fn invalid(message: String) -> Error {
+  Error::new(Status::InvalidArg, message)
+}
+
+/// A JS type's name as `typeof` would put it, near enough.
+fn type_name(value_type: ValueType) -> String {
+  value_type.to_string().to_lowercase()
+}
+
+/// Checks `spec` and places it at `offset`, a UTF-8 offset in the text.
+fn placeholder_at(offset: usize, spec: &ParagraphPlaceholder) -> Result<Placeholder> {
+  let size = |name: &str, value: f64| match finite_f32(value) {
+    Some(size) if size >= 0.0 => Ok(size),
+    _ => Err(invalid(format!(
+      "A placeholder's {name} must be a finite number ≥ 0, not {value}"
+    ))),
+  };
+  let width = size("width", spec.width)?;
+  let height = size("height", spec.height)?;
+  let baseline_offset = match spec.baseline_offset {
+    None => height,
+    Some(value) => finite_f32(value).ok_or_else(|| {
+      invalid(format!(
+        "A placeholder's baselineOffset must be a finite number, not {value}"
+      ))
+    })?,
+  };
+  Ok(Placeholder {
+    offset,
+    width,
+    height,
+    align: spec
+      .vertical_align
+      .as_deref()
+      .map_or(Ok(PlaceholderAlign::Baseline), PlaceholderAlign::from_str)?,
+    baseline_offset,
+  })
+}
+
+/// A part of a paragraph's content: a run of text or a placeholder.
+pub enum ContentPart {
+  Text(String),
+  Placeholder(ParagraphPlaceholder),
+}
+
 /// A paragraph's content as its text and the placeholders in it, each at the
 /// UTF-8 offset where it sits.
-fn split_content(
-  content: Either<String, Vec<Either<String, ParagraphPlaceholder>>>,
-) -> Result<(String, Vec<Placeholder>)> {
-  let parts = match content {
-    Either::A(text) => return Ok((text, Vec::new())),
-    Either::B(parts) => parts,
-  };
+fn split_content(parts: Vec<ContentPart>) -> Result<(String, Vec<Placeholder>)> {
   let mut text = String::new();
   let mut placeholders = Vec::new();
-  for part in parts {
+  for (i, part) in parts.into_iter().enumerate() {
     match part {
-      Either::A(run) => text.push_str(&run),
-      Either::B(placeholder) => {
-        let width = placeholder.width;
-        let height = placeholder.height;
-        let baseline_offset = placeholder.baseline_offset.unwrap_or(height);
-        if !(width >= 0.0 && height >= 0.0 && width.is_finite() && height.is_finite())
-          || !baseline_offset.is_finite()
-        {
-          return Err(Error::new(
-            Status::InvalidArg,
-            "A placeholder needs a finite, non-negative width and height, and a finite baselineOffset",
-          ));
-        }
-        placeholders.push(Placeholder {
-          offset: text.len(),
-          width: width as f32,
-          height: height as f32,
-          align: placeholder
-            .vertical_align
-            .as_deref()
-            .map_or(Ok(PlaceholderAlign::Baseline), PlaceholderAlign::from_str)?,
-          baseline_offset: baseline_offset as f32,
-        });
-      }
+      ContentPart::Text(run) => text.push_str(&run),
+      ContentPart::Placeholder(spec) => placeholders.push(
+        placeholder_at(text.len(), &spec)
+          .map_err(|err| invalid(format!("Paragraph text item {i}: {}", err.reason)))?,
+      ),
     }
   }
   Ok((text, placeholders))
+}
+
+/// A property of a placeholder object, where `undefined` and `null` are
+/// `None`.
+fn optional_property<T: FromNapiValue>(
+  object: &Object,
+  name: &str,
+  expected: (ValueType, &str),
+) -> Result<Option<T>> {
+  let value: Unknown = object.get_named_property(name)?;
+  match value.get_type()? {
+    ValueType::Undefined | ValueType::Null => Ok(None),
+    found if found == expected.0 => Ok(Some(unsafe { value.cast::<T>() }?)),
+    found => Err(invalid(format!(
+      "A placeholder's {name} must be {}, not {}",
+      expected.1,
+      type_name(found)
+    ))),
+  }
+}
+
+/// Reads a placeholder object, with a message naming whatever is wrong.
+fn read_placeholder(object: &Object) -> Result<ParagraphPlaceholder> {
+  const NUMBER: (ValueType, &str) = (ValueType::Number, "a number");
+  const STRING: (ValueType, &str) = (ValueType::String, "a string");
+  let required = |name: &str| {
+    optional_property::<f64>(object, name, NUMBER)?
+      .ok_or_else(|| invalid(format!("A placeholder needs a {name}")))
+  };
+  Ok(ParagraphPlaceholder {
+    width: required("width")?,
+    height: required("height")?,
+    vertical_align: optional_property(object, "verticalAlign", STRING)?,
+    baseline_offset: optional_property(object, "baselineOffset", NUMBER)?,
+  })
+}
+
+/// Reads a paragraph's content from JS: a string, or an array of strings and
+/// placeholder objects. Read by hand rather than as an `Either`, whose error
+/// would hide which part is wrong.
+fn read_content(value: Unknown) -> Result<Vec<ContentPart>> {
+  let not_content = |found: &str| {
+    invalid(format!(
+      "A Paragraph's text must be a string or an array of strings and placeholders, not {found}"
+    ))
+  };
+  match value.get_type()? {
+    ValueType::String => return Ok(vec![ContentPart::Text(unsafe { value.cast()? })]),
+    ValueType::Object => {}
+    found => return Err(not_content(&type_name(found))),
+  }
+  let array: Object = unsafe { value.cast()? };
+  if !array.is_array()? {
+    return Err(not_content("an object"));
+  }
+  let mut parts = Vec::new();
+  for i in 0..array.get_array_length()? {
+    let item: Unknown = array.get_element(i)?;
+    let part = match item.get_type()? {
+      ValueType::String => ContentPart::Text(unsafe { item.cast()? }),
+      ValueType::Object => {
+        let object: Object = unsafe { item.cast()? };
+        if object.is_array()? {
+          return Err(invalid(format!(
+            "Paragraph text item {i} is an array; nested arrays are not allowed"
+          )));
+        }
+        ContentPart::Placeholder(
+          read_placeholder(&object)
+            .map_err(|err| invalid(format!("Paragraph text item {i}: {}", err.reason)))?,
+        )
+      }
+      found => {
+        return Err(invalid(format!(
+          "Paragraph text item {i} must be a string or a placeholder, not {}",
+          type_name(found)
+        )));
+      }
+    };
+    parts.push(part);
+  }
+  Ok(parts)
 }
 
 /// A CSS font-family list as the comma-separated, unquoted names the bridge
@@ -191,12 +299,16 @@ pub struct Paragraph {
 #[napi]
 impl Paragraph {
   /// `text` is a string, or an array of strings and placeholders.
-  #[napi(constructor)]
-  pub fn new(
-    text: Either<String, Vec<Either<String, ParagraphPlaceholder>>>,
-    style: ParagraphStyle,
-  ) -> Result<Self> {
-    let (text, placeholders) = split_content(text)?;
+  #[napi(
+    constructor,
+    ts_args_type = "text: string | Array<string | ParagraphPlaceholder>, style: ParagraphStyle"
+  )]
+  pub fn new(text: Unknown, style: ParagraphStyle) -> Result<Self> {
+    Self::with_content(read_content(text)?, style)
+  }
+
+  fn with_content(content: Vec<ContentPart>, style: ParagraphStyle) -> Result<Self> {
+    let (text, placeholders) = split_content(content)?;
     let options = ParagraphOptions {
       font_size: style.font_size as f32,
       weight: style.font_weight.unwrap_or(400),
@@ -206,13 +318,15 @@ impl Paragraph {
         .map_or(Ok(FontStyle::Normal), FontStyle::from_str)?,
       letter_spacing: style.letter_spacing.unwrap_or(0.0) as f32,
       line_height: match style.line_height {
-        Some(height) if !(height >= 0.0 && height.is_finite()) => {
-          return Err(Error::new(
-            Status::InvalidArg,
-            format!("lineHeight must be a finite number ≥ 0, not {height}"),
-          ));
-        }
-        height => height.map(|height| height as f32),
+        Some(Either::A(height)) => match finite_f32(height) {
+          Some(height) if height >= 0.0 => Some(height),
+          _ => {
+            return Err(invalid(format!(
+              "lineHeight must be a finite number ≥ 0, not {height}"
+            )));
+          }
+        },
+        Some(Either::B(Null)) | None => None,
       },
       align: style
         .text_align
@@ -430,7 +544,8 @@ mod tests {
       let fonts = get_font().unwrap();
       fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None);
     }
-    let mut paragraph = Paragraph::new(Either::A(text.to_owned()), style("Lato")).unwrap();
+    let content = vec![ContentPart::Text(text.to_owned())];
+    let mut paragraph = Paragraph::with_content(content, style("Lato")).unwrap();
     paragraph.layout(64.0).unwrap();
     paragraph
   }
@@ -471,7 +586,8 @@ mod tests {
       let fonts = get_font().unwrap();
       fonts.register_from_path("__test__/fonts/COLR-v1.ttf", Some("Colrv1".to_owned()));
     }
-    let mut paragraph = Paragraph::new(Either::A("abc".to_owned()), style("Colrv1")).unwrap();
+    let content = vec![ContentPart::Text("abc".to_owned())];
+    let mut paragraph = Paragraph::with_content(content, style("Colrv1")).unwrap();
     paragraph.layout(400.0).unwrap();
     let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
     fill(&mut ctx, &paragraph);
@@ -496,15 +612,15 @@ mod tests {
   fn draw_paragraph_of_placeholders_charges_nothing() {
     laid_out_paragraph("");
     let placeholder = || {
-      Either::B(ParagraphPlaceholder {
+      ContentPart::Placeholder(ParagraphPlaceholder {
         width: 16.0,
         height: 16.0,
         vertical_align: None,
         baseline_offset: None,
       })
     };
-    let content = Either::B(vec![placeholder(), placeholder()]);
-    let mut paragraph = Paragraph::new(content, style("Lato")).unwrap();
+    let content = vec![placeholder(), placeholder()];
+    let mut paragraph = Paragraph::with_content(content, style("Lato")).unwrap();
     let layout = paragraph.layout(64.0).unwrap();
     assert_eq!(layout.placeholders.iter().flatten().count(), 2);
     let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");

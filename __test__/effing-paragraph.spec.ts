@@ -65,9 +65,11 @@ test('lineHeight 0 collapses every line box', (t) => {
     near(t, line.baseline, (layout.ascent - layout.descent) / 2)
     near(t, line.baseline, 8, 0.5)
   }
-  // Omitted is `normal`.
-  const normal = new Paragraph(TEXT, { ...STYLE, lineHeight: undefined }).layout(200)
-  near(t, normal.lineHeight, normal.ascent + normal.descent)
+  // Omitted or null is `normal`.
+  for (const lineHeight of [undefined, null]) {
+    const normal = new Paragraph(TEXT, { ...STYLE, lineHeight }).layout(200)
+    near(t, normal.lineHeight, normal.ascent + normal.descent)
+  }
   const ctx = createCanvas(200, 40).getContext('2d')
   const paragraph = new Paragraph(TEXT, { ...STYLE, lineHeight: 0 })
   paragraph.layout(200)
@@ -79,6 +81,8 @@ test('lineHeight must be a finite number of at least 0', (t) => {
   t.throws(() => new Paragraph(TEXT, { ...STYLE, lineHeight: -1 }), { message: /lineHeight/ })
   t.throws(() => new Paragraph(TEXT, { ...STYLE, lineHeight: Number.NaN }), { message: /lineHeight/ })
   t.throws(() => new Paragraph(TEXT, { ...STYLE, lineHeight: Infinity }), { message: /lineHeight/ })
+  // Finite as a double, but not as the float the layout takes.
+  t.throws(() => new Paragraph(TEXT, { ...STYLE, lineHeight: 1e39 }), { message: /lineHeight/ })
 })
 
 test('noWrap only breaks at hard breaks', (t) => {

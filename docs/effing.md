@@ -103,6 +103,10 @@ top:
   line to the width instead. `maxLines` truncates with the `ellipsis` too.
   Without either, the `ellipsis` does nothing, as `text-overflow` doesn't on
   wrapped text.
+- A hard break that ends the text gives an empty last line, as SkParagraph
+  lays it out: `'ab\n'` has two lines. Chrome gives `white-space: pre` text
+  ending in a newline one line, so a caller that wants that drops the final
+  break, or the last line.
 - Whitespace at the end of a line hangs: it is left out of the line's width
   and alignment, as CSS does for `white-space: normal`. With
   `keepTrailingWhitespace`, spaces and tabs before a hard break or the end of
@@ -164,7 +168,14 @@ add it to an inline-block.
 
 Unlike in CSS, a placeholder never grows its line box: lines stay exactly
 `lineHeight` tall, as with fallback fonts, and a box taller than its place
-in the line overflows it.
+in the line overflows it. So a tall box aligned `bottom` or `text-bottom`
+can start above its line box, where CSS would grow the line to fit it.
+
+Malformed content throws with a message naming the item and the field: a
+missing or non-numeric `width` or `height`, a negative or non-finite size
+(including one too large for the 32-bit float the layout uses), an unknown
+`verticalAlign`, or an item that is not a string or a placeholder object.
+`null` for `verticalAlign` or `baselineOffset` means the default.
 
 ## Compositing groups: `beginGroup` / `endGroup`
 
@@ -288,8 +299,10 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 - `ParagraphStyle.keepTrailingWhitespace` counts spaces and tabs before a
   hard break or the end of the text in the line's width and alignment, for
   `white-space: pre` and `pre-wrap`.
-- `lineHeight: 0` collapses the line boxes instead of meaning `normal`; omit
-  `lineHeight` for `normal`. A negative or non-finite `lineHeight` throws
+- **Breaking:** `lineHeight: 0` collapses the line boxes instead of meaning
+  `normal`. Pass `undefined` (or omit it, or pass `null`) for `normal`;
+  `@effing/canvas`'s `lineHeight ?? 0` must become `lineHeight`. A negative
+  or non-finite `lineHeight`, or one too large for a 32-bit float, throws
   instead of meaning `normal`.
 
 ### 1.0.10-effing.2

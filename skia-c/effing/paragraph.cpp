@@ -56,6 +56,8 @@ struct effing_paragraph {
   std::vector<SkPoint> line_origins;
   // The index in `lines` of each paragraph's first line.
   std::vector<size_t> first_lines;
+  // The UTF-16 index of each hard break in the whole text.
+  std::vector<size_t> hard_breaks;
   // Where each placeholder landed.
   std::vector<effing_paragraph_placeholder_box> placeholder_boxes;
 };
@@ -152,6 +154,72 @@ size_t utf16_length(const char* text, size_t len) {
     }
   }
   return units;
+}
+
+// Adds text[start, end) to `builder` with the placeholders in it: those from
+// `*next` on whose offset is at most `end`, each where its offset puts it.
+// Advances `*next` past them, and reports each one's index in `placeholders`
+// and its UTF-16 index from `start`, where Skia's U+FFFC for it lands, to
+// `placed`.
+template <typename Placed>
+void add_content(ParagraphBuilder* builder,
+                 const char* text,
+                 size_t start,
+                 size_t end,
+                 const effing_paragraph_placeholder* placeholders,
+                 size_t placeholder_count,
+                 size_t* next,
+                 Placed placed) {
+  size_t at = start;
+  size_t index = 0;
+  for (; *next < placeholder_count && placeholders[*next].offset <= end;
+       ++*next) {
+    const auto& spec = placeholders[*next];
+    const size_t offset = std::max(spec.offset, at);
+    if (offset > at) {
+      builder->addText(text + at, offset - at);
+      index += utf16_length(text + at, offset - at);
+      at = offset;
+    }
+    // Its height and alignment only matter to Skia for line heights, which
+    // the forced strut fixes; effing places it vertically itself. Skia loses
+    // track of a placeholder with no width and no height, so it always gets
+    // one.
+    const float height = std::max(spec.height, 1.f);
+    builder->addPlaceholder(
+        PlaceholderStyle(spec.width, height, PlaceholderAlignment::kBaseline,
+                         TextBaseline::kAlphabetic, height));
+    placed(*next, index++);
+  }
+  if (end > at) {
+    builder->addText(text + at, end - at);
+  }
+}
+
+// The UTF-16 index (each placeholder taking one unit) of every hard line
+// break in the text, in order.
+std::vector<size_t> hard_break_indices(
+    const char* text,
+    size_t len,
+    const effing_paragraph_placeholder* placeholders,
+    size_t placeholder_count) {
+  std::vector<size_t> breaks;
+  size_t units = 0;
+  size_t next = 0;
+  for (size_t i = 0; i < len;) {
+    // A placeholder at a break's offset comes before it.
+    while (next < placeholder_count && placeholders[next].offset <= i) {
+      next++;
+    }
+    const size_t brk = hard_break_at(text, len, i);
+    const size_t step = brk > 0 ? brk : 1;
+    if (brk > 0) {
+      breaks.push_back(units + next);
+    }
+    units += utf16_length(text + i, step);
+    i += step;
+  }
+  return breaks;
 }
 
 // The font's x-height in px, as CSS `vertical-align: middle` uses it: from
@@ -274,6 +342,8 @@ effing_paragraph* effing_paragraph_create(
     paragraph_style.setEllipsis(SkString(s->ellipsis, s->ellipsis_len));
   }
 
+  out->hard_breaks =
+      hard_break_indices(text, text_len, placeholders, placeholder_count);
   out->placeholders.reserve(placeholder_count);
   for (size_t i = 0; i < placeholder_count; i++) {
     out->placeholders.push_back({placeholders[i]});
@@ -287,31 +357,11 @@ effing_paragraph* effing_paragraph_create(
     ParagraphBuilderImpl builder(paragraph_style, font_collection, unicode);
     out->offsets.push_back(utf16_length(text, start) + next);
     const size_t k = out->paragraphs.size();
-    size_t at = start;
-    size_t index = 0;
-    for (; next < placeholder_count && placeholders[next].offset <= end;
-         next++) {
-      const auto& spec = placeholders[next];
-      const size_t offset = std::max(spec.offset, at);
-      if (offset > at) {
-        builder.addText(text + at, offset - at);
-        index += utf16_length(text + at, offset - at);
-        at = offset;
-      }
-      // Its height and alignment only matter to Skia for line heights, which
-      // the forced strut fixes; effing places it vertically itself. Skia
-      // loses track of a placeholder with no width and no height, so it
-      // always gets one.
-      const float height = std::max(spec.height, 1.f);
-      builder.addPlaceholder(
-          PlaceholderStyle(spec.width, height, PlaceholderAlignment::kBaseline,
-                           TextBaseline::kAlphabetic, height));
-      out->placeholders[next].paragraph = k;
-      out->placeholders[next].index = index++;
-    }
-    if (end > at) {
-      builder.addText(text + at, end - at);
-    }
+    add_content(&builder, text, start, end, placeholders, placeholder_count,
+                &next, [&](size_t placeholder, size_t index) {
+                  out->placeholders[placeholder].paragraph = k;
+                  out->placeholders[placeholder].index = index;
+                });
     out->paragraphs.push_back(builder.Build());
   };
   if (!(out->nowrap && out->ellipsized)) {
@@ -372,6 +422,19 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
       lines.back().fHardBreak = true;
     }
     for (LineMetrics& line : lines) {
+      const size_t offset = p->offsets[k];
+      line.fStartIndex += offset;
+      line.fEndIndex += offset;
+      line.fEndExcludingWhitespaces += offset;
+      line.fEndIncludingNewline += offset;
+      // Skia counts a hard break that ends the text in the line before it;
+      // the line's text stops at its first hard break.
+      const auto brk = std::lower_bound(
+          p->hard_breaks.begin(), p->hard_breaks.end(), line.fStartIndex);
+      if (brk != p->hard_breaks.end()) {
+        line.fEndIndex = std::max(line.fEndExcludingWhitespaces,
+                                  std::min(line.fEndIndex, *brk));
+      }
       // Whitespace before a hard break or the end of the text is kept as
       // white-space: pre and pre-wrap keep it; Skia lets it hang. Spaces
       // draw nothing, so their width is all there is to add.
@@ -379,16 +442,12 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
       if (p->keep_trailing_whitespace && line.fHardBreak &&
           line.fEndIndex > line.fEndExcludingWhitespaces) {
         for (const auto& box : paragraph->getRectsForRange(
-                 line.fEndExcludingWhitespaces, line.fEndIndex,
-                 RectHeightStyle::kTight, RectWidthStyle::kTight)) {
+                 line.fEndExcludingWhitespaces - offset,
+                 line.fEndIndex - offset, RectHeightStyle::kTight,
+                 RectWidthStyle::kTight)) {
           kept += box.rect.width();
         }
       }
-      const size_t offset = p->offsets[k];
-      line.fStartIndex += offset;
-      line.fEndIndex += offset;
-      line.fEndExcludingWhitespaces += offset;
-      line.fEndIncludingNewline += offset;
       line.fLineNumber = p->lines.size();
       p->lines.push_back(line);
       p->line_widths.push_back(static_cast<float>(line.fWidth) + kept);
@@ -495,9 +554,14 @@ void effing_paragraph_get_metrics(effing_paragraph* p,
   m->did_exceed_max_lines = p->dropped_lines;
   // Skia's longest line leaves trailing whitespace out, even where it is
   // kept.
+  // Skia's longest line includes an ellipsis but leaves trailing whitespace
+  // out even where it is kept, so add that to each line's own width (which
+  // leaves the ellipsis out; a truncated line has no trailing whitespace).
   if (p->keep_trailing_whitespace) {
-    for (const float width : p->line_widths) {
-      m->longest_line = std::max(m->longest_line, width);
+    for (size_t i = 0; i < p->lines.size(); i++) {
+      m->longest_line =
+          std::max(m->longest_line, static_cast<float>(p->lines[i].fWidth) +
+                                        p->kept_whitespace[i]);
     }
   }
   for (const auto& paragraph : p->paragraphs) {

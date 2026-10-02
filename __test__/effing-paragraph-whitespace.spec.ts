@@ -35,6 +35,8 @@ const CHROME_LINES: Array<{
   width: number
   style: ParagraphStyle
   lines: Array<[left: number, width: number]>
+  // Only for wrapping text: `pre-wrap` alone.
+  wraps?: boolean
 }> = [
   {
     name: 'right',
@@ -70,6 +72,7 @@ const CHROME_LINES: Array<{
   // pre-wrap only: the spaces at a soft wrap hang.
   {
     name: 'soft wrap',
+    wraps: true,
     text: 'abcdef   ghij',
     width: 100,
     style: { textAlign: 'right' },
@@ -152,6 +155,7 @@ const CHROME_LINES: Array<{
     // Chrome justifies the first line (its space hangs) and not the second,
     // which ends at a hard break and keeps its spaces.
     name: 'justify',
+    wraps: true,
     text: 'abc def ghi jkl   \nmn',
     width: 100,
     style: { textAlign: 'justify' },
@@ -161,11 +165,68 @@ const CHROME_LINES: Array<{
       [0, 20],
     ],
   },
+  {
+    // With two spaces the hard-broken line is 90px, which shows it is not
+    // justified.
+    name: 'justify, short hard-broken line',
+    wraps: true,
+    text: 'abc def ghi jkl  \nmn',
+    width: 100,
+    style: { textAlign: 'justify' },
+    lines: [
+      [0, 100],
+      [0, 90],
+      [0, 20],
+    ],
+  },
+  {
+    name: 'rtl justify, short hard-broken line',
+    wraps: true,
+    text: 'abc def ghi jkl  \nmn',
+    width: 100,
+    style: { textAlign: 'justify', direction: 'rtl' },
+    lines: [
+      [0, 100],
+      [10, 90],
+      [80, 20],
+    ],
+  },
+  // A hard break that ends the text is not part of the line before it.
+  {
+    name: 'final newline',
+    text: 'ab   \n',
+    width: 400,
+    style: {},
+    lines: [
+      [0, 50],
+      [0, 0],
+    ],
+  },
+  {
+    name: 'rtl final newline',
+    text: 'ab   \n',
+    width: 400,
+    style: { direction: 'rtl', textAlign: 'start' },
+    lines: [
+      [350, 50],
+      [400, 0],
+    ],
+  },
+  {
+    name: 'rtl final CRLF',
+    text: 'ab   \r\n',
+    width: 400,
+    style: { direction: 'rtl', textAlign: 'start' },
+    lines: [
+      [350, 50],
+      [400, 0],
+    ],
+  },
 ]
 
 test('kept trailing whitespace lays out lines as Chrome does', (t) => {
-  for (const { name, text, width, style, lines } of CHROME_LINES) {
-    for (const noWrap of name === 'soft wrap' || name === 'justify' ? [false] : [false, true]) {
+  for (const { name, text, width, style, lines, wraps } of CHROME_LINES) {
+    for (const noWrap of wraps ? [false] : [false, true]) {
       const layout = new Paragraph(text, { ...KEEP, ...style, noWrap }).layout(width)
       t.deepEqual(
         layout.lines.map((line) => [Math.round(line.left * 1000) / 1000, Math.round(line.width * 1000) / 1000]),
@@ -195,6 +256,25 @@ test('kept trailing whitespace is in the line text and widths', (t) => {
   near(t, hanging.longestLine, 30)
 })
 
+test('a hard break that ends the text stays out of the line before it', (t) => {
+  for (const text of ['ab   \n', 'ab   \r\n', 'cd\nab   \n']) {
+    for (const direction of ['ltr', 'rtl'] as const) {
+      const layout = new Paragraph(text, { ...KEEP, direction }).layout(400)
+      const line = layout.lines.find((l) => text.slice(l.startIndex, l.endIndex).startsWith('ab'))!
+      t.is(text.slice(line.startIndex, line.endIndex), 'ab   ', JSON.stringify([text, direction]))
+      near(t, line.width, 50)
+    }
+  }
+  const layout = new Paragraph('ab   \ncd   \n', KEEP).layout(400)
+  t.deepEqual(
+    layout.lines.slice(0, 2).map((line) => [line.startIndex, line.endIndex]),
+    [
+      [0, 5],
+      [6, 11],
+    ],
+  )
+})
+
 // The leftmost inked column of the first line box.
 function inkLeft(paragraph: Paragraph, height: number) {
   const width = 300
@@ -218,9 +298,11 @@ test('kept trailing whitespace moves the glyphs it precedes', (t) => {
     [{ textAlign: 'left', direction: 'rtl' }, 30],
     [{ textAlign: 'right', direction: 'rtl' }, 170],
   ] as const) {
-    const paragraph = new Paragraph('abc   ', { ...KEEP, ...style })
-    paragraph.layout(200)
-    // Within a pixel: the glyphs land a hair off whole pixels.
-    near(t, inkLeft(paragraph, 30), glyphs + offset, 1)
+    for (const text of ['abc   ', 'abc   \n']) {
+      const paragraph = new Paragraph(text, { ...KEEP, ...style })
+      paragraph.layout(200)
+      // Within a pixel: the glyphs land a hair off whole pixels.
+      near(t, inkLeft(paragraph, 30), glyphs + offset, 1)
+    }
   }
 })

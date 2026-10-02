@@ -34,8 +34,8 @@ export interface ParagraphStyle {
   fontWeight?: number
   fontStyle?: 'normal' | 'italic' | 'oblique'
   letterSpacing?: number
-  /** Line box height in px, where 0 collapses the line boxes; omitted for `normal` (hhea ascent + descent). */
-  lineHeight?: number
+  /** Line box height in px, where 0 collapses the line boxes; omitted or null for `normal` (hhea ascent + descent). */
+  lineHeight?: number | null
   /** `start` and `end` follow `direction`. Defaults to `left`. */
   textAlign?: 'left' | 'right' | 'center' | 'justify' | 'start' | 'end'
   direction?: 'ltr' | 'rtl'

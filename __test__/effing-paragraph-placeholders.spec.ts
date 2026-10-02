@@ -237,12 +237,68 @@ test('placeholders paint nothing', (t) => {
   t.true(worst <= 8, `alpha differs by up to ${worst}`)
 })
 
-test('invalid placeholders throw', (t) => {
-  t.throws(() => new Paragraph(['a', box({ width: -1 })], STYLE))
-  t.throws(() => new Paragraph(['a', box({ height: Number.NaN })], STYLE))
-  t.throws(() => new Paragraph(['a', box({ baselineOffset: Infinity })], STYLE))
-  // @ts-expect-error not a vertical-align keyword
-  t.throws(() => new Paragraph(['a', box({ verticalAlign: 'center' })], STYLE))
-  // @ts-expect-error not a string or a placeholder
-  t.throws(() => new Paragraph(['a', 1], STYLE))
+test('invalid content throws with what is wrong', (t) => {
+  const throws = (content: unknown, message: RegExp) =>
+    t.throws(() => new Paragraph(content as ConstructorParameters<typeof Paragraph>[0], STYLE), { message })
+  throws(['a', box({ width: -1 })], /item 1: A placeholder's width must be a finite number ≥ 0/)
+  throws(['a', box({ height: Number.NaN })], /item 1: A placeholder's height must be/)
+  // Finite as a double, but not as the float the layout takes.
+  throws(['a', box({ width: 1e39 })], /item 1: A placeholder's width must be/)
+  throws(['a', box({ baselineOffset: Infinity })], /item 1: A placeholder's baselineOffset must be/)
+  throws(['a', box({ verticalAlign: 'center' as 'middle' })], /center is not a valid placeholder verticalAlign/)
+  throws(['a', { height: 20 }], /item 1: A placeholder needs a width/)
+  throws(['a', { width: '20', height: 20 }], /item 1: A placeholder's width must be a number, not string/)
+  throws(['a', 1], /item 1 must be a string or a placeholder, not number/)
+  throws(['a', null], /item 1 must be a string or a placeholder, not null/)
+  throws(['a', undefined], /item 1 must be a string or a placeholder, not undefined/)
+  throws(['a', ['b']], /item 1 is an array/)
+  throws(5, /text must be a string or an array/)
+  throws({ width: 20, height: 20 }, /text must be a string or an array/)
+})
+
+test('null optional placeholder fields take their defaults', (t) => {
+  const content = ['ab', { width: 20, height: 20, verticalAlign: null, baselineOffset: null }, 'cd']
+  const layout = new Paragraph(content as unknown as ParagraphPlaceholder[], STYLE).layout(400)
+  near(t, layout.placeholders[0]!.y, layout.lines[0].baseline - 20)
+})
+
+test('adjacent, leading and trailing placeholders', (t) => {
+  // Measured in Chrome as above: three inline-blocks around 'a' start at 0,
+  // 20 and 50.
+  const layout = new Paragraph([box(), box(), 'a', box()], STYLE).layout(400)
+  t.deepEqual(
+    layout.placeholders.map((p) => Math.round(p!.x * 1000) / 1000),
+    [0, 20, 50],
+  )
+  near(t, layout.lines[0].width, 70)
+  t.deepEqual([layout.lines[0].startIndex, layout.lines[0].endIndex], [0, 4])
+})
+
+test('a placeholder after a surrogate pair', (t) => {
+  // U+1F600 takes two UTF-16 units and the placeholder one.
+  const layout = new Paragraph(['😀', box(), 'a'], STYLE).layout(400)
+  t.deepEqual([layout.lines[0].startIndex, layout.lines[0].endIndex], [0, 4])
+  // The emoji's advance comes from a fallback font, so its width is not
+  // Chrome's; the box follows it.
+  near(t, layout.placeholders[0]!.x, layout.lines[0].width - 30)
+})
+
+test('a placeholder before kept whitespace and a final newline', (t) => {
+  // Measured in Chrome 154 with `white-space: pre`, width 400px: in RTL the
+  // line spans 330 to 400, the spaces on its left, and the box sits at 360;
+  // in LTR the box is at 20 and the line 70px wide.
+  const content = ['ab', box(), '   \n']
+  const rtl = new Paragraph(content, {
+    ...STYLE,
+    keepTrailingWhitespace: true,
+    direction: 'rtl',
+    textAlign: 'start',
+  }).layout(400)
+  near(t, rtl.lines[0].left, 330)
+  near(t, rtl.lines[0].width, 70)
+  near(t, rtl.placeholders[0]!.x, 360)
+  const ltr = new Paragraph(content, { ...STYLE, keepTrailingWhitespace: true }).layout(400)
+  near(t, ltr.lines[0].width, 70)
+  near(t, ltr.placeholders[0]!.x, 20)
+  t.deepEqual([ltr.lines[0].startIndex, ltr.lines[0].endIndex], [0, 6])
 })
