@@ -18,14 +18,15 @@ Fork code is kept out of upstream files so that upstream merges stay trivial.
 Each layer has an `effing` directory with one file per feature, and each
 upstream file has at most a few marked hook lines.
 
-| Layer                  | Fork code                                                       | Upstream hooks                                                                                                                                        |
-| ---------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,group}.{hpp,cpp}`                | `skia-c/skia_c.cpp` (include + two `text_rendering` checks)                                                                                           |
-| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group}.rs`   | `src/sk.rs` (`mod effing`)                                                                                                                            |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `account_unsnapped_text`); `src/page_recorder.rs` (`BYTES_PER_RECORDED_OP` made `pub(crate)`) |
-| Build                  |                                                                 | `build.rs` (`EFFING_SOURCES`)                                                                                                                         |
-| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`         | `js-binding.js` (exports; hand-maintained, like `index.d.ts`)                                                                                         |
-| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)               | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                           |
+| Layer                  | Fork code                                                       | Upstream hooks                                                                                                                                                                        |
+| ---------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,group}.{hpp,cpp}`                | `skia-c/skia_c.cpp` (include + two `text_rendering` checks)                                                                                                                           |
+| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group}.rs`   | `src/sk.rs` (`mod effing`)                                                                                                                                                            |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`)                                                                                |
+| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)         | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`) |
+| Build                  |                                                                 | `build.rs` (`EFFING_SOURCES`)                                                                                                                                                         |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`         | `js-binding.js` (exports; hand-maintained, like `index.d.ts`)                                                                                                                         |
+| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)               | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                           |
 
 C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
 napi bindings are functions that take the context as their first argument
@@ -132,9 +133,25 @@ value) and CSS `filter`. That is what CSS `opacity`, `mix-blend-mode` and
 `backdropFilter` starts the group from the filtered content behind it,
 clamped at the edges like a browser does at the viewport edge, for CSS
 `backdrop-filter`. `bounds` (`[x, y, width, height]` in the current
-coordinate space) sizes the group's buffer and clips its content. A
-non-numeric `opacity`, an unknown `blendMode` or malformed `bounds` throw;
-`opacity` outside 0 to 1 is clamped.
+coordinate space) clips the group's content. A non-numeric `opacity`, an
+unknown `blendMode` or malformed `bounds` throw; `opacity` outside 0 to 1 is
+clamped.
+
+On a raster canvas a group's offscreen buffer is sized to what it draws, so
+a translucent element costs about as much as its own area, not the canvas's
+(`src/page_recorder/effing.rs`): the group's draws are recorded on their own
+and, when it ends, composited through a buffer the size of their bounds, as
+Skia computes them for the recording (clips, stroke widths, shadows and
+filters included). A group's filter still takes in what is drawn past the
+clip or the canvas edge, as an up-front buffer would. The buffer covers the
+canvas instead, as Skia sizes it, where it has to: with a `backdropFilter`,
+which paints the backdrop across the whole buffer; with a `blendMode` that
+changes what is behind the group where it draws nothing (`clear`, `copy`,
+`source-in`, `source-out`, `destination-in`, `destination-atop`,
+`modulate`); with a
+filter whose output bounds Skia can't compute, or one under a rotation or
+skew, where the filtered buffer is resampled and the result would depend on
+where it starts; and on a PDF canvas.
 
 A group that composites nothing (opacity 1, `source-over`, no filters) is a
 plain save with the `bounds` clip, with no offscreen buffer. That is the only
@@ -145,11 +162,14 @@ kind of group an SVG canvas can hold, since Skia's SVG device has no layers;
 it like `restore()`. `endGroup` throws if the innermost save was not made by
 `beginGroup`; a plain `restore()` closes a group as well. Reading the
 canvas's pixels while a group is open (`getImageData`, encoding, drawing the
-canvas into another) composites what the group holds so far; the rest of
-the group is composited on its own when it ends, with the same options but
-no backdrop filter, which the content behind it already has. The same split
-happens when the pending recording outgrows upstream's 32 MiB cap while a
-group is open, since that flushes it to the surface too.
+canvas into another) or writing them (`putImageData`) composites what the
+group holds so far; the rest of the group is composited on its own when it
+ends, with the same options but no backdrop filter, which the content behind
+it already has. The deferred recording's 32 MiB cap (from upstream 1.0.10)
+is suspended while a group that composites is open, so a group holding a
+lot, such as a large photo, is not split; the recording is flushed once the
+group ends. Until then everything the group draws stays in memory, so a
+group left open across a long run of large images holds all of them.
 
 This is deliberately not the proposed Canvas 2D `beginLayer`/`endLayer`: that
 API takes the layer's alpha and blend mode from `globalAlpha` and
@@ -207,6 +227,21 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### 1.0.10-effing.2
+
+- A group's offscreen buffer on a raster canvas is sized to what the group
+  draws rather than to the canvas, with the exceptions listed under
+  compositing groups. Ten translucent rows on a 1080x1080 frame went from
+  about 4.8 ms to 0.5 ms, the same as passing `bounds`, and ten blurred rows
+  from about 200 ms to 12 ms. `bounds` is no longer needed for speed, only
+  to clip. Results are the same pixels, except that a group with a single
+  draw may round differently by one level: 1.0.10-effing.1 folded such a
+  group's opacity into the draw.
+- The 32 MiB recording cap waits while a group that composites is open, so a
+  large image inside a translucent, filtered or blended group no longer
+  shows through what the group draws over it. 1.0.10-effing.1 split such a
+  group once its content passed the cap.
 
 ### 1.0.10-effing.1
 

@@ -119,6 +119,59 @@ test('groups nest', (t) => {
   t.is(pixel(ctx, 5, 5)[3], 64)
 })
 
+test('a filter takes in what is drawn past the clip', (t) => {
+  const ctx = createCanvas(100, 100).getContext('2d')
+  ctx.rect(0, 0, 50, 100)
+  ctx.clip()
+  beginGroup(ctx, { filter: 'drop-shadow(-20px 0 0 red)' })
+  ctx.fillRect(60, 0, 20, 100)
+  endGroup(ctx)
+  // The shadow of the clipped-out rect falls inside the clip.
+  t.deepEqual(pixel(ctx, 45, 50), [255, 0, 0, 255])
+  t.is(pixel(ctx, 35, 50)[3], 0)
+})
+
+test('a filter takes in what is drawn past the canvas edge', (t) => {
+  const ctx = createCanvas(100, 100).getContext('2d')
+  beginGroup(ctx, { filter: 'drop-shadow(-20px 0 0 red)' })
+  ctx.fillRect(110, 0, 20, 100)
+  endGroup(ctx)
+  t.deepEqual(pixel(ctx, 95, 50), [255, 0, 0, 255])
+})
+
+test('a blend mode that changes what is behind the group where it draws nothing applies to the whole canvas', (t) => {
+  for (const blendMode of ['copy', 'destination-in'] as const) {
+    const ctx = createCanvas(100, 100).getContext('2d')
+    ctx.fillStyle = 'red'
+    ctx.fillRect(0, 0, 100, 100)
+    beginGroup(ctx, { blendMode })
+    ctx.fillStyle = 'blue'
+    ctx.fillRect(10, 10, 20, 20)
+    endGroup(ctx)
+    t.is(pixel(ctx, 75, 75)[3], 0, blendMode)
+  }
+})
+
+test('a group holding more than the recording limit is composited whole', (t) => {
+  // 2900 x 2900 x 4 bytes is past the 32 MiB the deferred recording holds
+  // before it is flushed.
+  const source = createCanvas(2900, 2900)
+  const sourceCtx = source.getContext('2d')
+  sourceCtx.fillStyle = 'red'
+  sourceCtx.fillRect(0, 0, 2900, 2900)
+  const ctx = createCanvas(64, 64).getContext('2d')
+  ctx.fillStyle = 'white'
+  ctx.fillRect(0, 0, 64, 64)
+  beginGroup(ctx, { opacity: 0.5 })
+  ctx.drawImage(source, 0, 0, 64, 64)
+  ctx.fillStyle = 'blue'
+  ctx.fillRect(0, 0, 64, 64)
+  endGroup(ctx)
+  // The blue hides the red within the group: half blue over white.
+  const [r, g, b] = pixel(ctx, 32, 32)
+  t.true(Math.abs(r - 127) <= 1 && Math.abs(g - 127) <= 1 && b === 255, `rgb ${r},${g},${b}`)
+})
+
 test('endGroup without a matching beginGroup throws', (t) => {
   const ctx = createCanvas(10, 10).getContext('2d')
   t.throws(() => endGroup(ctx), { message: /beginGroup/ })
