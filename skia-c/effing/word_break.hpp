@@ -36,8 +36,13 @@ enum class OverflowWrap : int {
 // the opportunities adjusted for kBreakAll and kKeepAll. With
 // `break_first_word`, a line may also break between any two grapheme
 // clusters of the text's first word, which is how an overflow-wrap:
-// break-word word is broken.
-sk_sp<SkUnicode> make_word_break_unicode(WordBreak mode, bool break_first_word);
+// break-word word is broken. With `placeholders`, each U+FFFC in the text is
+// a placeholder, and lines break around it as around an emoji (UAX #14
+// class ID). SkParagraph's cache keys a paragraph on its placeholders, so
+// this needs no tag of its own.
+sk_sp<SkUnicode> make_word_break_unicode(WordBreak mode,
+                                         bool break_first_word,
+                                         bool placeholders);
 
 // A font family name for a paragraph's strut, which nothing resolves, that
 // keeps SkParagraph's cache apart for each set of opportunities, or empty

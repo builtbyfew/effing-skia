@@ -56,8 +56,9 @@ pub struct ParagraphStyle {
   pub overflow_wrap: Option<String>,
 }
 
-/// An inline box in a paragraph's text, e.g. for an image: it takes `width`
-/// on its line, can break from the text on either side, and draws nothing.
+/// An inline box in a paragraph's text, e.g. for an emoji: it takes `width`
+/// on its line, lines break around it as around an emoji, and it draws
+/// nothing.
 #[napi(object)]
 pub struct ParagraphPlaceholder {
   pub width: f64,

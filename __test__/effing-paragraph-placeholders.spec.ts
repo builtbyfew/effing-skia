@@ -14,6 +14,7 @@ const STYLE: ParagraphStyle = { fontFamily: 'Iosevka Slab', fontSize: 20, lineHe
 
 test.before((t) => {
   t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'iosevka-slab-regular.ttf')))
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Harmattan-Regular.ttf'), 'WB Harmattan'))
 })
 
 function near(t: import('ava').ExecutionContext, actual: number, expected: number, epsilon = 0.01) {
@@ -126,14 +127,13 @@ test('a placeholder moves with its line on every line', (t) => {
   near(t, second.placeholders[0]!.y, second.lines[1].baseline - 20)
 })
 
-test('a placeholder can break from the text on either side', (t) => {
-  // Measured in Chrome as above: at these widths the box gets a line of its
-  // own between the two words, even next to punctuation; at 60px 'abc' and
-  // the box share the first line.
+test('a placeholder can break from the letters on either side', (t) => {
+  // Measured in Chrome as below: at these widths the box gets a line of its
+  // own between the two words; at 60px 'abc' and the box share the first
+  // line.
   for (const [width, before, after] of [
     [50, 'abcd', 'efgh'],
     [30, 'ab', 'cd'],
-    [45, 'ab.', ',cd'],
   ] as const) {
     const layout = new Paragraph([before, box(), after], STYLE).layout(width)
     t.is(layout.lines.length, 3, `${before}|${after}`)
@@ -144,6 +144,53 @@ test('a placeholder can break from the text on either side', (t) => {
   t.is(shared.lines.length, 2)
   t.is(shared.placeholders[0]!.line, 0)
   near(t, shared.placeholders[0]!.x, 30)
+})
+
+// Lines break around a placeholder as Chrome 154 (headless, macOS) breaks
+// them around an emoji, since effing lays emoji out as placeholders: each
+// case is the text with 🎉 in a <span> whose font size makes it 20px wide,
+// in a <div> of the width with `font: 20px <the font>; line-height: 40px`,
+// split where the characters' getClientRects() move down. Lines are
+// separated by '|', the box is 'X', and the spaces around a break are
+// left out. Chrome's inline-blocks differ: they have an opportunity on
+// either side, even before '!'.
+test('lines break around a placeholder as around an emoji in Chrome', (t) => {
+  const breakAll: ParagraphStyle = { wordBreak: 'break-all' }
+  const rtl: ParagraphStyle = { fontFamily: 'WB Harmattan', direction: 'rtl' }
+  const cases: Array<[text: string, width: number, lines: string, style?: ParagraphStyle]> = [
+    ['Hi X! ok', 55, 'Hi|X!|ok'],
+    ['Hi X, ok', 55, 'Hi|X,|ok'],
+    ['Hi X. ok', 55, 'Hi|X.|ok'],
+    ['Hi X) ok', 55, 'Hi|X)|ok'],
+    ['Hi (X ok', 45, 'Hi|(X|ok'],
+    ['Hi (X) ok', 45, 'Hi|(X)|ok'],
+    ['Hi (X) ok', 55, 'Hi|(X)|ok'],
+    ['Hi "X" ok', 55, 'Hi|"X"|ok'],
+    ["Hi 'X' ok", 55, "Hi|'X'|ok"],
+    ['Hi “X” ok', 55, 'Hi|“X”|ok'],
+    // Between letters and between emoji, lines still break.
+    ['Hi xXx ok', 55, 'Hi x|Xx|ok'],
+    ['Hi XX ok', 55, 'Hi X|X ok'],
+    // A box and the punctuation after it are a word too wide for the line.
+    ['ab.X,cd', 45, 'ab.|X,cd'],
+    ['X-ab', 25, 'X-|ab', breakAll],
+    ['ab X! cd', 45, 'ab|X!|cd', breakAll],
+    ['ab (X) cd', 45, 'ab|(X)|cd', { wordBreak: 'keep-all' }],
+    ['ab X! cd', 45, 'ab|X!|cd', { overflowWrap: 'break-word' }],
+    ['بت X؟ بت', 45, 'بت|X؟|بت', rtl],
+    ['بت X، بت', 45, 'بت|X،|بت', rtl],
+    ['بت (X) بت', 45, 'بت|(X)|بت', rtl],
+    ['بت «X» بت', 50, 'بت|«X»|بت', rtl],
+  ]
+  for (const [text, width, expected, style] of cases) {
+    const parts = text
+      .split(/(X)/)
+      .filter(Boolean)
+      .map((part) => (part === 'X' ? box() : part))
+    const layout = new Paragraph(parts, { ...STYLE, ...style }).layout(width)
+    const lines = layout.lines.map((line) => text.slice(line.startIndex, line.endIndex).trim())
+    t.is(lines.join('|'), expected, `${text} at ${width}px`)
+  }
 })
 
 test('letter spacing is not added to a placeholder', (t) => {

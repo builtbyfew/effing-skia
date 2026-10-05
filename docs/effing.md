@@ -185,13 +185,24 @@ ctx.drawImage(emoji, x + placeholders[0].x, y + placeholders[0].y, em, em)
 ```
 
 The text can be an array of strings and placeholders: inline boxes that take
-their `width` on the line, with a break opportunity on either side as
-Chrome gives an inline-block, and draw nothing, for whatever the caller
-draws there, such as emoji images. `layout()` returns one entry per
+their `width` on the line and draw nothing, for whatever the caller draws
+there, such as emoji images. `layout()` returns one entry per
 placeholder in `placeholders`, in order: its box from the paragraph's
 top-left corner and its line, or `null` when `maxLines` or an ellipsis cut it
 off. In the lines' `startIndex`/`endIndex`, each placeholder counts as one
 UTF-16 unit, as if the text had U+FFFC in its place.
+
+Lines break around a placeholder as Chrome breaks them around an emoji,
+which is what effing draws in them (UAX #14 class ID): between it and a
+letter, another placeholder or a space, but not between it and the
+punctuation that sticks to a word, so `Hi 🎉! ok` breaks as `Hi | 🎉! | ok`
+and `(🎉)` stays whole (`__test__/effing-paragraph-placeholders.spec.ts`).
+That is not how Chrome breaks around an inline-block or an image, which it
+allows on either side, even before the "!". SkParagraph's line breaker
+takes a placeholder for a word of its own and ends a line on either side of
+it wherever the line is full, so where it ends one beside a placeholder at
+no opportunity, the text is laid out in pieces (below), the line ending at
+its last opportunity instead.
 
 Skia places a placeholder along its line; effing places it vertically by its
 `verticalAlign`, the CSS `vertical-align` keywords, in effing's line box:
@@ -232,9 +243,10 @@ and default to `normal` as they do:
 
 A word is what lies between two line-break opportunities: ICU's, which also
 break after hyphens and between CJK characters, as `wordBreak` adjusts them.
-A placeholder is a word of its own. `minIntrinsicWidth` is the widest word,
-measured from SkParagraph's clusters, so a single letter under `break-all`
-and a run of CJK under `keep-all`. `overflowWrap: 'break-word'` leaves it
+Around a placeholder they are an emoji's (above), so `🎉!` is one word.
+`minIntrinsicWidth` is the widest word, measured from SkParagraph's
+clusters, so a single letter under `break-all` and a run of CJK under
+`keep-all`. `overflowWrap: 'break-word'` leaves it
 alone, as CSS `overflow-wrap: break-word` does. CSS's deprecated
 `word-break: break-word` is `overflowWrap: 'break-word'` here; Chrome gives
 it, as `overflow-wrap: anywhere`, a single letter as its min-content.
@@ -405,6 +417,15 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### Unreleased
+
+- Lines break around a placeholder as Chrome breaks them around an emoji,
+  no longer as around an inline-block: a placeholder stays with the
+  punctuation next to it, so `Hi 🎉! ok` breaks as `Hi | 🎉! | ok`, not
+  `Hi 🎉 | ! ok`, and `(🎉)` stays whole. It still breaks from a letter, a
+  space or another placeholder. `minIntrinsicWidth` counts such a
+  placeholder and its punctuation as one word.
 
 ### 1.0.10-effing.3
 

@@ -69,8 +69,9 @@ export interface ParagraphStyle {
 
 /**
  * An inline box in a paragraph's text, e.g. for an image or an emoji drawn as
- * one: it takes `width` on its line, can break from the text on either side,
- * and draws nothing. It never grows its line box.
+ * one: it takes `width` on its line, lines break around it as around an emoji
+ * (not before the "!" after it, say), and it draws nothing. It never grows its
+ * line box.
  */
 export interface ParagraphPlaceholder {
   width: number

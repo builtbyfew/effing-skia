@@ -98,6 +98,10 @@ struct effing_paragraph {
   std::vector<Word> graphemes;
   bool measured = false;
   float widest_word = 0;
+  // The line-break opportunities in that Skia text, by offset, when it has
+  // placeholders (SkParagraph's flags have one around each); empty
+  // otherwise.
+  std::vector<bool> opportunities;
   // That Skia text's UTF-8 offset at each UTF-16 offset.
   std::vector<size_t> utf8_offsets;
   // Laid out and painted in place of `paragraphs` when a word too wide for
@@ -431,7 +435,8 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
   }
   ParagraphBuilderImpl builder(
       style, p->font_collection,
-      effing::make_word_break_unicode(p->word_break, break_first_word));
+      effing::make_word_break_unicode(p->word_break, break_first_word,
+                                      last > first));
   size_t next = first;
   add_content(&builder, p->text.data(), start, end, p->placeholder_specs.data(),
               last, &next, [&](size_t placeholder, size_t index) {
@@ -494,6 +499,91 @@ bool ellipsis_failed(Paragraph* paragraph) {
   const TextLine& last = impl->lines().back();
   return last.ellipsis() == nullptr && last.clustersWithSpaces().width() == 0 &&
          !last.endsWithHardLineBreak();
+}
+
+// The line-break opportunities in `paragraph`'s Skia text, built as a piece
+// of `kind` (kWrapped for the whole paragraph), by offset: SkUnicode's, which
+// SkParagraph overrides around a placeholder with one on either side.
+std::vector<bool> opportunities(const effing_paragraph* p,
+                                Paragraph* paragraph,
+                                PieceKind kind) {
+  auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  const SkSpan<const char> text = impl->text();
+  std::string copy(text.data(), text.size());
+  skia_private::TArray<SkUnicode::CodeUnitFlags, true> flags;
+  const auto unicode = effing::make_word_break_unicode(
+      p->word_break, kind == PieceKind::kBreakFirstWord, true);
+  std::vector<bool> out(text.size() + 1, false);
+  if (!unicode ||
+      !unicode->computeCodeUnitFlags(copy.data(), static_cast<int>(copy.size()),
+                                     true, &flags)) {
+    return out;
+  }
+  for (size_t i = 0; i < out.size() && i < static_cast<size_t>(flags.size());
+       i++) {
+    out[i] = flags[i] & (SkUnicode::kSoftLineBreakBefore |
+                         SkUnicode::kHardLineBreakBefore);
+  }
+  return out;
+}
+
+// SkParagraph's TextWrapper takes a placeholder for a word of its own: it
+// ends a line before or after one wherever the line is full, whatever the
+// opportunities around it, so an emoji laid out as a placeholder can end a
+// line and the "!" after it start the next. Returns where the first line
+// that ends so, beside a placeholder and not at an opportunity, should end
+// instead: at the last opportunity in it, as an offset in `paragraph`'s
+// Skia text; 0 if no line ends so, or if such a line has no earlier
+// opportunity (its text is then a word too wide for the line, which the
+// caller lays out as one). `paragraph` was built as a piece of `kind`, from
+// the whole paragraph's Skia text at `offset` on.
+size_t misplaced_break(const effing_paragraph* p,
+                       Paragraph* paragraph,
+                       PieceKind kind,
+                       size_t offset) {
+  auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  // Skia adds a placeholder of its own after the text.
+  if (impl->placeholders().size() <= 1) {
+    return 0;
+  }
+  const size_t size = impl->text().size();
+  std::vector<bool> opportunity;
+  for (const TextLine& line : impl->lines()) {
+    const size_t at = line.textWithNewlines().end;
+    const size_t start = line.text().start;
+    if (line.endsWithHardLineBreak() || line.ellipsis() != nullptr ||
+        at >= size || at <= start) {
+      continue;
+    }
+    const ClusterRange clusters = line.clusters();
+    const bool before =
+        impl->cluster(impl->clusterIndex(at)).run().isPlaceholder();
+    // The line may end in spaces after it.
+    const bool after = clusters.width() > 0 &&
+                       impl->cluster(clusters.end - 1).run().isPlaceholder();
+    if (!before && !after) {
+      continue;
+    }
+    // A piece's text is the whole paragraph's, but for the opportunities a
+    // piece that may break its first word adds.
+    const bool own =
+        kind == PieceKind::kBreakFirstWord || p->opportunities.empty();
+    if (own && opportunity.empty()) {
+      opportunity = opportunities(p, paragraph, kind);
+    }
+    const auto at_opportunity = [&](size_t i) {
+      return own ? opportunity[i] : p->opportunities[offset + i];
+    };
+    if (at_opportunity(at)) {
+      continue;
+    }
+    for (size_t c = at - 1; c > start; c--) {
+      if (at_opportunity(c)) {
+        return c;
+      }
+    }
+  }
+  return 0;
 }
 
 // Whether a paragraph or piece of `kind` is justified by SkParagraph.
@@ -575,8 +665,9 @@ size_t first_grapheme_end(Paragraph* paragraph, size_t start, size_t end) {
 // what its line breaker measures: their widths, and the widest one, CSS
 // min-content. Skia's own minimum is off in places: it is the whole text when
 // the text has no spaces and fits on a line, and it leaves out the last
-// cluster of a word too wide for the line at the end of the text. A
-// placeholder is a word of its own.
+// cluster of a word too wide for the line at the end of the text. Around a
+// placeholder, the words are where SkUnicode has them, which SkParagraph's
+// line breaker doesn't heed (misplaced_break).
 void measure_words(effing_paragraph* p) {
   p->measured = true;
   auto* whole = static_cast<ParagraphImpl*>(p->paragraphs.front().get());
@@ -594,7 +685,15 @@ void measure_words(effing_paragraph* p) {
     }
   }
   p->utf8_offsets.push_back(text.size());
+  // SkParagraph's own flags have an opportunity on either side of every
+  // placeholder.
+  p->opportunities = p->placeholder_specs.empty()
+                         ? std::vector<bool>()
+                         : opportunities(p, whole, PieceKind::kWrapped);
   const auto breaks = [&](size_t i) {
+    if (!p->opportunities.empty()) {
+      return static_cast<bool>(p->opportunities[i]);
+    }
     return whole->codeUnitHasProperty(i, SkUnicode::kSoftLineBreakBefore) ||
            whole->codeUnitHasProperty(i, SkUnicode::kHardLineBreakBefore);
   };
@@ -649,17 +748,19 @@ void measure_words(effing_paragraph* p) {
 // - break-word starts a piece at the word, in which a line may break between
 //   any two grapheme clusters of the word: SkParagraph then breaks it where
 //   the line is full, and fills its last line with the text after it.
-// Each piece is built once. When SkParagraph `emptied` the last line of the
-// whole paragraph (ellipsis_failed), the text is split too, with no word too
-// wide, so that line is laid out as CSS has it. Leaves p->pieces empty
-// otherwise.
-void split_around_long_words(effing_paragraph* p, float w, bool emptied) {
+// Each piece is built once. A line SkParagraph ends beside a placeholder
+// where the text has no opportunity (misplaced_break) ends a piece at the
+// last opportunity on it instead. With `force`, when SkParagraph emptied the
+// last line of the whole paragraph (ellipsis_failed) or ended a line so, the
+// text is split too, with no word too wide, so that the line is laid out as
+// CSS has it. Leaves p->pieces empty otherwise.
+void split_around_long_words(effing_paragraph* p, float w, bool force) {
   // The last layout's pieces, which this one reuses where it can.
   std::vector<Piece> previous = std::move(p->pieces);
   p->pieces.clear();
   p->pieces_exceeded_max_lines = false;
   if (p->nowrap || w >= kUnbounded || p->paragraphs.size() != 1 ||
-      (!too_wide(p->widest_word, w) && !emptied)) {
+      (!too_wide(p->widest_word, w) && !force)) {
     return;
   }
   auto* whole = static_cast<ParagraphImpl*>(p->paragraphs.front().get());
@@ -768,7 +869,10 @@ void split_around_long_words(effing_paragraph* p, float w, bool emptied) {
   };
 
   // Adds the piece [start, end); false when no lines are left for more.
-  const auto add = [&](size_t start, size_t end, PieceKind kind) {
+  // Adds nothing when one of its lines ends where it shouldn't, and says
+  // where that line should end in `*misplaced` instead.
+  const auto add_one = [&](size_t start, size_t end, PieceKind kind,
+                           size_t* misplaced) {
     const bool unbounded = kind == PieceKind::kUnbounded;
     Piece piece{};
     piece.start = start;
@@ -790,6 +894,11 @@ void split_around_long_words(effing_paragraph* p, float w, bool emptied) {
                            });
       float filled = 0;
       for (; word != p->words.end() && word->start < piece.end; ++word) {
+        // A word the piece starts inside of (after a grapheme cluster too
+        // wide for the line, or a placeholder) may be mostly before it.
+        if (word->start < start) {
+          continue;
+        }
         filled += word->width;
         if (filled > room) {
           if (word->end < piece.end) {
@@ -829,6 +938,14 @@ void split_around_long_words(effing_paragraph* p, float w, bool emptied) {
     }
     layout_paragraph(piece.paragraph.get(), unbounded ? kUnbounded : w,
                      justified(p, kind));
+    if (!unbounded) {
+      if (const size_t at =
+              misplaced_break(p, piece.paragraph.get(), kind, start);
+          at > 0) {
+        *misplaced = start + at;
+        return true;
+      }
+    }
     const int n = std::max(static_cast<int>(piece.paragraph->lineNumber()), 1);
     const bool truncated = cut || piece.paragraph->didExceedMaxLines();
     // Skia gives the empty line after a hard break that ends a text the
@@ -901,6 +1018,25 @@ void split_around_long_words(effing_paragraph* p, float w, bool emptied) {
       last.line_end = SIZE_MAX;
     }
     return false;
+  };
+
+  // Adds the pieces of [start, end): one, unless a line in it ends where it
+  // shouldn't, which then ends a piece where it should.
+  const auto add = [&](size_t start, size_t end, PieceKind kind) {
+    size_t stop = end;
+    while (start < end) {
+      size_t misplaced = 0;
+      if (!add_one(start, stop, kind, &misplaced)) {
+        return false;
+      }
+      if (misplaced == 0) {
+        start = stop;
+        stop = end;
+      } else {
+        stop = misplaced;
+      }
+    }
+    return true;
   };
 
   size_t start = 0;
@@ -1226,7 +1362,13 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
   if (!p->nowrap && !p->measured) {
     measure_words(p);
   }
-  split_around_long_words(p, w, any_emptied);
+  // A line SkParagraph ended beside a placeholder, where it shouldn't, is
+  // laid out in pieces too.
+  const bool misplaced = !pieces && !p->nowrap && p->paragraphs.size() == 1 &&
+                         w < kUnbounded &&
+                         misplaced_break(p, p->paragraphs.front().get(),
+                                         PieceKind::kWrapped, 0) > 0;
+  split_around_long_words(p, w, any_emptied || misplaced);
   if (p->nowrap && any_emptied) {
     truncate_nowrap_lines(p, w, emptied);
   }
