@@ -13,6 +13,7 @@ test.before((t) => {
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'iosevka-slab-regular.ttf'), 'WB Iosevka'))
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'Lato-Regular.ttf'), 'WB Lato'))
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'NotoSansDevanagari-Regular.ttf'), 'WB Devanagari'))
+  t.truthy(GlobalFonts.registerFromPath(join(fonts, 'SourceHanSerifCN-Bold.ttf'), 'WB Source Han'))
 })
 
 const IOSEVKA: ParagraphStyle = { fontFamily: 'WB Iosevka', fontSize: 20, lineHeight: 40 }
@@ -224,4 +225,34 @@ test('the empty line after a final hard break is at the end of the text', (t) =>
       [6, 6],
     ],
   )
+})
+
+test('spaces after placeholders make no line of their own', (t) => {
+  const lines = (layout: ReturnType<Paragraph['layout']>) =>
+    layout.lines.map((line) => [line.startIndex, line.endIndex, line.hardBreak])
+  // The text a fuzzer reported as giving a second, empty line in #15 was
+  // 'a', U+2028 and a space, which its output showed as 'a  ': the line after
+  // the line separator, a hard break, as after an LF.
+  for (const style of [
+    IOSEVKA,
+    { ...IOSEVKA, keepTrailingWhitespace: true },
+    { ...IOSEVKA, maxLines: 1 },
+    { ...IOSEVKA, maxLines: 1, ellipsis: '…' },
+  ]) {
+    const layout = new Paragraph([PH(5), PH(40), 'a  '], style).layout(Infinity)
+    t.deepEqual(lines(layout), [[0, style.keepTrailingWhitespace ? 5 : 3, true]])
+    t.false(layout.didExceedMaxLines)
+    const keepAll = new Paragraph([PH(40), '中文  '], {
+      ...style,
+      fontFamily: 'WB Source Han',
+      wordBreak: 'keep-all',
+    }).layout(100)
+    t.deepEqual(lines(keepAll), [[0, style.keepTrailingWhitespace ? 5 : 3, true]])
+    t.false(keepAll.didExceedMaxLines)
+  }
+  for (const brk of ['\n', '\u2028']) {
+    const layout = new Paragraph([PH(5), PH(40), `a${brk} `], { ...IOSEVKA, maxLines: 1 }).layout(Infinity)
+    t.deepEqual(lines(layout), [[0, 3, true]])
+    t.true(layout.didExceedMaxLines)
+  }
 })
