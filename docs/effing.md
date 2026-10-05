@@ -99,13 +99,23 @@ top:
   `noWrap` text all end at a hard break or the text, which CSS never
   justifies. A justified paragraph laid out again, at any width, gets the
   lines a fresh one gets and paints as one does
-  (`__test__/effing-paragraph-relayout.spec.ts`; its `maxIntrinsicWidth`
-  aside). SkParagraph would keep the last layout's justification in the
-  lines it formats again at the same width, which then paint unjustified,
-  and measure trailing spaces with it when it breaks them at a new width,
-  so the fork breaks a justified paragraph's lines anew each time.
+  (`__test__/effing-paragraph-relayout.spec.ts`). SkParagraph would keep
+  the last layout's justification in the lines it formats again at the
+  same width, which then paint unjustified, and measure trailing spaces
+  with it when it breaks them at a new width, so the fork breaks a
+  justified paragraph's lines anew each time.
 - `minIntrinsicWidth` is the widest word, or for `noWrap` text the widest
   line, as CSS min-content is.
+- `maxIntrinsicWidth` is the widest line between hard breaks, its trailing
+  whitespace hanging unless it is kept, as CSS max-content is
+  (`__test__/effing-paragraph-metrics.spec.ts`). It is measured once, from
+  the whole text, so neither the width nor the layouts before change it,
+  and `maxLines` and the `ellipsis` leave it alone, as line clamping leaves
+  Chrome's. It is rounded up to the 0.01px SkParagraph's line breaker tells
+  apart, so the text laid out at it breaks only at hard breaks; under a
+  negative `letterSpacing` it can be wider than the widest line, by what
+  the breaker needs (a character with no advance of its own, such as a
+  combining mark, has a negative width there).
 - `wordBreak` and `overflowWrap` say where lines may break within and around
   words (below).
 - `noWrap` breaks only at hard breaks; with an `ellipsis` it truncates each
@@ -405,6 +415,18 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### Unreleased
+
+- `maxIntrinsicWidth` is CSS max-content: the widest line between hard
+  breaks, trailing whitespace hanging unless it is kept, measured once from
+  the whole text and rounded up to 0.01px. It used to be SkParagraph's sum
+  of the lines broken at the last layout's width, trailing whitespace
+  included, so it changed with the width and, where a word too wide for its
+  line split the text, kept an earlier layout's figure, by up to hundreds of
+  px. `minIntrinsicWidth` of `noWrap` text, which is the same figure,
+  follows. `noWrap` text with an `ellipsis` and `maxLines` shapes the lines
+  past `maxLines` once to measure them.
 
 ### 1.0.10-effing.3
 

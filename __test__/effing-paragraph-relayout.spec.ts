@@ -295,12 +295,6 @@ const CASES: Case[] = [
   },
 ]
 
-// maxIntrinsicWidth depends on the widths the text was laid out at before,
-// by up to hundreds of px where pieces replace it, which is another matter.
-function withoutMaxIntrinsicWidth(layout: ParagraphLayout): ParagraphLayout {
-  return { ...layout, maxIntrinsicWidth: 0 }
-}
-
 // The paragraph painted at its last layout, from 300px in, where lines
 // overflowing to the left in RTL still show.
 function paint(paragraph: Paragraph, layout: ParagraphLayout) {
@@ -324,7 +318,7 @@ test('laying a justified paragraph out again at another width is laying out a fr
           const freshParagraph = new Paragraph(parts, { ...style, direction })
           const fresh = freshParagraph.layout(width)
           const name = `case ${i} ${direction} at ${order.slice(0, k + 1).join(', ')}`
-          t.deepEqual(withoutMaxIntrinsicWidth(layout), withoutMaxIntrinsicWidth(fresh), name)
+          t.deepEqual(layout, fresh, name)
           // Justification moves the glyphs, which the metrics don't show.
           t.true(Buffer.from(paint(relaid, layout)).equals(Buffer.from(paint(freshParagraph, fresh))), name)
         }

@@ -126,6 +126,12 @@ export interface ParagraphLayout {
    * Under `break-all` a word is as little as a letter.
    */
   minIntrinsicWidth: number
+  /**
+   * The widest line between hard breaks, trailing whitespace hanging unless
+   * `keepTrailingWhitespace` keeps it: CSS max-content, whatever the width,
+   * `maxLines` and `ellipsis`. Rounded up to 0.01px, so the text laid out at
+   * it breaks only at hard breaks.
+   */
   maxIntrinsicWidth: number
   didExceedMaxLines: boolean
   /** Every line box is exactly this tall. */
