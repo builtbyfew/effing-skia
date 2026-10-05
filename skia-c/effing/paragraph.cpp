@@ -753,8 +753,8 @@ void measure_words(effing_paragraph* p) {
 // last opportunity on it instead. With `force`, the text is split even with
 // no word too wide, so that the lines are laid out as CSS has them: when
 // SkParagraph emptied the last line of the whole paragraph
-// (ellipsis_failed), ended a line so, or left the line the lines run out at
-// without the ellipsis.
+// (ellipsis_failed), ended a line so, or truncated the line the lines run
+// out at with the ellipsis.
 // Leaves p->pieces empty otherwise.
 void split_around_long_words(effing_paragraph* p, float w, bool force) {
   // The last layout's pieces, which this one reuses where it can.
@@ -1365,19 +1365,17 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
     measure_words(p);
   }
   // A line SkParagraph ended beside a placeholder, where it shouldn't, is
-  // laid out in pieces too, and so is wrapping text whose lines run out at
-  // a hard break: SkParagraph leaves the last line without the ellipsis,
-  // where CSS line-clamp puts it after the line's text.
+  // laid out in pieces too, and so is wrapping text the ellipsis truncates,
+  // whose last line CSS line-clamp makes of that line's own text with the
+  // ellipsis after it: SkParagraph fills it with the text after it instead,
+  // to cut that at any grapheme cluster, and leaves a line that ends at a
+  // hard break without the ellipsis.
   const bool whole = !pieces && !p->nowrap && p->paragraphs.size() == 1;
   const bool misplaced = whole && w < kUnbounded &&
                          misplaced_break(p, p->paragraphs.front().get(),
                                          PieceKind::kWrapped, 0) > 0;
-  const auto lines =
-      static_cast<ParagraphImpl*>(p->paragraphs.front().get())->lines();
-  const bool clamped = whole && p->ellipsized &&
-                       p->paragraphs.front()->didExceedMaxLines() &&
-                       !lines.empty() && lines.back().ellipsis() == nullptr &&
-                       lines.back().endsWithHardLineBreak();
+  const bool clamped =
+      whole && p->ellipsized && p->paragraphs.front()->didExceedMaxLines();
   split_around_long_words(p, w, any_emptied || misplaced || clamped);
   if (p->nowrap && any_emptied) {
     truncate_nowrap_lines(p, w, emptied);

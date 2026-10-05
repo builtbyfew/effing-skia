@@ -298,13 +298,16 @@ Known differences from Chrome:
   doesn't), and breaks Devanagari conjuncts (स्|ते) where ICU's grapheme
   clusters keep them whole. Around punctuation, ICU's and Chrome's
   opportunities differ anyway, in every mode.
-- With `maxLines` and an `ellipsis`, when the lines run out at a word too
-  wide for its line, or at a hard break, the last line is that line's own
-  text with the ellipsis after it, truncated to fit, as Chrome's
-  `-webkit-line-clamp` shows it ("ab…", "Overlong…"); an empty line is the
-  ellipsis alone. Elsewhere the last line is SkParagraph's truncation,
-  unless not even its first grapheme cluster fits with the ellipsis
-  (above).
+- With `maxLines` and an `ellipsis`, the last line is that line's own text
+  with the ellipsis after it, as Chrome's `-webkit-line-clamp` shows it,
+  whether the lines run out at a soft break, a word too wide for its line or
+  a hard break: without the spaces that hang at its end (unless
+  `keepTrailingWhitespace` keeps them, as `pre-wrap` does), and where the
+  two don't fit, with grapheme clusters taken off its end until they do
+  ("aaaa bbb…", "ab …", "Overlong…"). An empty line is the ellipsis alone.
+  Such a paragraph is laid out in pieces: SkParagraph would fill the last
+  line with the start of the text after it ("ab cd e…" for Chrome's "ab
+  cd…") and leave a line that ends at a hard break without the ellipsis.
 
 ## Compositing groups: `beginGroup` / `endGroup`
 
@@ -432,6 +435,11 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   it: `'ab\ncd'` with `maxLines: 1` is "ab…", no longer "ab", and an empty
   last line is "…". Text split around a word too wide for the line already
   did this.
+- The last line `maxLines` shows with an `ellipsis` is that line's own text
+  with the ellipsis after it, cut to fit, as Chrome's line clamp has it: it
+  used to take in the start of the next line's text (`'ab cd efgh ij'` at
+  95px is "ab cd…", not "ab cd e…"), and to keep a hanging space before the
+  ellipsis (`'aaaa bb cccc'` at 100px is "aaaa bb…", not "aaaa bb …").
 
 ### 1.0.10-effing.3
 

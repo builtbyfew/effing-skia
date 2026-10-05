@@ -299,3 +299,39 @@ test('a clamped line that ends at a hard break gets the ellipsis', (t) => {
     t.is(layout.didExceedMaxLines, exceeded, name)
   }
 })
+
+test('the last line is its own text with the ellipsis after it, as Chrome has it', (t) => {
+  // Chrome 154's -webkit-line-clamp, compared in screenshots as above, puts
+  // the ellipsis after the last line's own text, without the spaces that
+  // hang at its end under `pre-line` (kept under `pre-wrap`, which is
+  // keepTrailingWhitespace), and takes grapheme clusters off the end of it
+  // until the two fit, keeping the spaces that are then last. SkParagraph
+  // would fill the line with the start of the next word instead ("ab cd
+  // e…"). Lines as [startIndex, endIndex, width, left].
+  const style: ParagraphStyle = { ...IOSEVKA, maxLines: 1, ellipsis: '…' }
+  const kept: ParagraphStyle = { keepTrailingWhitespace: true }
+  const cases: Array<[ParagraphContent, number, Line, ParagraphStyle?]> = [
+    ['aaaa bbbb cccc', 100, [0, 8, 100, 0]], // "aaaa bbb…"
+    ['aaaa bb cccc', 100, [0, 7, 90, 0]], // "aaaa bb…"
+    ['aaaa bb cccc', 100, [0, 8, 100, 0], kept], // "aaaa bb …"
+    ['ab cd efgh ij', 95, [0, 5, 70, 0]], // "ab cd…"
+    ['ab cd efgh ij', 95, [0, 6, 80, 0], kept], // "ab cd …"
+    ['a b c d e f g h', 100, [0, 8, 100, 0]], // "a b c d …"
+    ['ab cd\nef', 55, [0, 3, 50, 0]], // "ab …"
+    ['ab-cd-efgh-ij', 100, [0, 6, 80, 0]], // "ab-cd-…"
+    [['ab ', { width: 70, height: 10 }, ' cd'], 100, [0, 3, 50, 0]], // "ab …"
+  ]
+  for (const [parts, width, expected, extra] of cases) {
+    const layout = new Paragraph(parts, { ...style, ...extra }).layout(width)
+    t.deepEqual(lines(layout), [expected], JSON.stringify({ parts, extra }))
+    t.true(layout.didExceedMaxLines)
+  }
+  // A box wider than the line stays on the last line, overflowing it with
+  // the ellipsis after it; Chrome clips both to the box.
+  const wide = new Paragraph(['ab ', { width: 130, height: 10 }, ' cd'], { ...style, maxLines: 2 }).layout(100)
+  t.deepEqual(lines(wide), [
+    [0, 2, 20, 0],
+    [3, 4, 150, 0],
+  ])
+  t.is(wide.placeholders[0]?.line, 1)
+})
