@@ -113,8 +113,8 @@ top:
   and `maxLines` and the `ellipsis` leave it alone, as line clamping leaves
   Chrome's, except that `noWrap` text with an `ellipsis` is measured as it
   is laid out, a line at a time, and a line shaped on its own can come out
-  wider or narrower (an RTL line with fallback fonts, in the tests by
-  14px). It is rounded up to the 0.01px SkParagraph's line breaker tells
+  wider or narrower (an RTL line with fallback fonts, by 14px in one
+  case). It is rounded up to the 0.01px SkParagraph's line breaker tells
   apart, so the text laid out at it breaks only at hard breaks; under a
   negative `letterSpacing` it can be wider than the widest line, by what
   the breaker needs (a character with no advance of its own, such as a
