@@ -106,6 +106,22 @@ top:
   line to the width instead. `maxLines` truncates with the `ellipsis` too.
   Without either, the `ellipsis` does nothing, as `text-overflow` doesn't on
   wrapped text.
+- A truncated line keeps at least its first grapheme cluster (with any spaces
+  before it), with the `ellipsis` after it, both overflowing the line when
+  not even they fit, as Chrome's `-webkit-line-clamp` and `text-overflow`
+  do (`__test__/effing-paragraph-ellipsis.spec.ts`). SkParagraph would
+  instead empty the line and drop the ellipsis, and, under `justify`, never
+  return from laying out such a line when it has more than one run (a
+  placeholder, a fallback font or another direction): its
+  `TextLine::createEllipsis` never tries keeping no cluster at all, and
+  `TextLine::justify` then walks the runs of the emptied line over a cluster
+  range that ends before it starts. So the fork lays out an ellipsized
+  paragraph start-aligned first, justifies it only when no line was emptied,
+  and lays an emptied line out anew, as a piece of its own (the line before
+  it then ends a piece, which `justify` leaves unjustified). Chrome aligns
+  the line before truncating it, so where the line's text would have fit,
+  `right` and `center` put such a line further along than the fork's
+  start-aligned overflow.
 - The hard breaks are SkParagraph's: LF, VT, FF, CRLF, LS (U+2028) and PS
   (U+2029). A lone CR and NEL (U+0085) are not breaks. Chrome's
   `white-space: pre` breaks at LF and CRLF only and draws VT, FF, LS and PS
@@ -257,7 +273,8 @@ Known differences from Chrome:
   wide for its line, the last line is that line's own text with the
   ellipsis after it, truncated to fit, as Chrome's `-webkit-line-clamp`
   shows it ("ab…", "Overlong…"). Elsewhere the last line is SkParagraph's
-  truncation.
+  truncation, unless not even its first grapheme cluster fits with the
+  ellipsis (above).
 
 ## Compositing groups: `beginGroup` / `endGroup`
 

@@ -26,6 +26,15 @@ struct effing_paragraph {
   std::vector<std::unique_ptr<Paragraph>> paragraphs;
   // Where each paragraph's text starts in the whole text, in UTF-16 units.
   std::vector<size_t> offsets;
+  // What each paragraph is built from: its text in `text`, and the
+  // placeholders [first, last).
+  struct Source {
+    size_t start;
+    size_t end;
+    size_t first;
+    size_t last;
+  };
+  std::vector<Source> sources;
   // Whether hard-broken lines past max_lines were left out.
   bool dropped_lines = false;
   TextAlign align = TextAlign::kLeft;
@@ -92,7 +101,8 @@ struct effing_paragraph {
   // That Skia text's UTF-8 offset at each UTF-16 offset.
   std::vector<size_t> utf8_offsets;
   // Laid out and painted in place of `paragraphs` when a word too wide for
-  // its line splits the text; empty otherwise.
+  // its line splits the text, or when SkParagraph emptied a line it was to
+  // truncate with the ellipsis; empty otherwise.
   enum class PieceKind { kWrapped, kUnbounded, kBreakFirstWord };
   struct Piece {
     std::unique_ptr<Paragraph> paragraph;
@@ -433,16 +443,24 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
   return builder.Build();
 }
 
-// The offset in p->text of `skia`, an offset in the Skia text of the whole
-// paragraph, where each placeholder is a U+FFFC of 3 bytes, and the number of
-// placeholders before it.
-std::pair<size_t, size_t> to_text(const effing_paragraph* p, size_t skia) {
-  size_t k = 0;
-  while (k < p->placeholder_specs.size() &&
-         p->placeholder_specs[k].offset + 3 * k < skia) {
+// The offset in p->text of `skia`, an offset in the Skia text of a
+// paragraph built from `source`, where each placeholder is a U+FFFC of 3
+// bytes, and the index of the first placeholder after it.
+std::pair<size_t, size_t> to_text(const effing_paragraph* p,
+                                  const effing_paragraph::Source& source,
+                                  size_t skia) {
+  size_t k = source.first;
+  while (k < source.last && p->placeholder_specs[k].offset - source.start +
+                                    3 * (k - source.first) <
+                                skia) {
     k++;
   }
-  return {skia - 3 * k, k};
+  return {source.start + skia - 3 * (k - source.first), k};
+}
+
+// The same for the Skia text of the whole paragraph.
+std::pair<size_t, size_t> to_text(const effing_paragraph* p, size_t skia) {
+  return to_text(p, {0, p->text.size(), 0, p->placeholder_specs.size()}, skia);
 }
 
 // Builds a piece of the whole paragraph's Skia text [start, end).
@@ -459,6 +477,75 @@ std::unique_ptr<Paragraph> build_piece(
   // Only the line given an ellipsis as `suffix` may truncate with Skia's.
   return build(p, text_start, text_end, first, last, max_lines, kind, suffix,
                placed, !suffix.isEmpty());
+}
+
+// Whether SkParagraph gave up on the ellipsis of the last line it laid out.
+// Its TextLine::createEllipsis takes clusters off the end of the line until
+// the ellipsis fits after the rest, but never tries an empty rest: when the
+// first cluster and the ellipsis are wider than the line, it empties the
+// line and drops the ellipsis, even when all that follows the line is
+// whitespace. The line keeps its runs, which end past its now empty cluster
+// range, and doesn't end in a hard break, so justify would spread it.
+bool ellipsis_failed(Paragraph* paragraph) {
+  auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  if (!impl->paragraphStyle().ellipsized() || impl->lines().empty()) {
+    return false;
+  }
+  const TextLine& last = impl->lines().back();
+  return last.ellipsis() == nullptr && last.clustersWithSpaces().width() == 0 &&
+         !last.endsWithHardLineBreak();
+}
+
+// Whether a paragraph or piece of `kind` is justified by SkParagraph.
+bool justified(const effing_paragraph* p, PieceKind kind) {
+  return p->paragraph_style.getTextAlign() == TextAlign::kJustify &&
+         kind != PieceKind::kUnbounded;
+}
+
+// Lays `paragraph` out at `width`, justified if `justify`, and says whether
+// SkParagraph gave up on its ellipsis (ellipsis_failed). SkParagraph would
+// never return from justifying a line it emptied that way when the line has
+// runs past its first: TextLine::justify walks each run's clusters in the
+// line, and for those runs that range ends before it starts, so the walk
+// wraps around the address space. Line breaking and the ellipsis don't
+// depend on the alignment, so the paragraph is first laid out start-aligned,
+// and justified only when no line was emptied; the caller lays such a line
+// out anew.
+bool layout_paragraph(Paragraph* paragraph, float width, bool justify) {
+  auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  if (!justify || !impl->paragraphStyle().ellipsized()) {
+    paragraph->layout(width);
+    return ellipsis_failed(paragraph);
+  }
+  impl->updateTextAlign(TextAlign::kLeft);
+  paragraph->layout(width);
+  if (ellipsis_failed(paragraph)) {
+    return true;
+  }
+  // Keeps the lines and formats them anew.
+  impl->updateTextAlign(TextAlign::kJustify);
+  paragraph->layout(width);
+  return false;
+}
+
+// Where the first grapheme cluster in [start, end) of `paragraph`'s Skia
+// text that isn't a space ends, or `start` if there is none: what CSS keeps
+// of a line it truncates when not even that fits with the ellipsis. Spaces
+// before it stay with it.
+size_t first_grapheme_end(Paragraph* paragraph, size_t start, size_t end) {
+  auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  for (size_t i = start; i < end;) {
+    const bool space =
+        impl->codeUnitHasProperty(i, SkUnicode::kPartOfWhiteSpaceBreak);
+    do {
+      i++;
+    } while (i < end &&
+             !impl->codeUnitHasProperty(i, SkUnicode::kGraphemeStart));
+    if (!space) {
+      return i;
+    }
+  }
+  return start;
 }
 
 // Measures the words of wrapping text from SkParagraph's clusters, which are
@@ -539,14 +626,17 @@ void measure_words(effing_paragraph* p) {
 // - break-word starts a piece at the word, in which a line may break between
 //   any two grapheme clusters of the word: SkParagraph then breaks it where
 //   the line is full, and fills its last line with the text after it.
-// Each piece is built once. Leaves p->pieces empty when no word is too wide.
-void split_around_long_words(effing_paragraph* p, float w) {
+// Each piece is built once. When SkParagraph `emptied` the last line of the
+// whole paragraph (ellipsis_failed), the text is split too, with no word too
+// wide, so that line is laid out as CSS has it. Leaves p->pieces empty
+// otherwise.
+void split_around_long_words(effing_paragraph* p, float w, bool emptied) {
   // The last layout's pieces, which this one reuses where it can.
   std::vector<Piece> previous = std::move(p->pieces);
   p->pieces.clear();
   p->pieces_exceeded_max_lines = false;
   if (p->nowrap || w >= kUnbounded || p->paragraphs.size() != 1 ||
-      !too_wide(p->widest_word, w)) {
+      (!too_wide(p->widest_word, w) && !emptied)) {
     return;
   }
   auto* whole = static_cast<ParagraphImpl*>(p->paragraphs.front().get());
@@ -591,8 +681,9 @@ void split_around_long_words(effing_paragraph* p, float w) {
       piece.max_lines = static_cast<int>(k);
       piece.paragraph = build_piece(p, piece.start, piece.end, piece.max_lines,
                                     piece.kind, SkString(), &piece.placed);
-      piece.paragraph->layout(piece.kind == PieceKind::kUnbounded ? kUnbounded
-                                                                  : w);
+      layout_paragraph(piece.paragraph.get(),
+                       piece.kind == PieceKind::kUnbounded ? kUnbounded : w,
+                       justified(p, piece.kind));
       piece.hard_break = without_hard_break(text.data(), len, piece.start,
                                             line_start) != line_start;
       piece.override_hard_break = true;
@@ -610,7 +701,22 @@ void split_around_long_words(effing_paragraph* p, float w) {
     last.paragraph =
         build_piece(p, line_start, line_end, 1, last.kind,
                     p->paragraph_style.getEllipsis(), &last.placed);
-    last.paragraph->layout(w);
+    if (layout_paragraph(last.paragraph.get(), w,
+                         justified(p, PieceKind::kWrapped))) {
+      // Not even the line's first grapheme cluster fits with the ellipsis
+      // (or the ellipsis alone doesn't), and SkParagraph emptied the line.
+      // CSS keeps it, and the ellipsis after it, both overflowing the line:
+      // lay that out unbounded.
+      const size_t end = first_grapheme_end(whole, line_start, line_end);
+      last.kind = PieceKind::kUnbounded;
+      last.max_lines = 0;
+      last.line_end = whole->getUTF16Index(end);
+      last.placed.clear();
+      last.paragraph =
+          build_piece(p, line_start, end, 0, last.kind,
+                      p->paragraph_style.getEllipsis(), &last.placed);
+      layout_paragraph(last.paragraph.get(), kUnbounded, false);
+    }
     p->pieces.push_back(std::move(last));
   };
 
@@ -698,7 +804,8 @@ void split_around_long_words(effing_paragraph* p, float w) {
       piece.paragraph = build_piece(p, start, piece.end, piece.max_lines, kind,
                                     SkString(), &piece.placed);
     }
-    piece.paragraph->layout(unbounded ? kUnbounded : w);
+    layout_paragraph(piece.paragraph.get(), unbounded ? kUnbounded : w,
+                     justified(p, kind));
     const int n = std::max(static_cast<int>(piece.paragraph->lineNumber()), 1);
     const bool truncated = cut || piece.paragraph->didExceedMaxLines();
     // Skia gives the empty line after a hard break that ends a text the
@@ -745,7 +852,8 @@ void split_around_long_words(effing_paragraph* p, float w) {
         last.max_lines = lines_left;
         last.paragraph = build_piece(p, start, last.end, lines_left, kind,
                                      SkString(), &last.placed);
-        last.paragraph->layout(unbounded ? kUnbounded : w);
+        layout_paragraph(last.paragraph.get(), unbounded ? kUnbounded : w,
+                         justified(p, kind));
       }
       lines_left -= counted;
       return true;
@@ -763,7 +871,8 @@ void split_around_long_words(effing_paragraph* p, float w) {
       last.max_lines = lines_left;
       last.paragraph = build_piece(p, start, last.end, lines_left, kind,
                                    SkString(), &last.placed);
-      last.paragraph->layout(unbounded ? kUnbounded : w);
+      layout_paragraph(last.paragraph.get(), unbounded ? kUnbounded : w,
+                       justified(p, kind));
       last.override_hard_break = false;
       last.empty_last_line = false;
       last.line_end = SIZE_MAX;
@@ -828,6 +937,47 @@ void split_around_long_words(effing_paragraph* p, float w) {
   }
   if (start < len) {
     add(start, len, PieceKind::kWrapped);
+  }
+}
+
+// Lays the lines of nowrap text with an ellipsis out as pieces, one per
+// line, when SkParagraph emptied some (`emptied`, by index; ellipsis_failed):
+// each of those is its first grapheme cluster with the ellipsis after it,
+// overflowing, as CSS text-overflow has it.
+void truncate_nowrap_lines(effing_paragraph* p,
+                           float w,
+                           const std::vector<bool>& emptied) {
+  for (size_t k = 0; k < p->paragraphs.size(); k++) {
+    const auto& source = p->sources[k];
+    Piece piece{};
+    piece.kind = PieceKind::kWrapped;
+    piece.offset = p->offsets[k];
+    piece.hard_break = k + 1 < p->paragraphs.size();
+    piece.override_hard_break = piece.hard_break;
+    piece.line_end = SIZE_MAX;
+    if (!emptied[k]) {
+      // As effing_paragraph_create built it.
+      piece.paragraph =
+          build(p, source.start, source.end, source.first, source.last, 1,
+                piece.kind, SkString(), &piece.placed);
+      layout_paragraph(piece.paragraph.get(), w, false);
+    } else {
+      Paragraph* line = p->paragraphs[k].get();
+      const auto [end, last] = to_text(
+          p, source,
+          first_grapheme_end(line, 0,
+                             static_cast<ParagraphImpl*>(line)->text().size()));
+      piece.kind = PieceKind::kUnbounded;
+      piece.line_end =
+          piece.offset +
+          utf16_length(p->text.data() + source.start, end - source.start) +
+          (last - source.first);
+      piece.paragraph =
+          build(p, source.start, end, source.first, last, 0, piece.kind,
+                p->paragraph_style.getEllipsis(), &piece.placed);
+      layout_paragraph(piece.paragraph.get(), kUnbounded, false);
+    }
+    p->pieces.push_back(std::move(piece));
   }
 }
 
@@ -979,6 +1129,7 @@ effing_paragraph* effing_paragraph_create(
       last++;
     }
     out->offsets.push_back(utf16_length(text, start) + next);
+    out->sources.push_back({start, end, next, last});
     const size_t k = out->paragraphs.size();
     std::vector<std::pair<size_t, size_t>> placed;
     out->paragraphs.push_back(build(out, start, end, next, last, max_lines,
@@ -1038,15 +1189,24 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
   // a width where pieces replace it.
   const bool pieces = p->measured && !p->nowrap && w < kUnbounded &&
                       p->paragraphs.size() == 1 && too_wide(p->widest_word, w);
+  // The paragraphs whose last line SkParagraph emptied (ellipsis_failed).
+  std::vector<bool> emptied(p->paragraphs.size(), false);
+  bool any_emptied = false;
   if (!pieces) {
-    for (auto& paragraph : p->paragraphs) {
-      paragraph->layout(unbounded ? kUnbounded : w);
+    for (size_t k = 0; k < p->paragraphs.size(); k++) {
+      emptied[k] =
+          layout_paragraph(p->paragraphs[k].get(), unbounded ? kUnbounded : w,
+                           justified(p, PieceKind::kWrapped));
+      any_emptied |= emptied[k];
     }
   }
   if (!p->nowrap && !p->measured) {
     measure_words(p);
   }
-  split_around_long_words(p, w);
+  split_around_long_words(p, w, any_emptied);
+  if (p->nowrap && any_emptied) {
+    truncate_nowrap_lines(p, w, emptied);
+  }
   const auto paragraphs = laid_out(p);
 
   p->lines.clear();
