@@ -171,8 +171,10 @@ top:
   `maxLines: 1` and an ellipsis). The lines' `startIndex` is after them.
   With `keepTrailingWhitespace` they stay, as `pre-wrap` keeps them; so do
   spaces that end the text after a hard break, which SkParagraph puts on a
-  line of their own. Such text is laid out in pieces, as below, a piece
-  ending at the hard break before such spaces.
+  line of their own, and those of `noWrap` text, which keeps all its spaces
+  as `white-space: pre` does (CSS `nowrap` collapses them, so a caller after
+  that collapses them itself). Such text is laid out in pieces, as below, a
+  piece ending at the hard break before such spaces.
 - Glyphs are unhinted and painted unsnapped, exactly as `fillText` does under
   `geometricPrecision`; the two agree pixel for pixel.
 
@@ -466,12 +468,14 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   used to take in the start of the next line's text (`'ab cd efgh ij'` at
   95px is "ab cd…", not "ab cd e…"), and to keep a hanging space before the
   ellipsis (`'aaaa bb cccc'` at 100px is "aaaa bb…", not "aaaa bb …").
-- Spaces and tabs that start a line of wrapping text, at the start of the
-  text or after a hard break, collapse away unless `keepTrailingWhitespace`
-  is set, as CSS `white-space: normal` has it: `' cd ef'` at 25px no longer
-  starts with a line of its own for the space (with `maxLines: 1` and an
-  ellipsis it is "c…", not "…"), and `'ab\n  cd'` starts its second line at
-  "cd".
+- **Breaking:** spaces and tabs that start a line of wrapping text, at the
+  start of the text or after a hard break, collapse away unless
+  `keepTrailingWhitespace` is set, as CSS `white-space: normal` has it:
+  `' cd ef'` at 25px no longer starts with a line of its own for the space
+  (with `maxLines: 1` and an ellipsis it is "c…", not "…"), and
+  `'ab\n  cd'` starts its second line at "cd". Such a line's `startIndex`
+  is now after the spaces. A caller that passes leading spaces it wants
+  kept sets `keepTrailingWhitespace`; `noWrap` text keeps them anyway.
 - Text laid out in pieces (around a word too wide for the line, say) keeps
   the bidi levels it has as a whole: a placeholder, punctuation or digits
   at the edge of a piece used to take the paragraph's direction, and land

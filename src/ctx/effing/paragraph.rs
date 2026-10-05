@@ -47,8 +47,9 @@ pub struct ParagraphStyle {
   /// Appended where text is truncated by `maxLines` or `noWrap`, e.g. `…`.
   pub ellipsis: Option<String>,
   /// Count spaces and tabs before a hard break or the end of the text in the
-  /// line's width and alignment instead of hanging them, as CSS
-  /// `white-space: pre` and `pre-wrap` do. Spaces at a soft wrap still hang.
+  /// line's width and alignment instead of hanging them, and keep those that
+  /// start a line instead of collapsing them away, as CSS `white-space: pre`
+  /// and `pre-wrap` do. Spaces at a soft wrap still hang.
   pub keep_trailing_whitespace: Option<bool>,
   /// CSS `word-break`: `normal` (the default), `break-all` or `keep-all`.
   pub word_break: Option<String>,

@@ -48,8 +48,10 @@ export interface ParagraphStyle {
   ellipsis?: string
   /**
    * Count spaces and tabs before a hard break or the end of the text in the
-   * line's `width` and alignment instead of hanging them, as CSS
-   * `white-space: pre` and `pre-wrap` do. Spaces at a soft wrap still hang.
+   * line's `width` and alignment instead of hanging them, and keep those that
+   * start a line (at the start of the text or after a hard break) instead of
+   * collapsing them away, as CSS `white-space: pre` and `pre-wrap` do. Spaces
+   * at a soft wrap still hang.
    */
   keepTrailingWhitespace?: boolean
   /**
