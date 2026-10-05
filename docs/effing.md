@@ -121,9 +121,8 @@ top:
   `TextLine::justify` then walks the runs of the emptied line over a cluster
   range that ends before it starts. So the fork lays out an ellipsized
   paragraph start-aligned first, justifies it only when no line was emptied,
-  and lays an emptied line out anew, as a piece of its own (the line before
-  it then ends a piece, which `justify` leaves unjustified). Where this
-  differs from Chrome:
+  and lays an emptied line out anew, as a piece of its own, after the lines
+  before it, which stay justified. Where this differs from Chrome:
   - Chrome aligns the line before truncating it, so where the line's text
     would have fit, `right` and `center` put such a line further along than
     the fork's start-aligned overflow.

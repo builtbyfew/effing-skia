@@ -229,6 +229,16 @@ test('the first cluster stays, with the ellipsis after it, as Chrome has it', (t
   }
 })
 
+test('the lines before a line laid out anew stay justified', (t) => {
+  // "c..." is 40px wide in a line 35px wide; Chrome justifies "a b" before
+  // it to 35px.
+  const style: ParagraphStyle = { ...IOSEVKA, maxLines: 2, ellipsis: '...', textAlign: 'justify' }
+  t.deepEqual(lines(new Paragraph('a b ccc dd', style).layout(35)), [
+    [0, 3, 35, 0],
+    [4, 5, 40, 0],
+  ])
+})
+
 test('noWrap keeps the first cluster of each line it truncates, with the ellipsis after it', (t) => {
   // As Chrome's text-overflow: ellipsis, which then clips both to the box.
   const style: ParagraphStyle = { ...IOSEVKA, noWrap: true, ellipsis: '…' }
