@@ -1,9 +1,11 @@
 //! The paragraph primitive: `skia-c/effing/paragraph.cpp`.
 
 use std::ffi::{CString, NulError};
+use std::str::FromStr;
 
 use super::super::{Canvas, FontCollection, Paint, TextAlign, TextDirection};
 use super::text::Painted;
+use crate::error::SkError;
 use crate::font::FontStyle;
 
 #[allow(non_camel_case_types)]
@@ -32,6 +34,8 @@ mod ffi {
     pub ellipsis: *const c_char,
     pub ellipsis_len: usize,
     pub keep_trailing_whitespace: bool,
+    pub word_break: i32,
+    pub overflow_wrap: i32,
   }
 
   #[repr(C)]
@@ -77,6 +81,61 @@ mod ffi {
   }
 }
 
+/// Where lines may break between letters: CSS `word-break`. Mirrors
+/// `effing::WordBreak` in `skia-c/effing/word_break.hpp`.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WordBreak {
+  /// Between words.
+  #[default]
+  Normal = 0,
+  /// Between any two letters too.
+  BreakAll = 1,
+  /// Never between two letters where one is CJK.
+  KeepAll = 2,
+}
+
+impl FromStr for WordBreak {
+  type Err = SkError;
+
+  fn from_str(s: &str) -> Result<WordBreak, SkError> {
+    match s {
+      "normal" => Ok(WordBreak::Normal),
+      "break-all" => Ok(WordBreak::BreakAll),
+      "keep-all" => Ok(WordBreak::KeepAll),
+      _ => Err(SkError::Generic(format!(
+        "[`{s}`] is not valid wordBreak value"
+      ))),
+    }
+  }
+}
+
+/// What happens to a word wider than the line: CSS `overflow-wrap`. Mirrors
+/// `effing::OverflowWrap` in `skia-c/effing/word_break.hpp`.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OverflowWrap {
+  /// It overflows the line, on a line of its own.
+  #[default]
+  Normal = 0,
+  /// It starts a line of its own and is broken where that line is full.
+  BreakWord = 1,
+}
+
+impl FromStr for OverflowWrap {
+  type Err = SkError;
+
+  fn from_str(s: &str) -> Result<OverflowWrap, SkError> {
+    match s {
+      "normal" => Ok(OverflowWrap::Normal),
+      "break-word" => Ok(OverflowWrap::BreakWord),
+      _ => Err(SkError::Generic(format!(
+        "[`{s}`] is not valid overflowWrap value"
+      ))),
+    }
+  }
+}
+
 /// A paragraph's style: everything but its text and font family.
 #[derive(Debug, Clone, Copy)]
 pub struct ParagraphOptions<'a> {
@@ -99,6 +158,8 @@ pub struct ParagraphOptions<'a> {
   /// Count whitespace before a hard break or the end of the text in its
   /// line's width and alignment instead of hanging it.
   pub keep_trailing_whitespace: bool,
+  pub word_break: WordBreak,
+  pub overflow_wrap: OverflowWrap,
 }
 
 /// How a placeholder sits on its line: CSS `vertical-align` keywords.
@@ -216,6 +277,8 @@ impl Paragraph {
       ellipsis: ellipsis.as_ptr().cast(),
       ellipsis_len: ellipsis.len(),
       keep_trailing_whitespace: options.keep_trailing_whitespace,
+      word_break: options.word_break as i32,
+      overflow_wrap: options.overflow_wrap as i32,
     };
     let placeholders: Vec<_> = placeholders
       .iter()

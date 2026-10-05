@@ -52,6 +52,19 @@ export interface ParagraphStyle {
    * `white-space: pre` and `pre-wrap` do. Spaces at a soft wrap still hang.
    */
   keepTrailingWhitespace?: boolean
+  /**
+   * Where lines may break between letters, as CSS `word-break`: `normal`
+   * (the default) between words; `break-all` between any two letters too;
+   * `keep-all` never between two letters where one is CJK.
+   */
+  wordBreak?: 'normal' | 'break-all' | 'keep-all'
+  /**
+   * A word wider than the line, as CSS `overflow-wrap`: with `normal` (the
+   * default) it sits on a line of its own and overflows it; with
+   * `break-word` it starts a line of its own and is broken where that line is
+   * full.
+   */
+  overflowWrap?: 'normal' | 'break-word'
 }
 
 /**
@@ -108,7 +121,10 @@ export interface ParagraphLayout {
   /** `lines.length * lineHeight`. */
   height: number
   longestLine: number
-  /** The widest word, or for `noWrap` text the widest line: CSS min-content. */
+  /**
+   * The widest word, or for `noWrap` text the widest line: CSS min-content.
+   * Under `break-all` a word is as little as a letter.
+   */
   minIntrinsicWidth: number
   maxIntrinsicWidth: number
   didExceedMaxLines: boolean

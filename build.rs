@@ -10,9 +10,10 @@ fn main() {
   println!("cargo:rerun-if-changed=skia-c/skia_c.cpp");
   println!("cargo:rerun-if-changed=skia-c/skia_c.hpp");
   // Effing's additions to the bridge (docs/effing.md); each .cpp has a .hpp.
-  const EFFING_SOURCES: [&str; 3] = [
+  const EFFING_SOURCES: [&str; 4] = [
     "skia-c/effing/text.cpp",
     "skia-c/effing/paragraph.cpp",
+    "skia-c/effing/word_break.cpp",
     "skia-c/effing/group.cpp",
   ];
   for source in EFFING_SOURCES {
@@ -226,6 +227,12 @@ fn main() {
   build
     .include("./skia-c")
     .include(skia_path)
+    // effing: Skia is built without SK_DEBUG (is_debug=false, so NDEBUG), and
+    // the bridge must see its headers the same way. Under SK_DEBUG they give
+    // FontCollection, ParagraphCache, SkMutex, SkSharedMutex, SkTextBlob and
+    // the SkTypeface subclasses other sizes, and SkRefCnt other inline
+    // checks, than the library was built with.
+    .define("SK_RELEASE", None)
     // https://github.com/rust-lang/rust/pull/93901#issuecomment-1119360260
     .cargo_metadata(false)
     .out_dir(&out_dir)
