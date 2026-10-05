@@ -86,9 +86,12 @@ A `Paragraph` is a single-style paragraph laid out natively by SkParagraph
 (line breaking, shaping, bidi, font fallback), with effing's CSS line model on
 top:
 
-- Every line box is exactly `lineHeight` tall (`normal` is the primary font's
-  hhea ascender + descender), and the baseline sits in the box by CSS
-  half-leading. Fallback fonts never grow a line.
+- Every line box is exactly `lineHeight` tall (`normal`, when it is omitted,
+  is the primary font's hhea ascender + descender), and the baseline sits in
+  the box by CSS half-leading. Fallback fonts never grow a line. A
+  `lineHeight` of 0 collapses the line boxes, as CSS `line-height: 0` does:
+  the paragraph is 0px tall and every line's baseline sits at
+  `(ascent - descent) / 2`, the glyphs overflowing above and below.
 - `textAlign` is applied per line relative to the layout width. A line wider
   than the box is start-aligned and overflows the end edge, as in CSS, for
   every alignment. `justify` is Skia's, for wrapped text only: the lines of
@@ -100,20 +103,83 @@ top:
   line to the width instead. `maxLines` truncates with the `ellipsis` too.
   Without either, the `ellipsis` does nothing, as `text-overflow` doesn't on
   wrapped text.
+- The hard breaks are SkParagraph's: LF, VT, FF, CRLF, LS (U+2028) and PS
+  (U+2029). A lone CR and NEL (U+0085) are not breaks. Chrome's
+  `white-space: pre` breaks at LF and CRLF only and draws VT, FF, LS and PS
+  inline, so a caller after Chrome's result replaces those first.
+- A hard break that ends the text gives an empty last line, as SkParagraph
+  lays it out: `'ab\n'` has two lines. Chrome gives `white-space: pre` text
+  ending in a newline one line, so a caller that wants that drops the final
+  break, or the last line.
+- Whitespace at the end of a line hangs: it is left out of the line's width
+  and alignment, as CSS does for `white-space: normal`. With
+  `keepTrailingWhitespace`, spaces and tabs before a hard break or the end of
+  the text count instead, as `white-space: pre` and `pre-wrap` keep them;
+  spaces at a soft wrap still hang. The line then includes them in its
+  `width` and `endIndex` and in `longestLine`, and is aligned and, when it
+  overflows, start-aligned with them; in RTL they lie left of the text. This
+  matches Chrome, which treats `pre` and `pre-wrap` alike here
+  (`__test__/effing-paragraph-whitespace.spec.ts`), except that a tab is one
+  space wide (SkParagraph replaces it), where Chrome advances to the next tab
+  stop, and that whether an `ellipsis` truncates a line ignores its kept
+  whitespace.
 - Glyphs are unhinted and painted unsnapped, exactly as `fillText` does under
   `geometricPrecision`; the two agree pixel for pixel.
 
 `layout(width)` must be called before painting, which throws otherwise. It
 returns the paragraph's
 metrics and one entry per line: `left` and `baseline` from the paragraph's
-top-left corner, the advance `width` without trailing whitespace, the range
-of the line's text in UTF-16 units (JS string indices), and whether it ends
-at a hard break.
+top-left corner, the advance `width` without trailing whitespace (unless
+it is kept), the range of the line's text in UTF-16 units (JS string
+indices), and whether it ends at a hard break.
 
 `fillParagraph`/`strokeParagraph` use the context's current fill or stroke
 style, line settings, shadow, filter, clip and transform, like `fillText`.
 The style's own font settings are all a paragraph has; `ctx.font`,
 `ctx.letterSpacing` and friends are ignored.
+
+### Inline placeholders
+
+```ts
+const em = 20
+const paragraph = new Paragraph(['Hello ', { width: em, height: em }, ' world'], style)
+const { placeholders } = paragraph.layout(320) // [{ x, y, width, height, line }]
+fillParagraph(ctx, paragraph, x, y)
+ctx.drawImage(emoji, x + placeholders[0].x, y + placeholders[0].y, em, em)
+```
+
+The text can be an array of strings and placeholders: inline boxes that take
+their `width` on the line, with a break opportunity on either side as
+Chrome gives an inline-block, and draw nothing, for whatever the caller
+draws there, such as emoji images. `layout()` returns one entry per
+placeholder in `placeholders`, in order: its box from the paragraph's
+top-left corner and its line, or `null` when `maxLines` or an ellipsis cut it
+off. In the lines' `startIndex`/`endIndex`, each placeholder counts as one
+UTF-16 unit, as if the text had U+FFFC in its place.
+
+Skia places a placeholder along its line; effing places it vertically by its
+`verticalAlign`, the CSS `vertical-align` keywords, in effing's line box:
+`baseline` (the default) puts the box's own baseline, `baselineOffset` below
+its top (defaulting to its `height`: the bottom edge, as for an image), on
+the line's baseline; `middle` puts its middle half the primary font's
+x-height above the baseline; `top`/`bottom` align it with the line box; and
+`text-top`/`text-bottom` with the primary font's hhea ascent/descent. These
+match Chrome's inline-block placement (`__test__/effing-paragraph-placeholders.spec.ts`),
+except that Chrome rounds the ascent and descent to whole pixels. A CSS
+`vertical-align: <length>` is a `baselineOffset` of the box's height plus
+that length. Letter spacing is not added to a placeholder, as Chrome doesn't
+add it to an inline-block.
+
+Unlike in CSS, a placeholder never grows its line box: lines stay exactly
+`lineHeight` tall, as with fallback fonts, and a box taller than its place
+in the line overflows it. So a tall box aligned `bottom` or `text-bottom`
+can start above its line box, where CSS would grow the line to fit it.
+
+Malformed content throws with a message naming the item and the field: a
+missing or non-numeric `width` or `height`, a negative or non-finite size
+(including one too large for the 32-bit float the layout uses), an unknown
+`verticalAlign`, or an item that is not a string or a placeholder object.
+`null` for `verticalAlign` or `baselineOffset` means the default.
 
 ## Compositing groups: `beginGroup` / `endGroup`
 
@@ -227,6 +293,27 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### Unreleased
+
+- `new Paragraph(text, style)` takes an array of strings and placeholders
+  (`{ width, height, verticalAlign?, baselineOffset? }`) as its text, and
+  `layout()` returns where each placeholder went in `placeholders`. A plain
+  string works as before; `layout()` then returns `placeholders: []`.
+- `ParagraphStyle.keepTrailingWhitespace` counts spaces and tabs before a
+  hard break or the end of the text in the line's width and alignment, for
+  `white-space: pre` and `pre-wrap`.
+- **Breaking:** `lineHeight: 0` collapses the line boxes instead of meaning
+  `normal`. Pass `undefined` (or omit it, or pass `null`) for `normal`;
+  `@effing/canvas`'s `lineHeight ?? 0` must become `lineHeight`. A negative
+  or non-finite `lineHeight`, or one too large for a 32-bit float, throws
+  instead of meaning `normal`.
+- A `fontSize` that is not a finite number > 0, a non-finite
+  `letterSpacing`, and a negative, NaN or fractional `maxLines` throw. They
+  used to give NaN metrics, nonsense, or (for a negative `maxLines`) no
+  limit. `maxLines` of `Infinity`, like 0 or omitted, is still unlimited.
+- A lone CR and NEL are no longer hard breaks for `noWrap` text with an
+  `ellipsis`, matching the rest of the paragraph and SkParagraph.
 
 ### 1.0.10-effing.2
 
