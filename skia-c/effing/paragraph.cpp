@@ -750,16 +750,18 @@ void measure_words(effing_paragraph* p) {
 //   the line is full, and fills its last line with the text after it.
 // Each piece is built once. A line SkParagraph ends beside a placeholder
 // where the text has no opportunity (misplaced_break) ends a piece at the
-// last opportunity on it instead. With `force`, when SkParagraph emptied the
-// last line of the whole paragraph (ellipsis_failed) or ended a line so, the
-// text is split too, with no word too wide, so that the line is laid out as
-// CSS has it. Leaves p->pieces empty otherwise.
+// last opportunity on it instead. With `force`, the text is split even with
+// no word too wide, so that the lines are laid out as CSS has them: when
+// SkParagraph emptied the last line of the whole paragraph
+// (ellipsis_failed), ended a line so, or left the line the lines run out at
+// without the ellipsis.
+// Leaves p->pieces empty otherwise.
 void split_around_long_words(effing_paragraph* p, float w, bool force) {
   // The last layout's pieces, which this one reuses where it can.
   std::vector<Piece> previous = std::move(p->pieces);
   p->pieces.clear();
   p->pieces_exceeded_max_lines = false;
-  if (p->nowrap || w >= kUnbounded || p->paragraphs.size() != 1 ||
+  if (p->nowrap || p->paragraphs.size() != 1 ||
       (!too_wide(p->widest_word, w) && !force)) {
     return;
   }
@@ -1363,12 +1365,20 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
     measure_words(p);
   }
   // A line SkParagraph ended beside a placeholder, where it shouldn't, is
-  // laid out in pieces too.
-  const bool misplaced = !pieces && !p->nowrap && p->paragraphs.size() == 1 &&
-                         w < kUnbounded &&
+  // laid out in pieces too, and so is wrapping text whose lines run out at
+  // a hard break: SkParagraph leaves the last line without the ellipsis,
+  // where CSS line-clamp puts it after the line's text.
+  const bool whole = !pieces && !p->nowrap && p->paragraphs.size() == 1;
+  const bool misplaced = whole && w < kUnbounded &&
                          misplaced_break(p, p->paragraphs.front().get(),
                                          PieceKind::kWrapped, 0) > 0;
-  split_around_long_words(p, w, any_emptied || misplaced);
+  const auto lines =
+      static_cast<ParagraphImpl*>(p->paragraphs.front().get())->lines();
+  const bool clamped = whole && p->ellipsized &&
+                       p->paragraphs.front()->didExceedMaxLines() &&
+                       !lines.empty() && lines.back().ellipsis() == nullptr &&
+                       lines.back().endsWithHardLineBreak();
+  split_around_long_words(p, w, any_emptied || misplaced || clamped);
   if (p->nowrap && any_emptied) {
     truncate_nowrap_lines(p, w, emptied);
   }

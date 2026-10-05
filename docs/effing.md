@@ -299,11 +299,12 @@ Known differences from Chrome:
   clusters keep them whole. Around punctuation, ICU's and Chrome's
   opportunities differ anyway, in every mode.
 - With `maxLines` and an `ellipsis`, when the lines run out at a word too
-  wide for its line, the last line is that line's own text with the
-  ellipsis after it, truncated to fit, as Chrome's `-webkit-line-clamp`
-  shows it ("ab…", "Overlong…"). Elsewhere the last line is SkParagraph's
-  truncation, unless not even its first grapheme cluster fits with the
-  ellipsis (above).
+  wide for its line, or at a hard break, the last line is that line's own
+  text with the ellipsis after it, truncated to fit, as Chrome's
+  `-webkit-line-clamp` shows it ("ab…", "Overlong…"); an empty line is the
+  ellipsis alone. Elsewhere the last line is SkParagraph's truncation,
+  unless not even its first grapheme cluster fits with the ellipsis
+  (above).
 
 ## Compositing groups: `beginGroup` / `endGroup`
 
@@ -426,6 +427,11 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   `Hi 🎉 | ! ok`, and `(🎉)` stays whole. It still breaks from a letter, a
   space or another placeholder. `minIntrinsicWidth` counts such a
   placeholder and its punctuation as one word.
+- When `maxLines` cuts wrapping text off at a hard break, the last line
+  shown has the `ellipsis` after it, as Chrome's `-webkit-line-clamp` has
+  it: `'ab\ncd'` with `maxLines: 1` is "ab…", no longer "ab", and an empty
+  last line is "…". Text split around a word too wide for the line already
+  did this.
 
 ### 1.0.10-effing.3
 

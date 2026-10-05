@@ -261,3 +261,41 @@ test('noWrap keeps the first cluster of each line it truncates, with the ellipsi
     [9, 13, 45, 0],
   ])
 })
+
+test('a clamped line that ends at a hard break gets the ellipsis', (t) => {
+  // Chrome 154's -webkit-line-clamp (headless, macOS, the same font file,
+  // `white-space: pre-line`, or `pre-wrap` for keepTrailingWhitespace) puts
+  // the ellipsis after the last line it shows whenever text is clamped away,
+  // even after a hard break, and on an empty line alone; compared in
+  // screenshots. Lines as [startIndex, endIndex, width, left].
+  const style: ParagraphStyle = { ...IOSEVKA, ellipsis: '…' }
+  const cases: Array<[ParagraphContent, ParagraphStyle, number, Line[], boolean]> = [
+    ['ab\ncd', { maxLines: 1 }, 100, [[0, 2, 40, 0]], true],
+    [
+      'ab\n\ncd',
+      { maxLines: 2 },
+      100,
+      [
+        [0, 2, 20, 0],
+        [3, 3, 20, 0],
+      ],
+      true,
+    ],
+    ['\ncd', { maxLines: 1 }, 100, [[0, 0, 20, 0]], true],
+    // Nothing is clamped away: Chrome has 'ab\n' as one line.
+    ['ab\n', { maxLines: 1 }, 100, [[0, 2, 20, 0]], false],
+    ['ab\n\n', { maxLines: 1 }, 100, [[0, 2, 40, 0]], true],
+    // "abcdefgh…": the line's text, cut to fit the ellipsis.
+    ['abcdefghi\nk', { maxLines: 1 }, 100, [[0, 8, 100, 0]], true],
+    // "ab  …": kept spaces stay before the ellipsis.
+    ['ab  \ncd', { maxLines: 1, keepTrailingWhitespace: true }, 100, [[0, 4, 60, 0]], true],
+    [['ab ', box, '\ncd'], { maxLines: 1 }, 100, [[0, 4, 65, 0]], true],
+    ['ab\ncd', { maxLines: 1, textAlign: 'justify' }, 100, [[0, 2, 40, 0]], true],
+  ]
+  for (const [parts, extra, width, expected, exceeded] of cases) {
+    const layout = new Paragraph(parts, { ...style, ...extra }).layout(width)
+    const name = JSON.stringify({ parts, extra })
+    t.deepEqual(lines(layout), expected, name)
+    t.is(layout.didExceedMaxLines, exceeded, name)
+  }
+})
