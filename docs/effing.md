@@ -132,10 +132,7 @@ top:
     directions need not be the one Chrome keeps, the first on screen.
   - A line of nothing but spaces keeps none of them: it is the ellipsis
     alone, at the line's start, where Chrome keeps the spaces before it.
-    In wrapped text, a space that starts the text and doesn't fit with the
-    word after it makes such a line (`' cd ef'` at 25px, `maxLines: 1`,
-    is "…"), where Chrome drops the space, as `white-space: normal`
-    collapses it, and shows "c…".
+    Wrapped text has such lines only with `keepTrailingWhitespace` (below).
   - `text-overflow` clips the line, ellipsis included, to the box; the fork
     clips nothing, so a `noWrap` line's kept cluster and ellipsis show past
     the width, as a clamped line's do in Chrome.
@@ -159,6 +156,15 @@ top:
   space wide (SkParagraph replaces it), where Chrome advances to the next tab
   stop, and that whether an `ellipsis` truncates a line ignores its kept
   whitespace.
+- Spaces and tabs that start a line, at the start of the text or after a
+  hard break, collapse away, as `white-space: normal` and `pre-line` remove
+  them: `'  ab'` is "ab" at the line's start, and `' cd ef'` at 25px is
+  "cd" and "ef", with no line of its own for the space ("c…" with
+  `maxLines: 1` and an ellipsis). The lines' `startIndex` is after them.
+  With `keepTrailingWhitespace` they stay, as `pre-wrap` keeps them; so do
+  spaces that end the text after a hard break, which SkParagraph puts on a
+  line of their own. Such text is laid out in pieces, as below, a piece
+  ending at the hard break before such spaces.
 - Glyphs are unhinted and painted unsnapped, exactly as `fillText` does under
   `geometricPrecision`; the two agree pixel for pixel.
 
@@ -440,6 +446,12 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   used to take in the start of the next line's text (`'ab cd efgh ij'` at
   95px is "ab cd…", not "ab cd e…"), and to keep a hanging space before the
   ellipsis (`'aaaa bb cccc'` at 100px is "aaaa bb…", not "aaaa bb …").
+- Spaces and tabs that start a line of wrapping text, at the start of the
+  text or after a hard break, collapse away unless `keepTrailingWhitespace`
+  is set, as CSS `white-space: normal` has it: `' cd ef'` at 25px no longer
+  starts with a line of its own for the space (with `maxLines: 1` and an
+  ellipsis it is "c…", not "…"), and `'ab\n  cd'` starts its second line at
+  "cd".
 
 ### 1.0.10-effing.3
 

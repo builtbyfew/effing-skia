@@ -102,6 +102,10 @@ struct effing_paragraph {
   // placeholders (SkParagraph's flags have one around each); empty
   // otherwise.
   std::vector<bool> opportunities;
+  // The runs of spaces and tabs that start a line of that Skia text, at its
+  // start or after a hard break, [first, second), where whitespace isn't
+  // kept: white-space: normal collapses them away. Not those that end it.
+  std::vector<std::pair<size_t, size_t>> collapsed;
   // That Skia text's UTF-8 offset at each UTF-16 offset.
   std::vector<size_t> utf8_offsets;
   // Laid out and painted in place of `paragraphs` when a word too wide for
@@ -685,6 +689,30 @@ void measure_words(effing_paragraph* p) {
     }
   }
   p->utf8_offsets.push_back(text.size());
+  p->collapsed.clear();
+  if (!p->keep_trailing_whitespace) {
+    for (size_t i = 0; i < text.size();) {
+      size_t end = i;
+      while (end < text.size() && (text[end] == ' ' || text[end] == '\t')) {
+        end++;
+      }
+      // Spaces that end the text are left to hang on a line of their own,
+      // as SkParagraph has the empty line after a hard break that ends it.
+      if (end > i && end < text.size()) {
+        p->collapsed.emplace_back(i, end);
+      }
+      // The next line's start.
+      i = end;
+      while (i < text.size()) {
+        const size_t brk =
+            hard_break_at(text.data(), text.size(), i, nullptr, 0);
+        i += brk > 0 ? brk : 1;
+        if (brk > 0) {
+          break;
+        }
+      }
+    }
+  }
   // SkParagraph's own flags have an opportunity on either side of every
   // placeholder.
   p->opportunities = p->placeholder_specs.empty()
@@ -1023,19 +1051,32 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
   };
 
   // Adds the pieces of [start, end): one, unless a line in it ends where it
-  // shouldn't, which then ends a piece where it should.
+  // shouldn't, which then ends a piece where it should, or it holds spaces
+  // that start a line, which CSS collapses away: those are left out of every
+  // piece, and a piece ends at the hard break before them.
   const auto add = [&](size_t start, size_t end, PieceKind kind) {
-    size_t stop = end;
+    auto run = std::lower_bound(p->collapsed.begin(), p->collapsed.end(), start,
+                                [](const std::pair<size_t, size_t>& run,
+                                   size_t at) { return run.second <= at; });
+    size_t limit = end;
     while (start < end) {
+      for (; run != p->collapsed.end() && run->first <= start; ++run) {
+        start = std::max(start, std::min(run->second, end));
+      }
+      if (start >= end) {
+        break;
+      }
+      const size_t stop = std::min(
+          limit, run != p->collapsed.end() ? std::min(run->first, end) : end);
       size_t misplaced = 0;
       if (!add_one(start, stop, kind, &misplaced)) {
         return false;
       }
       if (misplaced == 0) {
         start = stop;
-        stop = end;
+        limit = end;
       } else {
-        stop = misplaced;
+        limit = misplaced;
       }
     }
     return true;
@@ -1376,7 +1417,10 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
                                          PieceKind::kWrapped, 0) > 0;
   const bool clamped =
       whole && p->ellipsized && p->paragraphs.front()->didExceedMaxLines();
-  split_around_long_words(p, w, any_emptied || misplaced || clamped);
+  // So is text with spaces that start a line, which CSS collapses away.
+  const bool collapsed = whole && !p->collapsed.empty();
+  split_around_long_words(p, w,
+                          any_emptied || misplaced || clamped || collapsed);
   if (p->nowrap && any_emptied) {
     truncate_nowrap_lines(p, w, emptied);
   }
