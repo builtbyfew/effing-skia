@@ -1,3 +1,22 @@
+## [1.0.10-effing.3](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.2...v1.0.10-effing.3) (2026-10-05)
+
+
+### Features
+
+* **paragraph:** inline placeholders, keepTrailingWhitespace, lineHeight 0 ([#8](https://github.com/builtbyfew/effing-skia/issues/8)) ([ddf5a56](https://github.com/builtbyfew/effing-skia/commit/ddf5a56c3e931415c63d2d72f3312ebdc53326e7))
+* **paragraph:** wordBreak and overflowWrap, as in CSS ([#9](https://github.com/builtbyfew/effing-skia/issues/9)) ([7ae840d](https://github.com/builtbyfew/effing-skia/commit/7ae840d3c51dce326616864205070e0e78107b0c)), closes [#7](https://github.com/builtbyfew/effing-skia/issues/7)
+
+
+### Bug Fixes
+
+* **paragraph:** never hang justifying a line SkParagraph could not ellipsize ([#11](https://github.com/builtbyfew/effing-skia/issues/11)) ([ce80bcd](https://github.com/builtbyfew/effing-skia/commit/ce80bcd4cfd6b3dc471c661227b4410dcecfd4e4)), closes [#10](https://github.com/builtbyfew/effing-skia/issues/10) [#12](https://github.com/builtbyfew/effing-skia/issues/12)
+
+
+### BREAKING CHANGES
+
+* **paragraph:** `lineHeight: 0` collapses the line boxes instead of meaning `normal`; omit it or pass `null` for `normal`.
+* **paragraph:** a word wider than the line overflows it by default (`overflowWrap: 'normal'`); pass `overflowWrap: 'break-word'` to break it.
+* **paragraph:** a non-finite or non-positive `fontSize`, a non-finite `letterSpacing`, and a negative, NaN or fractional `maxLines` throw.
 ## [1.0.10-effing.2](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.1...v1.0.10-effing.2) (2026-10-02)
 
 

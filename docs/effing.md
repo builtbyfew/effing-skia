@@ -406,7 +406,7 @@ the CI matrix.
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
-### Unreleased
+### 1.0.10-effing.3
 
 - `new Paragraph(text, style)` takes an array of strings and placeholders
   (`{ width, height, verticalAlign?, baselineOffset? }`) as its text, and
@@ -441,6 +441,15 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 - The bridge is compiled with `SK_RELEASE`, as Skia is. Under `SK_DEBUG` it
   saw classes such as `FontCollection`, `SkTextBlob` and the typefaces at
   other sizes than Skia was built with.
+- `layout()` no longer hangs (or crashes) on a justified paragraph with an
+  `ellipsis` whose last line SkParagraph could not ellipsize, because not
+  even its first cluster fits beside the ellipsis. Such a line, wrapped or
+  `noWrap`, now keeps its first grapheme cluster with the ellipsis after
+  it, both overflowing, as Chrome's line clamp has it; it used to come out
+  empty, without the ellipsis.
+- A justified paragraph laid out again, at any width, gets the line widths
+  of a fresh one and paints as one does. It used to keep the previous
+  layout's justification in its line widths, which moved RTL lines.
 
 ### 1.0.10-effing.2
 
