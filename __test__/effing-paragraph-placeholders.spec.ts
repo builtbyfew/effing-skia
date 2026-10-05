@@ -371,3 +371,27 @@ test('a placeholder before kept whitespace and a final newline', (t) => {
   near(t, ltr.placeholders[0]!.x, 20)
   t.deepEqual([ltr.lines[0].startIndex, ltr.lines[0].endIndex], [0, 6])
 })
+
+test('a line ended where it should be beside a placeholder keeps its bidi and justification', (t) => {
+  // In Chrome 154, with 🎉 for the box: 'aa bb' | '🎉! cc' | 'dd ee ff' | 'gg',
+  // RTL and left-aligned: the box at x 0 and '!' at 20, as the Latin around
+  // them sets their direction. Justified, the first line spans the width.
+  const parts = ['aa bb ', box(), '! cc dd ee ff gg']
+  const rtl = new Paragraph(parts, { ...STYLE, direction: 'rtl', textAlign: 'left' }).layout(85)
+  t.deepEqual(
+    rtl.lines.map((line) => [line.startIndex, line.endIndex]),
+    [
+      [0, 5],
+      [6, 11],
+      [12, 20],
+      [21, 23],
+    ],
+  )
+  t.is(rtl.placeholders[0]!.line, 1)
+  near(t, rtl.placeholders[0]!.x, 0)
+  for (const direction of ['ltr', 'rtl'] as const) {
+    const justified = new Paragraph(parts, { ...STYLE, direction, textAlign: 'justify' }).layout(85)
+    near(t, justified.lines[0].width, 85)
+    near(t, justified.lines[0].left, 0)
+  }
+})

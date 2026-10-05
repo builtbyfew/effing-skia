@@ -291,6 +291,20 @@ How:
   twice, as a whole and in pieces. As with SkParagraph, the empty line after
   a hard break that ends the text shows if there is room and is not one of
   the lines `maxLines` counts.
+- Each piece takes the bidi levels its text has in the whole paragraph,
+  through its SkUnicode, rather than resolving them anew: on its own, a
+  placeholder, punctuation or digits at its start or end would take the
+  paragraph's direction instead of that of the text around them, and land
+  on the other side of an Arabic word in an LTR paragraph, say. A piece
+  that ends at a soft break gets a placeholder after it that no line has
+  room for, and only the lines before that, so that its last line is
+  justified like any line that isn't the paragraph's last.
+- With placeholders, where SkParagraph may end a line beside one at no
+  opportunity, the text is laid out a window of about eight lines at a
+  time: a piece ends at the last opportunity of such a line, or else
+  before the window's last line, and the next piece starts there. The work
+  then grows with the text, rather than with its square, as laying out all
+  the text after each such line again would.
 - SkParagraph caches the opportunities with the shaped text, under a key
   that leaves them out, so the strut's font families carry a tag for each
   set of them. SkParagraph also leaves out of its cache a paragraph whose
@@ -304,8 +318,6 @@ Known differences from Chrome:
 - A line ending inside a word, or between CJK characters, can differ in
   width by the kerning between the two characters at the break, which
   Chrome drops and Skia keeps (0.4px in the tests).
-- Under `justify`, the line before a word too wide for its line is not
-  justified: it ends a piece.
 - `break-all` follows CSS Text, which treats letters as ideographs; Chrome
   departs from that around some punctuation (it also breaks before `-` and
   `|` and after `+`, which the fork follows, and not after `–`, which it
@@ -460,6 +472,11 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   starts with a line of its own for the space (with `maxLines: 1` and an
   ellipsis it is "c…", not "…"), and `'ab\n  cd'` starts its second line at
   "cd".
+- Text laid out in pieces (around a word too wide for the line, say) keeps
+  the bidi levels it has as a whole: a placeholder, punctuation or digits
+  at the edge of a piece used to take the paragraph's direction, and land
+  on the wrong side of the Arabic or Hebrew around them. The line before a
+  word too wide for the line is now justified under `justify`.
 
 ### 1.0.10-effing.3
 

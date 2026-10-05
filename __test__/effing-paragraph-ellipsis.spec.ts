@@ -4,8 +4,14 @@ import { fileURLToPath } from 'node:url'
 
 import test, { type ExecutionContext } from 'ava'
 
-import { GlobalFonts } from '../index'
-import { Paragraph, type ParagraphContent, type ParagraphLayout, type ParagraphStyle } from '../extensions'
+import { GlobalFonts, createCanvas } from '../index'
+import {
+  Paragraph,
+  fillParagraph,
+  type ParagraphContent,
+  type ParagraphLayout,
+  type ParagraphStyle,
+} from '../extensions'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = join(__dirname, '..')
@@ -350,4 +356,53 @@ test('a clamped line is aligned with its ellipsis', (t) => {
     t.deepEqual(lines(new Paragraph('ab\ncd', { ...style, textAlign }).layout(100)), [[0, 2, 40, left]])
     t.deepEqual(lines(new Paragraph('aaaa bbbb cccc', { ...style, textAlign }).layout(100)), [[0, 8, 100, 0]])
   }
+})
+
+test('the clamped line keeps the bidi levels its text has in the paragraph', (t) => {
+  // An LTR paragraph of Arabic, as canvas lays it out: in Chrome 154 the box
+  // and the digits on the clamped line sit where they do without the clamp,
+  // between the Arabic words, since bidi is resolved for the whole
+  // paragraph. Laid out on its own, the line would put them at its start.
+  const style: ParagraphStyle = { ...HARMATTAN, maxLines: 2, ellipsis: '…' }
+  const boxed = new Paragraph(['بتث بتث بتث ', { width: 20, height: 20 }, ' بتث بتث بتث بتث بتث'], style).layout(110)
+  t.is(boxed.placeholders[0]?.line, 1)
+  t.is(round(boxed.placeholders[0]!.x), 68.05) // Chrome: 68.05
+  // Where '2026' is drawn on the second line: right of the Arabic, as in
+  // Chrome, not at the line's start.
+  const inkColumns = (paragraph: Paragraph, line: number) => {
+    const canvas = createCanvas(200, 80)
+    const ctx = canvas.getContext('2d')
+    fillParagraph(ctx, paragraph, 0, 0)
+    const data = ctx.getImageData(0, line * 40, 200, 40).data
+    return Array.from({ length: 200 }, (_, x) => {
+      let sum = 0
+      for (let y = 0; y < 40; y++) sum += data[(y * 200 + x) * 4 + 3]
+      return sum
+    })
+  }
+  const digits = new Paragraph('2026', HARMATTAN)
+  digits.layout(1000)
+  const pattern = inkColumns(digits, 0).slice(0, 40)
+  const at = (paragraph: Paragraph) => {
+    const columns = inkColumns(paragraph, 1)
+    let best = -Infinity
+    let where = 0
+    for (let x = 0; x < 160; x++) {
+      let score = 0
+      for (let k = 0; k < 40; k++) score -= Math.abs((columns[x + k] ?? 0) - pattern[k])
+      if (score > best) {
+        best = score
+        where = x
+      }
+    }
+    return where
+  }
+  const text = 'بتث بتث بتث 2026 بتث بتث بتث بتث بتث'
+  const plain = new Paragraph(text, HARMATTAN)
+  plain.layout(110)
+  const clamped = new Paragraph(text, style)
+  clamped.layout(110)
+  t.is(at(plain), 68)
+  // The clamped line's text is cut short before the digits, logically last.
+  t.true(at(clamped) >= 40, `${at(clamped)}`)
 })
