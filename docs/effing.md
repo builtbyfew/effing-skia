@@ -116,16 +116,24 @@ top:
   do (`__test__/effing-paragraph-ellipsis.spec.ts`). SkParagraph would
   instead empty the line and drop the ellipsis, and, under `justify`, never
   return from laying out such a line when it has more than one run (a
-  placeholder, a fallback font or another direction): its
+  placeholder, a fallback font or another direction), or crash:
   `TextLine::createEllipsis` never tries keeping no cluster at all, and
   `TextLine::justify` then walks the runs of the emptied line over a cluster
   range that ends before it starts. So the fork lays out an ellipsized
   paragraph start-aligned first, justifies it only when no line was emptied,
   and lays an emptied line out anew, as a piece of its own (the line before
-  it then ends a piece, which `justify` leaves unjustified). Chrome aligns
-  the line before truncating it, so where the line's text would have fit,
-  `right` and `center` put such a line further along than the fork's
-  start-aligned overflow.
+  it then ends a piece, which `justify` leaves unjustified). Where this
+  differs from Chrome:
+  - Chrome aligns the line before truncating it, so where the line's text
+    would have fit, `right` and `center` put such a line further along than
+    the fork's start-aligned overflow.
+  - The cluster kept is the first in the text, which in a line of mixed
+    directions need not be the one Chrome keeps, the first on screen.
+  - A line of nothing but spaces keeps none of them: it is the ellipsis
+    alone, at the line's start, where Chrome keeps the spaces before it.
+  - `text-overflow` clips the line, ellipsis included, to the box; the fork
+    clips nothing, so a `noWrap` line's kept cluster and ellipsis show past
+    the width, as a clamped line's do in Chrome.
 - The hard breaks are SkParagraph's: LF, VT, FF, CRLF, LS (U+2028) and PS
   (U+2029). A lone CR and NEL (U+0085) are not breaks. Chrome's
   `white-space: pre` breaks at LF and CRLF only and draws VT, FF, LS and PS

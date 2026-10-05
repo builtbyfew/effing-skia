@@ -37,11 +37,16 @@ const round = (x: number) => Math.round(x * 100) / 100
 
 type Case = { parts: ParagraphContent; style: ParagraphStyle; width: number }
 
-// Lays each case out in a child process, so that a layout that never
-// returns fails the test instead of hanging the run.
-function layOutInChild(t: ExecutionContext, cases: Case[]) {
+type Result = { lines: Line[]; placeholders: (number | null)[]; didExceedMaxLines: boolean }
+
+// Lays each case out in a child process, a few cases to a process, so that
+// a layout that never returns (or crashes) fails the test, naming its case,
+// instead of hanging the run. The cases go in on stdin and come back one
+// line each, as each layout returns.
+function layOutInChild(t: ExecutionContext, cases: Case[]): (Result | undefined)[] {
   const script = `
     const { join } = require('node:path')
+    const { readFileSync } = require('node:fs')
     const { GlobalFonts } = require(join(process.cwd(), 'index.js'))
     const { Paragraph } = require(join(process.cwd(), 'extensions.js'))
     const fonts = join(process.cwd(), '__test__', 'fonts')
@@ -49,29 +54,46 @@ function layOutInChild(t: ExecutionContext, cases: Case[]) {
     GlobalFonts.registerFromPath(join(fonts, 'Harmattan-Regular.ttf'), 'WB Harmattan')
     GlobalFonts.registerFromPath(join(fonts, 'SourceHanSerifCN-Bold.ttf'), 'WB Source Han')
     const round = (x) => Math.round(x * 100) / 100
-    const cases = JSON.parse(process.argv[1])
-    console.log(JSON.stringify(cases.map(({ parts, style, width }) => {
+    for (const { parts, style, width } of JSON.parse(readFileSync(0, 'utf8'))) {
       const layout = new Paragraph(parts, style).layout(width)
-      return {
+      process.stdout.write(JSON.stringify({
         lines: layout.lines.map((line) => [line.startIndex, line.endIndex, round(line.width), round(line.left)]),
         placeholders: layout.placeholders.map((p) => p && round(p.x)),
         didExceedMaxLines: layout.didExceedMaxLines,
-      }
-    })))
+      }) + '\\n')
+    }
   `
-  try {
-    const out = execFileSync(process.execPath, ['-e', script, JSON.stringify(cases)], {
-      cwd: root,
-      encoding: 'utf8',
-      env: { ...process.env, NODE_OPTIONS: '' },
-      timeout: 60_000,
-      killSignal: 'SIGKILL',
-    })
-    return JSON.parse(out) as { lines: Line[]; placeholders: (number | null)[]; didExceedMaxLines: boolean }[]
-  } catch (e) {
-    t.fail(`layout did not return: ${(e as Error).message}`)
-    return []
+  const results: (Result | undefined)[] = []
+  const batch = 8
+  for (let start = 0; start < cases.length; start += batch) {
+    const some = cases.slice(start, start + batch)
+    let out: string
+    let failure: string | undefined
+    try {
+      out = execFileSync(process.execPath, ['-e', script], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, NODE_OPTIONS: '' },
+        input: JSON.stringify(some.map(({ parts, style, width }) => ({ parts, style, width }))),
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      })
+    } catch (e) {
+      const error = e as Error & { stdout?: string; signal?: string; code?: string }
+      out = error.stdout ?? ''
+      failure = error.code ?? error.signal ?? error.message
+    }
+    const done = out.split('\n').filter(Boolean)
+    for (const line of done) {
+      results.push(JSON.parse(line) as Result)
+    }
+    if (failure !== undefined && done.length < some.length) {
+      const { parts, style, width } = some[done.length]
+      t.fail(`layout(${width}) of ${JSON.stringify(parts)} ${JSON.stringify(style)} did not return: ${failure}`)
+      results.push(...Array<undefined>(some.length - done.length).fill(undefined))
+    }
   }
+  return results
 }
 
 test('justify with an ellipsis that not even the first cluster fits with', (t) => {
@@ -156,6 +178,9 @@ test('justify with an ellipsis that not even the first cluster fits with', (t) =
   for (const [i, result] of results.entries()) {
     const { expected, range, parts, style } = cases[i]
     const name = JSON.stringify({ parts, style })
+    if (!result) {
+      continue
+    }
     if (expected) {
       t.deepEqual(result.lines, expected.lines, name)
       t.deepEqual(result.placeholders, expected.placeholders, name)
