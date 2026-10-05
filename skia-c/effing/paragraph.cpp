@@ -1421,10 +1421,14 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
     }
     if (p->ellipsized) {
       // A line's metrics leave out an ellipsis Skia appended to it; the
-      // painted runs include it.
-      const size_t n = lines.size();
+      // painted runs include it. Only that line's: elsewhere a run can end
+      // past the line, as one does in RTL whose zero-width character (a
+      // ZWSP) a negative letter spacing gives a negative width.
+      const auto& text_lines = static_cast<ParagraphImpl*>(paragraph)->lines();
+      const size_t n = std::min(lines.size(), text_lines.size());
       paragraph->visit([&](int line, const Paragraph::VisitorInfo* run) {
-        if (run == nullptr || line < 0 || static_cast<size_t>(line) >= n) {
+        if (run == nullptr || line < 0 || static_cast<size_t>(line) >= n ||
+            text_lines[line].ellipsis() == nullptr) {
           return;
         }
         const float right =

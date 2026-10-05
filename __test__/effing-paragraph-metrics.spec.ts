@@ -166,3 +166,21 @@ test('the text laid out at maxIntrinsicWidth breaks only at hard breaks', (t) =>
     t.true(unbounded.maxIntrinsicWidth >= unbounded.longestLine)
   }
 })
+
+test('an ellipsis widens only the line it ends', (t) => {
+  // A negative letter spacing gives the zero-width space a negative width,
+  // which its RTL run's painted extent does not show: line 0 came out 18px
+  // wide, 1px more than without the ellipsis, as the line Skia ellipsized
+  // was measured by its runs and so was every other line.
+  const text = 'ab\u200b\ncd ef gh'
+  for (const direction of ['ltr', 'rtl'] as const) {
+    const style: ParagraphStyle = { ...IOSEVKA, letterSpacing: -1, direction, maxLines: 2 }
+    const clamped = new Paragraph(text, { ...style, ellipsis: '…' }).layout(40)
+    const plain = new Paragraph(text, style).layout(40)
+    t.is(clamped.lines.length, 2)
+    t.is(clamped.lines[0].width, plain.lines[0].width, direction)
+    near(t, clamped.lines[0].width, 17, direction)
+    // The ellipsis line includes the ellipsis: 'cd' and '…'.
+    t.true(clamped.lines[1].width > plain.lines[1].width, direction)
+  }
+})

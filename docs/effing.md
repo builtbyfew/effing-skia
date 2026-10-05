@@ -427,6 +427,10 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   px. `minIntrinsicWidth` of `noWrap` text, which is the same figure,
   follows. `noWrap` text with an `ellipsis` and `maxLines` shapes the lines
   past `maxLines` once to measure them.
+- With an `ellipsis`, only the line SkParagraph ellipsized is measured by its
+  painted runs, to include the ellipsis. Every line was, so a line whose run
+  ends past it, as an RTL line ending in a zero-width space does under a
+  negative `letterSpacing`, came out wider than without the ellipsis.
 
 ### 1.0.10-effing.3
 
