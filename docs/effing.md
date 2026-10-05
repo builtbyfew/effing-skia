@@ -97,7 +97,13 @@ top:
   than the box is start-aligned and overflows the end edge, as in CSS, for
   every alignment. `justify` is Skia's, for wrapped text only: the lines of
   `noWrap` text all end at a hard break or the text, which CSS never
-  justifies.
+  justifies. A justified paragraph laid out again, at any width, gets the
+  lines a fresh one gets and paints as one does
+  (`__test__/effing-paragraph-relayout.spec.ts`; its `maxIntrinsicWidth`
+  aside). SkParagraph would keep the last layout's justification in the
+  lines it formats again at the same width, which then paint unjustified,
+  and measure trailing spaces with it when it breaks them at a new width,
+  so the fork breaks a justified paragraph's lines anew each time.
 - `minIntrinsicWidth` is the widest word, or for `noWrap` text the widest
   line, as CSS min-content is.
 - `wordBreak` and `overflowWrap` say where lines may break within and around
@@ -106,6 +112,33 @@ top:
   line to the width instead. `maxLines` truncates with the `ellipsis` too.
   Without either, the `ellipsis` does nothing, as `text-overflow` doesn't on
   wrapped text.
+- A truncated line keeps at least its first grapheme cluster (in `noWrap`
+  text, with any spaces before it), with the `ellipsis` after it, both overflowing the line when
+  not even they fit, as Chrome's `-webkit-line-clamp` and `text-overflow`
+  do (`__test__/effing-paragraph-ellipsis.spec.ts`). SkParagraph would
+  instead empty the line and drop the ellipsis, and, under `justify`, never
+  return from laying out such a line when it has more than one run (a
+  placeholder, a fallback font or another direction), or crash:
+  `TextLine::createEllipsis` never tries keeping no cluster at all, and
+  `TextLine::justify` then walks the runs of the emptied line over a cluster
+  range that ends before it starts. So the fork lays out an ellipsized
+  paragraph start-aligned first, justifies it only when no line was emptied,
+  and lays an emptied line out anew, as a piece of its own, after the lines
+  before it, which stay justified. Where this differs from Chrome:
+  - Chrome aligns the line before truncating it, so where the line's text
+    would have fit, `right` and `center` put such a line further along than
+    the fork's start-aligned overflow.
+  - The cluster kept is the first in the text, which in a line of mixed
+    directions need not be the one Chrome keeps, the first on screen.
+  - A line of nothing but spaces keeps none of them: it is the ellipsis
+    alone, at the line's start, where Chrome keeps the spaces before it.
+    In wrapped text, a space that starts the text and doesn't fit with the
+    word after it makes such a line (`' cd ef'` at 25px, `maxLines: 1`,
+    is "…"), where Chrome drops the space, as `white-space: normal`
+    collapses it, and shows "c…".
+  - `text-overflow` clips the line, ellipsis included, to the box; the fork
+    clips nothing, so a `noWrap` line's kept cluster and ellipsis show past
+    the width, as a clamped line's do in Chrome.
 - The hard breaks are SkParagraph's: LF, VT, FF, CRLF, LS (U+2028) and PS
   (U+2029). A lone CR and NEL (U+0085) are not breaks. Chrome's
   `white-space: pre` breaks at LF and CRLF only and draws VT, FF, LS and PS
@@ -257,7 +290,8 @@ Known differences from Chrome:
   wide for its line, the last line is that line's own text with the
   ellipsis after it, truncated to fit, as Chrome's `-webkit-line-clamp`
   shows it ("ab…", "Overlong…"). Elsewhere the last line is SkParagraph's
-  truncation.
+  truncation, unless not even its first grapheme cluster fits with the
+  ellipsis (above).
 
 ## Compositing groups: `beginGroup` / `endGroup`
 
