@@ -511,9 +511,23 @@ bool justified(const effing_paragraph* p, PieceKind kind) {
 // depend on the alignment, so the paragraph is first laid out start-aligned,
 // and justified only when no line was emptied; the caller lays such a line
 // out anew.
+//
+// Justifying stores each cluster's shift in its run, and at a new width
+// SkParagraph breaks the lines again before it clears those shifts
+// (ParagraphImpl::layout calls breakShapedTextIntoLines before
+// resetShifts), so its line breaker measures the spaces it trims off a line
+// with the last layout's shifts in, and the lines' widths drift from a
+// fresh paragraph's (#12). Clearing them first, and formatting the lines
+// anew for when they are kept, lays it out as a fresh one.
 bool layout_paragraph(Paragraph* paragraph, float width, bool justify) {
   auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  if (justify) {
+    impl->resetShifts();
+  }
   if (!justify || !impl->paragraphStyle().ellipsized()) {
+    if (justify) {
+      impl->updateTextAlign(TextAlign::kJustify);
+    }
     paragraph->layout(width);
     return ellipsis_failed(paragraph);
   }

@@ -97,7 +97,11 @@ top:
   than the box is start-aligned and overflows the end edge, as in CSS, for
   every alignment. `justify` is Skia's, for wrapped text only: the lines of
   `noWrap` text all end at a hard break or the text, which CSS never
-  justifies.
+  justifies. A justified paragraph laid out again at another width gets the
+  lines a fresh one gets: SkParagraph breaks the lines again before it
+  clears the last layout's justification, which its line breaker then
+  measures trailing spaces with, so the fork clears it first
+  (`__test__/effing-paragraph-relayout.spec.ts`).
 - `minIntrinsicWidth` is the widest word, or for `noWrap` text the widest
   line, as CSS min-content is.
 - `wordBreak` and `overflowWrap` say where lines may break within and around
