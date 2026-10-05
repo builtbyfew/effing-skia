@@ -14,6 +14,7 @@ test.before((t) => {
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'Lato-Regular.ttf'), 'WB Lato'))
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'NotoSansDevanagari-Regular.ttf'), 'WB Devanagari'))
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'SourceHanSerifCN-Bold.ttf'), 'WB Source Han'))
+  t.truthy(GlobalFonts.registerFromPath(join(fonts, 'Harmattan-Regular.ttf'), 'WB Harmattan'))
 })
 
 const IOSEVKA: ParagraphStyle = { fontFamily: 'WB Iosevka', fontSize: 20, lineHeight: 40 }
@@ -142,6 +143,27 @@ test('maxIntrinsicWidth does not depend on the layouts before', (t) => {
       const unbounded = new Paragraph(text, IOSEVKA).layout(Infinity)
       t.is(relaid.maxIntrinsicWidth, fresh.maxIntrinsicWidth, `${text} at ${width}`)
       t.is(relaid.maxIntrinsicWidth, unbounded.maxIntrinsicWidth, `${text} at ${width}`)
+    }
+  }
+})
+
+test('maxLines and the ellipsis leave the intrinsic widths alone', (t) => {
+  const text = 'ab cd\nThe quick brown fox\nمرحبا بالعالم xyz\n  ef  \n'
+  for (const mode of [
+    {},
+    { noWrap: true },
+    { keepTrailingWhitespace: true },
+    { noWrap: true, direction: 'rtl' },
+  ] as const) {
+    const style: ParagraphStyle = { ...LATO, fontFamily: 'WB Lato, WB Harmattan', ...mode }
+    const free = new Paragraph(text, style).layout(Infinity)
+    for (const clamp of [{ maxLines: 1 }, { maxLines: 2, ellipsis: '…' }, { ellipsis: '…' }]) {
+      for (const width of [Infinity, 50]) {
+        const clamped = new Paragraph(text, { ...style, ...clamp }).layout(width)
+        const name = `${JSON.stringify(mode)} ${JSON.stringify(clamp)} at ${width}`
+        t.is(clamped.maxIntrinsicWidth, free.maxIntrinsicWidth, name)
+        t.is(clamped.minIntrinsicWidth, free.minIntrinsicWidth, name)
+      }
     }
   }
 })
