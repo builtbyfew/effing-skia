@@ -184,3 +184,44 @@ test('an ellipsis widens only the line it ends', (t) => {
     t.true(clamped.lines[1].width > plain.lines[1].width, direction)
   }
 })
+
+test('the empty line after a final hard break is at the end of the text', (t) => {
+  const breaks = ['\n', '\r\n', '\u2028', '\u2029', '\v', '\f']
+  const styles: Array<[string, ParagraphStyle, number]> = [
+    ['whole', IOSEVKA, 100],
+    ['unbounded', IOSEVKA, Infinity],
+    ['kept whitespace', { ...IOSEVKA, keepTrailingWhitespace: true }, 100],
+    ['maxLines', { ...IOSEVKA, maxLines: 3, ellipsis: '…' }, 100],
+    ['rtl', { ...IOSEVKA, direction: 'rtl' }, 100],
+    ['noWrap', { ...IOSEVKA, noWrap: true }, 100],
+    ['noWrap with an ellipsis', { ...IOSEVKA, noWrap: true, ellipsis: '…' }, 100],
+    // A word wider than the line splits the text into pieces.
+    ['pieces', IOSEVKA, 50],
+    ['pieces, break-word', { ...IOSEVKA, overflowWrap: 'break-word' }, 50],
+  ]
+  for (const brk of breaks) {
+    for (const [name, style, width] of styles) {
+      for (const text of [`ab ${brk}`, `Overlongword ab${brk}`, `ab${brk}${brk}`]) {
+        const { lines } = new Paragraph(text, style).layout(width)
+        const message = `${JSON.stringify(text)}, ${name}`
+        const last = lines.at(-1)!
+        t.deepEqual(
+          [last.startIndex, last.endIndex, last.width, last.hardBreak],
+          [text.length, text.length, 0, true],
+          message,
+        )
+        t.true(lines.at(-2)!.endIndex <= text.length - brk.length, message)
+      }
+    }
+  }
+  // An empty line between two hard breaks starts after the first.
+  const { lines } = new Paragraph('ab\r\n\r\n', IOSEVKA).layout(100)
+  t.deepEqual(
+    lines.map((line) => [line.startIndex, line.endIndex]),
+    [
+      [0, 2],
+      [4, 4],
+      [6, 6],
+    ],
+  )
+})

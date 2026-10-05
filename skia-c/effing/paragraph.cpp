@@ -68,6 +68,10 @@ struct effing_paragraph {
   std::vector<size_t> first_lines;
   // The UTF-16 index of each hard break in the whole text.
   std::vector<size_t> hard_breaks;
+  // The whole text's length in UTF-16 units, and whether a hard break ends
+  // it, which makes an empty last line.
+  size_t length = 0;
+  bool ends_in_hard_break = false;
   // Where each placeholder landed.
   std::vector<effing_paragraph_placeholder_box> placeholder_boxes;
 
@@ -1247,6 +1251,20 @@ effing_paragraph* effing_paragraph_create(
 
   out->hard_breaks =
       hard_break_indices(text, text_len, placeholders, placeholder_count);
+  out->length = utf16_length(text, text_len) + placeholder_count;
+  // A placeholder at the end of the text comes after a break there.
+  if (placeholder_count == 0 ||
+      placeholders[placeholder_count - 1].offset < text_len) {
+    for (size_t i = text_len - std::min<size_t>(text_len, 3); i < text_len;
+         i++) {
+      const size_t brk =
+          hard_break_at(text, text_len, i, placeholders, placeholder_count);
+      if (brk > 0 && i + brk == text_len) {
+        out->ends_in_hard_break = true;
+        break;
+      }
+    }
+  }
   out->placeholders.reserve(placeholder_count);
   for (size_t i = 0; i < placeholder_count; i++) {
     out->placeholders.push_back({placeholders[i]});
@@ -1393,6 +1411,15 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
       line.fEndIndex += offset;
       line.fEndExcludingWhitespaces += offset;
       line.fEndIncludingNewline += offset;
+      // Skia gives the empty line after a hard break that ends the text the
+      // break's last unit, [length - 1, length), the LF of a CRLF; it starts
+      // after the break, at the end of the text, as an empty line between
+      // two hard breaks starts after the first.
+      if (p->ends_in_hard_break && line.fStartIndex >= p->hard_breaks.back() &&
+          line.fEndExcludingWhitespaces > line.fStartIndex) {
+        line.fStartIndex = line.fEndIndex = line.fEndExcludingWhitespaces =
+            line.fEndIncludingNewline = p->length;
+      }
       // Skia counts a hard break that ends the text in the line before it;
       // the line's text stops at its first hard break.
       const auto brk = std::lower_bound(p->hard_breaks.begin(),

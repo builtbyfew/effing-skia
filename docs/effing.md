@@ -154,9 +154,11 @@ top:
   `white-space: pre` breaks at LF and CRLF only and draws VT, FF, LS and PS
   inline, so a caller after Chrome's result replaces those first.
 - A hard break that ends the text gives an empty last line, as SkParagraph
-  lays it out: `'ab\n'` has two lines. Chrome gives `white-space: pre` text
-  ending in a newline one line, so a caller that wants that drops the final
-  break, or the last line.
+  lays it out: `'ab\n'` has two lines. That line starts and ends at the end
+  of the text (`[3, 3)` here), after the break, whatever the break, as an
+  empty line between two hard breaks starts after the first. Chrome gives
+  `white-space: pre` text ending in a newline one line, so a caller that
+  wants that drops the final break, or the last line.
 - Whitespace at the end of a line hangs: it is left out of the line's width
   and alignment, as CSS does for `white-space: normal`. With
   `keepTrailingWhitespace`, spaces and tabs before a hard break or the end of
@@ -431,6 +433,10 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   painted runs, to include the ellipsis. Every line was, so a line whose run
   ends past it, as an RTL line ending in a zero-width space does under a
   negative `letterSpacing`, came out wider than without the ellipsis.
+- The empty last line after a hard break that ends the text starts and ends
+  at the end of the text, `[length, length)`, for every kind of hard break.
+  It used to cover the break's last unit, `[length - 1, length)`, except in
+  `noWrap` text with an `ellipsis`.
 
 ### 1.0.10-effing.3
 
