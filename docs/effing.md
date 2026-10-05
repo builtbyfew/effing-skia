@@ -437,6 +437,10 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   at the end of the text, `[length, length)`, for every kind of hard break.
   It used to cover the break's last unit, `[length - 1, length)`, except in
   `noWrap` text with an `ellipsis`.
+- `noWrap` text with an `ellipsis` and `maxLines` counts its lines as other
+  text does: the empty line after a hard break that ends the text no longer
+  sets `didExceedMaxLines`, and an empty first line that is all `maxLines`
+  keeps is a line (it used to leave the paragraph with none).
 
 ### 1.0.10-effing.3
 

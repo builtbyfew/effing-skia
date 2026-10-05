@@ -1316,7 +1316,9 @@ effing_paragraph* effing_paragraph_create(
       continue;
     }
     if (out->paragraphs.size() == max_lines) {
-      out->dropped_lines = true;
+      // The empty line after a hard break that ends the text is not one of
+      // the lines max_lines counts, as when Skia lays out the whole text.
+      out->dropped_lines = start < text_len || next < placeholder_count;
       break;
     }
     add(start, i, 1);
@@ -1381,9 +1383,10 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
     p->first_lines.push_back(first);
     std::vector<LineMetrics> lines;
     paragraph->getLineMetrics(lines);
-    if (lines.empty() && (paragraphs.size() > 1 || !p->pieces.empty())) {
+    if (lines.empty() && p->length > 0) {
       // An empty hard-broken line still takes a line box, as it does when
-      // Skia lays out the whole text.
+      // Skia lays out the whole text, also when it is the only line nowrap
+      // text with an ellipsis keeps. Only empty text has no line.
       lines.emplace_back();
       lines.back().fHardBreak = true;
     }

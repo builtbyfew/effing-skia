@@ -154,6 +154,29 @@ test('noWrap with an ellipsis and maxLines drops the lines past it', (t) => {
   t.is(layout.lines[1].startIndex, TEXT.length + 1)
 })
 
+test('noWrap with an ellipsis and maxLines counts lines as other text does', (t) => {
+  const lines = (text: string, style: ParagraphStyle) => {
+    const layout = new Paragraph(text, style).layout(200)
+    return [layout.lines.map((line) => [line.startIndex, line.endIndex, line.hardBreak]), layout.didExceedMaxLines]
+  }
+  for (const [text, maxLines] of [
+    // The empty line after a hard break that ends the text is not one of
+    // maxLines; it shows if there is room.
+    ['ab\n', 1],
+    ['ab\n', 2],
+    ['ab\n\n', 1],
+    // An empty first line is a line.
+    ['\nab', 1],
+    ['\n', 1],
+    ['\u000b', 1],
+  ] as const) {
+    const style = { ...STYLE, noWrap: true, maxLines }
+    t.deepEqual(lines(text, { ...style, ellipsis: '…' }), lines(text, style), JSON.stringify(text))
+  }
+  t.deepEqual(lines('\nab', { ...STYLE, noWrap: true, maxLines: 1, ellipsis: '…' }), [[[0, 0, true]], true])
+  t.deepEqual(lines('ab\n', { ...STYLE, noWrap: true, maxLines: 1, ellipsis: '…' }), [[[0, 2, true]], false])
+})
+
 test('line indices are UTF-16 offsets', (t) => {
   const text = 'Ünïcödé wörds wräp hère ănd thêre 😀 again'
   const layout = new Paragraph(text, STYLE).layout(150)
