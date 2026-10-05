@@ -107,7 +107,8 @@ top:
 - `minIntrinsicWidth` is the widest word, or for `noWrap` text the widest
   line, as CSS min-content is.
 - `maxIntrinsicWidth` is the widest line between hard breaks, its trailing
-  whitespace hanging unless it is kept, as CSS max-content is
+  whitespace hanging and, in wrapping text, the spaces and tabs that start
+  it collapsed, unless whitespace is kept, as CSS max-content is
   (`__test__/effing-paragraph-metrics.spec.ts`). It is measured once, from
   the whole text, so neither the width nor the layouts before change it,
   and `maxLines` and the `ellipsis` leave it alone, as line clamping leaves
@@ -427,8 +428,10 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 ### Unreleased
 
 - `maxIntrinsicWidth` is CSS max-content: the widest line between hard
-  breaks, trailing whitespace hanging unless it is kept, measured once from
-  the whole text and rounded up to 0.01px. It used to be SkParagraph's sum
+  breaks, trailing whitespace hanging and, in wrapping text, leading spaces
+  and tabs collapsed (as the layout collapses them), unless whitespace is
+  kept, measured once from the whole text and rounded up to 0.01px. It used
+  to be SkParagraph's sum
   of the lines broken at the last layout's width, trailing whitespace
   included, so it changed with the width and, where a word too wide for its
   line split the text, kept an earlier layout's figure, by up to hundreds of

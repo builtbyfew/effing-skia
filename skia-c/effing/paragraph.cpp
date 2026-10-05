@@ -664,8 +664,13 @@ float round_up_for_line_breaker(float width) {
 // gave an invisible character a negative width: the breaker then needs the
 // widest the line gets as it adds up its clusters. Skia's own maximum adds up
 // the lines it broke at the last layout's width, trailing whitespace
-// included, so it changes with the width.
-float widest_hard_line(Paragraph* paragraph, bool keep_trailing_whitespace) {
+// included, so it changes with the width. With `collapse_leading`, the
+// spaces and tabs that start a line are left out too, as white-space: normal
+// collapses them away, and as layout does in wrapping text whose whitespace
+// isn't kept (#19).
+float widest_hard_line(Paragraph* paragraph,
+                       bool keep_trailing_whitespace,
+                       bool collapse_leading) {
   auto* impl = static_cast<ParagraphImpl*>(paragraph);
   const SkSpan<const char> text = impl->text();
   float widest = 0;
@@ -681,6 +686,8 @@ float widest_hard_line(Paragraph* paragraph, bool keep_trailing_whitespace) {
   };
   // Where the last hard break ends, CRLF being one.
   size_t break_end = 0;
+  // Whether only spaces and tabs came on the line so far.
+  bool leading = true;
   for (const Cluster& cluster : impl->clusters()) {
     const TextRange range = cluster.textRange();
     if (range.width() == 0 || range.start < break_end) {
@@ -692,7 +699,15 @@ float widest_hard_line(Paragraph* paragraph, bool keep_trailing_whitespace) {
     if (brk > 0) {
       end_line();
       break_end = range.start + brk;
+      leading = true;
       continue;
+    }
+    if (leading) {
+      leading = std::all_of(text.data() + range.start, text.data() + range.end,
+                            [](char c) { return c == ' ' || c == '\t'; });
+      if (leading && collapse_leading) {
+        continue;
+      }
     }
     width += cluster.width();
     if (!cluster.isWhitespaceBreak()) {
@@ -709,10 +724,12 @@ float widest_hard_line(Paragraph* paragraph, bool keep_trailing_whitespace) {
 // that nowrap text with an ellipsis dropped for max_lines are shaped here.
 void measure_max_content(effing_paragraph* p) {
   p->max_content = 0;
+  const bool collapse_leading = !p->keep_trailing_whitespace && !p->nowrap;
   for (const auto& paragraph : p->paragraphs) {
-    p->max_content = std::max(
-        p->max_content,
-        widest_hard_line(paragraph.get(), p->keep_trailing_whitespace));
+    p->max_content =
+        std::max(p->max_content,
+                 widest_hard_line(paragraph.get(), p->keep_trailing_whitespace,
+                                  collapse_leading));
   }
   if (!p->dropped_lines || p->sources.empty()) {
     return;
@@ -747,9 +764,9 @@ void measure_max_content(effing_paragraph* p) {
       auto line = build(p, line_start, i, first, end, 0, PieceKind::kUnbounded,
                         SkString(), &placed);
       line->layout(kUnbounded);
-      p->max_content =
-          std::max(p->max_content,
-                   widest_hard_line(line.get(), p->keep_trailing_whitespace));
+      p->max_content = std::max(
+          p->max_content,
+          widest_hard_line(line.get(), p->keep_trailing_whitespace, false));
     }
     if (brk == 0) {
       break;

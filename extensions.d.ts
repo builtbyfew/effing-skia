@@ -127,8 +127,9 @@ export interface ParagraphLayout {
    */
   minIntrinsicWidth: number
   /**
-   * The widest line between hard breaks, trailing whitespace hanging unless
-   * `keepTrailingWhitespace` keeps it: CSS max-content, whatever the width,
+   * The widest line between hard breaks, trailing whitespace hanging and,
+   * unless `noWrap`, leading spaces and tabs collapsed, unless
+   * `keepTrailingWhitespace` keeps them: CSS max-content, whatever the width,
    * `maxLines` and `ellipsis`. Rounded up to 0.01px, so the text laid out at
    * it breaks only at hard breaks.
    */

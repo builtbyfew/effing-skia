@@ -51,6 +51,26 @@ const CHROME: Array<{ name: string; text: ParagraphContent; style: ParagraphStyl
     max: 40,
   },
   { name: 'a final hard break', text: 'abc\n', style: IOSEVKA, min: 30, max: 30 },
+  // Spaces and tabs that start a line collapse away unless whitespace is
+  // kept, as the layout collapses them in wrapping text (#19).
+  { name: 'leading spaces collapse', text: '    ab', style: IOSEVKA, min: 20, max: 20 },
+  {
+    name: 'leading spaces kept',
+    text: '    ab',
+    style: { ...IOSEVKA, keepTrailingWhitespace: true },
+    min: 20,
+    max: 60,
+  },
+  { name: 'spaces after a hard break collapse', text: 'ab\n   cd', style: IOSEVKA, min: 20, max: 20 },
+  {
+    name: 'spaces after a hard break kept',
+    text: 'ab\n   cd',
+    style: { ...IOSEVKA, keepTrailingWhitespace: true },
+    min: 20,
+    max: 50,
+  },
+  { name: 'a leading tab and space collapse', text: '\t ab cd', style: IOSEVKA, min: 20, max: 50 },
+
   { name: 'CRLF', text: 'ab\r\ncdefg', style: IOSEVKA, min: 50, max: 50 },
   { name: 'a placeholder', text: ['ab ', PH(40), ' cd'], style: IOSEVKA, min: 40, max: 100 },
   { name: 'placeholders, then spaces', text: [PH(5), PH(40), 'a  '], style: IOSEVKA, min: 40, max: 55 },
