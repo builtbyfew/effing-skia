@@ -111,11 +111,17 @@ top:
   (`__test__/effing-paragraph-metrics.spec.ts`). It is measured once, from
   the whole text, so neither the width nor the layouts before change it,
   and `maxLines` and the `ellipsis` leave it alone, as line clamping leaves
-  Chrome's. It is rounded up to the 0.01px SkParagraph's line breaker tells
+  Chrome's, except that `noWrap` text with an `ellipsis` is measured as it
+  is laid out, a line at a time, and a line shaped on its own can come out
+  wider or narrower (an RTL line with fallback fonts, in the tests by
+  14px). It is rounded up to the 0.01px SkParagraph's line breaker tells
   apart, so the text laid out at it breaks only at hard breaks; under a
   negative `letterSpacing` it can be wider than the widest line, by what
   the breaker needs (a character with no advance of its own, such as a
-  combining mark, has a negative width there).
+  combining mark, has a negative width there). `noWrap` text with an
+  `ellipsis` and `maxLines` shapes the hard lines it drops, once, to
+  measure them, where it used to shape only the lines it shows: 2000
+  dropped lines take about 14ms more on the first layout.
 - `wordBreak` and `overflowWrap` say where lines may break within and around
   words (below).
 - `noWrap` breaks only at hard breaks; with an `ellipsis` it truncates each
@@ -427,8 +433,11 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   included, so it changed with the width and, where a word too wide for its
   line split the text, kept an earlier layout's figure, by up to hundreds of
   px. `minIntrinsicWidth` of `noWrap` text, which is the same figure,
-  follows. `noWrap` text with an `ellipsis` and `maxLines` shapes the lines
-  past `maxLines` once to measure them.
+  follows. `maxLines` and the `ellipsis` leave it alone, except that
+  `noWrap` text with an `ellipsis`, laid out a line at a time, is measured
+  as its lines shape on their own. `noWrap` text with an `ellipsis` and
+  `maxLines` shapes the lines past `maxLines` once to measure them, which
+  costs its first layout about 14ms for 2000 dropped lines.
 - With an `ellipsis`, only the line SkParagraph ellipsized is measured by its
   painted runs, to include the ellipsis. Every line was, so a line whose run
   ends past it, as an RTL line ending in a zero-width space does under a
