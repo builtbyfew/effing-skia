@@ -116,6 +116,9 @@ struct effing_paragraph {
     // added after it.
     int max_lines;
     bool suffixed;
+    // Whether its last line ends where `hard_break` says, rather than where
+    // Skia does: Skia takes the end of a piece's text for a hard break.
+    bool override_hard_break;
   };
   std::vector<Piece> pieces;
   bool pieces_exceeded_max_lines = false;
@@ -384,20 +387,21 @@ using PieceKind = effing_paragraph::PieceKind;
 //   coarse for any alignment but the start.
 // - kBreakFirstWord lets a line break between any two grapheme clusters of
 //   the text's first word.
-std::unique_ptr<Paragraph> build(
-    const effing_paragraph* p,
-    size_t start,
-    size_t end,
-    size_t first,
-    size_t last,
-    int max_lines,
-    PieceKind kind,
-    const SkString& suffix,
-    std::vector<std::pair<size_t, size_t>>* placed) {
+std::unique_ptr<Paragraph> build(const effing_paragraph* p,
+                                 size_t start,
+                                 size_t end,
+                                 size_t first,
+                                 size_t last,
+                                 int max_lines,
+                                 PieceKind kind,
+                                 const SkString& suffix,
+                                 std::vector<std::pair<size_t, size_t>>* placed,
+                                 bool ellipsis = true) {
   ParagraphStyle style = p->paragraph_style;
   if (max_lines > 0) {
     style.setMaxLines(max_lines);
-  } else {
+  }
+  if (max_lines <= 0 || !ellipsis) {
     // With no limit, Skia would truncate the first line with it.
     style.setEllipsis(SkString());
   }
@@ -452,8 +456,9 @@ std::unique_ptr<Paragraph> build_piece(
     std::vector<std::pair<size_t, size_t>>* placed) {
   const auto [text_start, first] = to_text(p, start);
   const auto [text_end, last] = to_text(p, end);
+  // Only the line given an ellipsis as `suffix` may truncate with Skia's.
   return build(p, text_start, text_end, first, last, max_lines, kind, suffix,
-               placed);
+               placed, !suffix.isEmpty());
 }
 
 // Measures the words of wrapping text from SkParagraph's clusters, which are
@@ -580,21 +585,19 @@ void split_around_long_words(effing_paragraph* p, float w) {
     if (k == 0) {
       p->pieces.pop_back();
     } else {
-      // Its lines before line k: the text before that breaks the same.
-      const size_t end =
-          without_hard_break(text.data(), len, piece.start, line_start);
+      // Its lines before line k, from all its text, shaped as it was: cut
+      // inside a word, the text would join and kern differently.
       piece.placed.clear();
-      piece.max_lines = 0;
-      piece.paragraph = build_piece(p, piece.start, end, 0, piece.kind,
-                                    SkString(), &piece.placed);
+      piece.max_lines = static_cast<int>(k);
+      piece.paragraph = build_piece(p, piece.start, piece.end, piece.max_lines,
+                                    piece.kind, SkString(), &piece.placed);
       piece.paragraph->layout(piece.kind == PieceKind::kUnbounded ? kUnbounded
                                                                   : w);
-      piece.end = end;
-      piece.hard_break = hard_break_at(text.data(), len, end, nullptr, 0) > 0;
-      piece.empty_last_line =
-          without_hard_break(text.data(), len, piece.start, end) != end;
-      piece.line_end =
-          piece.empty_last_line ? whole->getUTF16Index(end) : SIZE_MAX;
+      piece.hard_break = without_hard_break(text.data(), len, piece.start,
+                                            line_start) != line_start;
+      piece.override_hard_break = true;
+      piece.empty_last_line = false;
+      piece.line_end = SIZE_MAX;
     }
     Piece last{};
     last.start = line_start;
@@ -616,6 +619,9 @@ void split_around_long_words(effing_paragraph* p, float w) {
   // those. A placeholder's word ends before both, and the next piece would
   // start with them.
   const auto past_spaces = [&](size_t start, size_t end) {
+    if (without_hard_break(text.data(), len, start, end) != end) {
+      return end;  // the word ends its line already
+    }
     auto g = std::lower_bound(p->graphemes.begin(), p->graphemes.end(), end,
                               [](const effing_paragraph::Word& g, size_t at) {
                                 return g.start < at;
@@ -695,25 +701,36 @@ void split_around_long_words(effing_paragraph* p, float w) {
     piece.paragraph->layout(unbounded ? kUnbounded : w);
     const int n = std::max(static_cast<int>(piece.paragraph->lineNumber()), 1);
     const bool truncated = cut || piece.paragraph->didExceedMaxLines();
-    if (truncated) {
+    // Skia gives the empty line after a hard break that ends a text the
+    // break's own index, and its end after it; under a limit it may leave
+    // that line out.
+    const auto ends_in_empty_line = [&](size_t text_end) {
+      const size_t brk = without_hard_break(text.data(), len, start, text_end);
+      if (brk == text_end) {
+        return false;
+      }
+      std::vector<LineMetrics> lines;
+      piece.paragraph->getLineMetrics(lines);
+      const size_t at = whole->getUTF16Index(brk) - piece.offset;
+      return !lines.empty() && lines.back().fStartIndex >= at &&
+             lines.back().fEndExcludingWhitespaces > lines.back().fStartIndex;
+    };
+    if (truncated ||
+        (piece.empty_last_line && !ends_in_empty_line(piece.end))) {
       // Its last line is not the empty one after its text.
       piece.empty_last_line = false;
       piece.line_end = SIZE_MAX;
     }
+    // Skia knows whether the last line of the text, or of text it truncated,
+    // ends at a hard break; the end of a piece, or of the text cut short for
+    // the lines left, is none.
+    piece.override_hard_break =
+        (end < len || cut) && !piece.paragraph->didExceedMaxLines();
     // Skia's empty line after a hard break that ends the text is not one of
     // the lines maxLines counts: it shows if there is room, and Skia leaves
     // it out at the limit.
-    bool phantom = false;
-    const size_t last_break = without_hard_break(text.data(), len, start, end);
-    if (end == len && !truncated && n > 1 && last_break != end) {
-      // Skia gives it the hard break's own index, and its end after it.
-      std::vector<LineMetrics> lines;
-      piece.paragraph->getLineMetrics(lines);
-      const size_t at = whole->getUTF16Index(last_break) - piece.offset;
-      phantom =
-          lines.back().fStartIndex >= at &&
-          lines.back().fEndExcludingWhitespaces > lines.back().fStartIndex;
-    }
+    const bool phantom =
+        end == len && !truncated && n > 1 && ends_in_empty_line(end);
     const int counted = n - (phantom ? 1 : 0);
     p->pieces.push_back(std::move(piece));
     if (!limited) {
@@ -738,6 +755,18 @@ void split_around_long_words(effing_paragraph* p, float w) {
     p->pieces_exceeded_max_lines = true;
     if (p->ellipsized) {
       end_with_ellipsis(static_cast<size_t>(std::min(lines_left, counted) - 1));
+    } else if (counted > lines_left) {
+      // A piece built without the limit (a word at the unbounded width)
+      // shows no more lines than are left.
+      Piece& last = p->pieces.back();
+      last.placed.clear();
+      last.max_lines = lines_left;
+      last.paragraph = build_piece(p, start, last.end, lines_left, kind,
+                                   SkString(), &last.placed);
+      last.paragraph->layout(unbounded ? kUnbounded : w);
+      last.override_hard_break = false;
+      last.empty_last_line = false;
+      last.line_end = SIZE_MAX;
     }
     return false;
   };
@@ -1031,7 +1060,7 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
     p->first_lines.push_back(first);
     std::vector<LineMetrics> lines;
     paragraph->getLineMetrics(lines);
-    if (lines.empty() && paragraphs.size() > 1) {
+    if (lines.empty() && (paragraphs.size() > 1 || !p->pieces.empty())) {
       // An empty hard-broken line still takes a line box, as it does when
       // Skia lays out the whole text.
       lines.emplace_back();
@@ -1040,8 +1069,7 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
     if (!p->pieces.empty() && !lines.empty()) {
       const Piece& piece = p->pieces[k];
       LineMetrics& last = lines.back();
-      if (k + 1 < paragraphs.size()) {
-        // Skia takes the end of a piece's text for a hard break.
+      if (piece.override_hard_break) {
         last.fHardBreak = piece.hard_break;
       }
       if (piece.line_end != SIZE_MAX) {

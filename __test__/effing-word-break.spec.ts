@@ -775,3 +775,93 @@ test('keepTrailingWhitespace keeps the spaces before an ellipsis', (t) => {
   expectLines(t, layout, [[0, 5, 70]])
   t.true(layout.didExceedMaxLines)
 })
+
+test('maxLines with leading whitespace after a word wider than the line', (t) => {
+  // The whitespace after a hard break starts the next line; it isn't the
+  // overflowing word's.
+  const layout = (text: string, style: ParagraphStyle) => {
+    const result = new Paragraph(text, { ...IOSEVKA, ...style }).layout(100)
+    return {
+      lines: result.lines.map((line) => [line.startIndex, line.endIndex, Math.round(line.width), line.hardBreak]),
+      exceeded: result.didExceedMaxLines,
+      height: result.height / result.lineHeight,
+    }
+  }
+  for (const [text, second] of [
+    ['Overlongwordhere\n  ab', [17, 21, 40, true]],
+    ['Overlongwordhere\r\n  ab', [18, 22, 40, true]],
+    ['Overlongwordhere\n\tab', [17, 20, 30, true]],
+  ] as const) {
+    t.deepEqual(layout(text, {}).lines, [[0, 16, 160, true], second])
+    t.deepEqual(layout(text, { maxLines: 1 }), { lines: [[0, 16, 160, true]], exceeded: true, height: 1 })
+    t.deepEqual(layout(text, { maxLines: 1, ellipsis: '…' }), {
+      lines: [[0, 8, 100, true]],
+      exceeded: true,
+      height: 1,
+    })
+    for (const ellipsis of [undefined, '…']) {
+      t.deepEqual(layout(text, { maxLines: 2, ellipsis }), {
+        lines: [[0, 16, 160, true], second],
+        exceeded: false,
+        height: 2,
+      })
+    }
+  }
+})
+
+test('maxLines 1 on text that starts with a hard break', (t) => {
+  // An empty first line, as without a split.
+  const box = { width: 130, height: 10 }
+  for (const text of ['\nOverlongwordhere', '\r\nOverlongwordhere', ['\n', box]] as const) {
+    for (const ellipsis of [undefined, '…']) {
+      const layout = new Paragraph(text as never, { ...IOSEVKA, maxLines: 1, ellipsis }).layout(100)
+      t.deepEqual(
+        layout.lines.map((line) => [line.startIndex, line.endIndex, line.hardBreak]),
+        [[0, 0, true]],
+      )
+      near(t, layout.height, layout.lineHeight)
+      near(t, layout.lines[0].width, ellipsis ? 20 : 0)
+      t.true(layout.didExceedMaxLines)
+    }
+  }
+})
+
+test('the lines before an ellipsis are shaped as without it', (t) => {
+  // Under break-word the lines before the ellipsis line break inside a word;
+  // cut there, the text would join (Arabic) or kern (Lato) differently.
+  const first = (text: string, style: ParagraphStyle, width: number) =>
+    new Paragraph(text, { ...style, overflowWrap: 'break-word' }).layout(width).lines[0]
+  for (const [text, style, width] of [
+    ['بالعالم xyz', { ...ARABIC, textAlign: 'left' }, 30],
+    ['AVAVAVAVAVAVAVAV xyz', LATO, 60],
+  ] as const) {
+    const clamped = new Paragraph(text, { ...style, overflowWrap: 'break-word', maxLines: 2, ellipsis: '…' }).layout(
+      width,
+    )
+    t.is(clamped.lines.length, 2, text)
+    const unclamped = first(text, style, width)
+    t.deepEqual([clamped.lines[0].startIndex, clamped.lines[0].endIndex], [unclamped.startIndex, unclamped.endIndex])
+    near(t, clamped.lines[0].width, unclamped.width)
+  }
+})
+
+test('a line clamped at the end of a piece is no hard break', (t) => {
+  // As without a split: its trailing spaces hang, kept or not.
+  for (const keepTrailingWhitespace of [false, true]) {
+    const split = new Paragraph('ab cd   Overlongwordhere', {
+      ...IOSEVKA,
+      maxLines: 1,
+      keepTrailingWhitespace,
+      textAlign: 'right',
+    }).layout(60)
+    const whole = new Paragraph('ab cd   ef gh', {
+      ...IOSEVKA,
+      maxLines: 1,
+      keepTrailingWhitespace,
+      textAlign: 'right',
+    }).layout(60)
+    t.deepEqual(split.lines, whole.lines)
+    expectLines(t, split, [[0, 5, 50, 10]])
+    t.false(split.lines[0].hardBreak)
+  }
+})
