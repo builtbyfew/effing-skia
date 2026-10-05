@@ -512,16 +512,24 @@ bool justified(const effing_paragraph* p, PieceKind kind) {
 // and justified only when no line was emptied; the caller lays such a line
 // out anew.
 //
-// Justifying stores each cluster's shift in its run, and at a new width
-// SkParagraph breaks the lines again before it clears those shifts
+// Justifying also changes the lines in place: it moves each cluster by a
+// shift it keeps in the cluster's run, and widens the line to the width.
+// SkParagraph never undoes either for lines it keeps: formatted again at the
+// same width, a line already as wide as that is left as it is
+// (TextLine::format), its shifts gone, so it paints unjustified; and at a new
+// width it breaks the lines before it clears the shifts
 // (ParagraphImpl::layout calls breakShapedTextIntoLines before
 // resetShifts), so its line breaker measures the spaces it trims off a line
-// with the last layout's shifts in, and the lines' widths drift from a
-// fresh paragraph's (#12). Clearing them first, and formatting the lines
-// anew for when they are kept, lays it out as a fresh one.
+// with the old shifts in, and the lines' widths drift from a fresh
+// paragraph's (#12). So a justified paragraph has its lines broken anew,
+// with no shifts, every time: laid out as a fresh one is, but not shaped
+// again.
 bool layout_paragraph(Paragraph* paragraph, float width, bool justify) {
   auto* impl = static_cast<ParagraphImpl*>(paragraph);
   if (justify) {
+    if (impl->state() > InternalState::kShaped) {
+      impl->setState(InternalState::kShaped);
+    }
     impl->resetShifts();
   }
   if (!justify || !impl->paragraphStyle().ellipsized()) {
@@ -536,7 +544,8 @@ bool layout_paragraph(Paragraph* paragraph, float width, bool justify) {
   if (ellipsis_failed(paragraph)) {
     return true;
   }
-  // Keeps the lines and formats them anew.
+  // Keeps the lines, which start-aligning left as they were, and formats
+  // them anew.
   impl->updateTextAlign(TextAlign::kJustify);
   paragraph->layout(width);
   return false;
