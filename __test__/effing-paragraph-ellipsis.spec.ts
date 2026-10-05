@@ -335,3 +335,19 @@ test('the last line is its own text with the ellipsis after it, as Chrome has it
   ])
   t.is(wide.placeholders[0]?.line, 1)
 })
+
+test('a clamped line is aligned with its ellipsis', (t) => {
+  // Chrome 154 aligns the line by its text alone and puts the ellipsis
+  // after it, past the end edge where it doesn't fit ("ab" from 80px, the
+  // ellipsis from 100px; "aaaa bbb…" from 10px to 110px), where overflow
+  // hides it. The paragraph aligns the line it shows, ellipsis included, so
+  // the ellipsis stays in the box (docs/effing.md).
+  const style: ParagraphStyle = { ...IOSEVKA, maxLines: 1, ellipsis: '…' }
+  for (const [textAlign, left] of [
+    ['right', 60],
+    ['center', 30],
+  ] as const) {
+    t.deepEqual(lines(new Paragraph('ab\ncd', { ...style, textAlign }).layout(100)), [[0, 2, 40, left]])
+    t.deepEqual(lines(new Paragraph('aaaa bbbb cccc', { ...style, textAlign }).layout(100)), [[0, 8, 100, 0]])
+  }
+})

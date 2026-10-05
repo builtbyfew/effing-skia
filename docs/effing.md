@@ -125,9 +125,17 @@ top:
   paragraph start-aligned first, justifies it only when no line was emptied,
   and lays an emptied line out anew, as a piece of its own, after the lines
   before it, which stay justified. Where this differs from Chrome:
-  - Chrome aligns the line before truncating it, so where the line's text
-    would have fit, `right` and `center` put such a line further along than
-    the fork's start-aligned overflow.
+  - Chrome aligns a clamped line by its own text, before it puts the
+    ellipsis after that text and truncates the two to fit the width, so
+    under `right` and `center` the ellipsis can end up past the end edge.
+    `'ab\ncd'` with `maxLines: 1`, right-aligned at 100px, has "ab" at the
+    right edge and the ellipsis after it, outside the box, where the
+    `overflow: hidden` used with line clamping hides it, and
+    `'aaaa bbbb cccc'` is "aaaa bbb…" from 10px to 110px. The fork aligns
+    the line it shows, ellipsis included, and start-aligns it when it
+    overflows, as it does any line: "ab…" from 60px to 100px and
+    "aaaa bbb…" from 0 to 100px. Matching Chrome would put the ellipsis
+    where Chrome hides it, and the fork clips nothing.
   - The cluster kept is the first in the text, which in a line of mixed
     directions need not be the one Chrome keeps, the first on screen.
   - A line of nothing but spaces keeps none of them: it is the ellipsis
