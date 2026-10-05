@@ -407,9 +407,9 @@ using Piece = effing_paragraph::Piece;
 using PieceKind = effing_paragraph::PieceKind;
 
 // Whether lines break around a placeholder as around an emoji, rather than
-// on either side of it as around an inline-block. All do, for now.
-bool breaks_as_emoji(const effing_paragraph_placeholder&) {
-  return true;
+// on either side of it as around an inline-block.
+bool breaks_as_emoji(const effing_paragraph_placeholder& placeholder) {
+  return placeholder.line_break == EFFING_PLACEHOLDER_BREAK_EMOJI;
 }
 
 // A paragraph built from part of the whole paragraph's Skia text, starting at
@@ -463,12 +463,19 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
   // Where the placeholders that break lines as emoji are in the paragraph's
   // text, each a U+FFFC of 3 bytes (add_content).
   std::vector<size_t> ideographs;
+  // Which of them those are, for the cache tag: SkParagraph's cache keys a
+  // paragraph on its placeholders, but not on how lines break around them.
+  std::string emoji;
   for (size_t k = first; k < last; k++) {
     const auto& spec = p->placeholder_specs[k];
+    emoji += breaks_as_emoji(spec) ? '1' : '0';
     if (breaks_as_emoji(spec)) {
       ideographs.push_back(std::max(spec.offset, start) - start +
                            3 * (k - first));
     }
+  }
+  if (ideographs.empty()) {
+    emoji.clear();
   }
   std::vector<SkUnicode::BidiRegion> bidi;
   if (piece != nullptr && !p->bidi.empty()) {
@@ -495,7 +502,8 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
   auto families = p->strut_families;
   for (const std::string& tag :
        {effing::word_break_cache_tag(p->word_break, break_first_word),
-        effing::bidi_cache_tag(bidi)}) {
+        effing::bidi_cache_tag(bidi),
+        emoji.empty() ? std::string() : "effing-emoji: " + emoji}) {
     if (!tag.empty()) {
       families.emplace_back(tag.c_str());
     }
@@ -581,21 +589,31 @@ bool ellipsis_failed(Paragraph* paragraph) {
 }
 
 // The line-break opportunities in `paragraph`'s Skia text, built as a piece
-// of `kind` (kWrapped for the whole paragraph), by offset: SkUnicode's, which
-// SkParagraph overrides around a placeholder with one on either side.
+// of `kind` (kWrapped for the whole paragraph) from the whole paragraph's
+// Skia text at `offset` on, by offset: SkUnicode's, which SkParagraph
+// overrides around a placeholder with one on either side. That stays around
+// a placeholder that breaks lines as a box.
 std::vector<bool> opportunities(const effing_paragraph* p,
                                 Paragraph* paragraph,
-                                PieceKind kind) {
+                                PieceKind kind,
+                                size_t offset) {
   auto* impl = static_cast<ParagraphImpl*>(paragraph);
   const SkSpan<const char> text = impl->text();
   std::string copy(text.data(), text.size());
   skia_private::TArray<SkUnicode::CodeUnitFlags, true> flags;
-  // Its placeholders, which build() takes for emoji (breaks_as_emoji).
+  // Its placeholders, in order from the first one after `offset`, as
+  // build() gave them; a sentinel after them is none of them.
+  size_t k = to_text(p, offset).second;
   std::vector<size_t> ideographs;
+  std::vector<size_t> boxes;
   for (const Placeholder& placeholder : impl->placeholders()) {
-    if (placeholder.fRange.width() > 0) {
-      ideographs.push_back(placeholder.fRange.start);
+    if (placeholder.fRange.width() == 0) {
+      continue;
     }
+    const bool emoji = k < p->placeholder_specs.size() &&
+                       breaks_as_emoji(p->placeholder_specs[k]);
+    (emoji ? ideographs : boxes).push_back(placeholder.fRange.start);
+    k++;
   }
   const auto unicode = effing::make_word_break_unicode(
       p->word_break, kind == PieceKind::kBreakFirstWord, std::move(ideographs));
@@ -609,6 +627,10 @@ std::vector<bool> opportunities(const effing_paragraph* p,
        i++) {
     out[i] = flags[i] & (SkUnicode::kSoftLineBreakBefore |
                          SkUnicode::kHardLineBreakBefore);
+  }
+  for (const size_t at : boxes) {
+    out[at] = true;
+    out[at + 3] = true;
   }
   return out;
 }
@@ -633,8 +655,10 @@ Misplaced misplaced_break(const effing_paragraph* p,
                           PieceKind kind,
                           size_t offset) {
   auto* impl = static_cast<ParagraphImpl*>(paragraph);
-  // Skia adds a placeholder of its own after the text.
-  if (impl->placeholders().size() <= 1) {
+  // Only a placeholder that breaks lines as an emoji, beside no opportunity,
+  // makes one (measure_words found them); Skia adds a placeholder of its own
+  // after the text.
+  if (p->glued.empty() || impl->placeholders().size() <= 1) {
     return {};
   }
   int index = -1;
@@ -662,7 +686,7 @@ Misplaced misplaced_break(const effing_paragraph* p,
     const bool own =
         kind == PieceKind::kBreakFirstWord || p->opportunities.empty();
     if (own && opportunity.empty()) {
-      opportunity = opportunities(p, paragraph, kind);
+      opportunity = opportunities(p, paragraph, kind, offset);
     }
     const auto at_opportunity = [&](size_t i) {
       return own ? opportunity[i] : p->opportunities[offset + i];
@@ -826,9 +850,10 @@ void measure_words(effing_paragraph* p) {
   }
   // SkParagraph's own flags have an opportunity on either side of every
   // placeholder.
-  p->opportunities = p->placeholder_specs.empty()
+  p->opportunities = std::none_of(p->placeholder_specs.begin(),
+                                  p->placeholder_specs.end(), breaks_as_emoji)
                          ? std::vector<bool>()
-                         : opportunities(p, whole, PieceKind::kWrapped);
+                         : opportunities(p, whole, PieceKind::kWrapped, 0);
   p->glued.clear();
   if (!p->opportunities.empty()) {
     for (const Placeholder& placeholder : whole->placeholders()) {

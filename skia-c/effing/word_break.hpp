@@ -39,11 +39,10 @@ enum class OverflowWrap : int {
 // clusters of the text's first word, which is how an overflow-wrap:
 // break-word word is broken. Lines break around the U+FFFC at each UTF-8
 // offset in `ideographs`, a placeholder, as around an emoji (UAX #14 class
-// ID); SkParagraph's cache keys a paragraph on its placeholders, so all of
-// them breaking so needs no tag of its own (a placeholder that doesn't
-// would). `bidi`, when given, are the bidi levels of the text, for a piece
-// of a paragraph whose levels depend on the text around it; they need
-// bidi_cache_tag.
+// ID); SkParagraph's cache keys a paragraph on its placeholders but not on
+// which those are, so the caller tags it. `bidi`, when given, are the bidi
+// levels of the text, for a piece of a paragraph whose levels depend on the
+// text around it; they need bidi_cache_tag.
 sk_sp<SkUnicode> make_word_break_unicode(
     WordBreak mode,
     bool break_first_word,

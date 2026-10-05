@@ -194,7 +194,7 @@ The style's own font settings are all a paragraph has; `ctx.font`,
 
 ```ts
 const em = 20
-const paragraph = new Paragraph(['Hello ', { width: em, height: em }, ' world'], style)
+const paragraph = new Paragraph(['Hello ', { width: em, height: em, lineBreak: 'emoji' }, ' world'], style)
 const { placeholders } = paragraph.layout(320) // [{ x, y, width, height, line }]
 fillParagraph(ctx, paragraph, x, y)
 ctx.drawImage(emoji, x + placeholders[0].x, y + placeholders[0].y, em, em)
@@ -208,17 +208,26 @@ top-left corner and its line, or `null` when `maxLines` or an ellipsis cut it
 off. In the lines' `startIndex`/`endIndex`, each placeholder counts as one
 UTF-16 unit, as if the text had U+FFFC in its place.
 
-Lines break around a placeholder as Chrome breaks them around an emoji,
-which is what effing draws in them (UAX #14 class ID): between it and a
-letter, another placeholder or a space, but not between it and the
-punctuation that sticks to a word, so `Hi 🎉! ok` breaks as `Hi | 🎉! | ok`
-and `(🎉)` stays whole (`__test__/effing-paragraph-placeholders.spec.ts`).
-That is not how Chrome breaks around an inline-block or an image, which it
-allows on either side, even before the "!". SkParagraph's line breaker
-takes a placeholder for a word of its own and ends a line on either side of
-it wherever the line is full, so where it ends one beside a placeholder at
-no opportunity, the text is laid out in pieces (below), the line ending at
-its last opportunity instead.
+A placeholder's `lineBreak` says how lines break around it, as Chrome
+breaks them (`__test__/effing-paragraph-placeholders.spec.ts`):
+
+- `box`, the default, as around an inline-block or an image: on either side
+  of it, even before the "!" after it, so `Hi [img]! ok` at 55px is
+  `Hi [img] | ! ok`. A placeholder is a word of its own. (Chrome differs
+  after a hyphen that follows the box, `[img]-|ab`, which ICU keeps
+  together.)
+- `emoji`, as around an emoji (UAX #14 class ID), for an emoji drawn in the
+  box: between it and a letter, another placeholder or a space, but not
+  between it and the punctuation that sticks to a word, so `Hi 🎉! ok`
+  breaks as `Hi | 🎉! | ok` and `(🎉)` stays whole. SkParagraph's line
+  breaker takes every placeholder for a word of its own and ends a line on
+  either side of it wherever the line is full, so where it ends one beside
+  an `emoji` placeholder at no opportunity, the text is laid out in pieces
+  (below), the line ending at its last opportunity instead.
+
+The two mix in a paragraph. SkParagraph's cache keys a paragraph on its
+placeholders' sizes but not their `lineBreak`, so the strut's font families
+carry a tag for the paragraphs with `emoji` ones.
 
 Skia places a placeholder along its line; effing places it vertically by its
 `verticalAlign`, the CSS `vertical-align` keywords, in effing's line box:
@@ -259,7 +268,8 @@ and default to `normal` as they do:
 
 A word is what lies between two line-break opportunities: ICU's, which also
 break after hyphens and between CJK characters, as `wordBreak` adjusts them.
-Around a placeholder they are an emoji's (above), so `🎉!` is one word.
+Around an `emoji` placeholder they are an emoji's (above), so `🎉!` is
+one word; a `box` placeholder is a word of its own.
 `minIntrinsicWidth` is the widest word, measured from SkParagraph's
 clusters, so a single letter under `break-all` and a run of CJK under
 `keep-all`. `overflowWrap: 'break-word'` leaves it
@@ -301,8 +311,8 @@ How:
   that ends at a soft break gets a placeholder after it that no line has
   room for, and only the lines before that, so that its last line is
   justified like any line that isn't the paragraph's last.
-- With placeholders, where SkParagraph may end a line beside one at no
-  opportunity, the text is laid out a window of about eight lines at a
+- With `emoji` placeholders, where SkParagraph may end a line beside one at
+  no opportunity, the text is laid out a window of about eight lines at a
   time: a piece ends at the last opportunity of such a line, or else
   before the window's last line, and the next piece starts there. The work
   then grows with the text, rather than with its square, as laying out all
@@ -452,12 +462,14 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
-- Lines break around a placeholder as Chrome breaks them around an emoji,
-  no longer as around an inline-block: a placeholder stays with the
-  punctuation next to it, so `Hi 🎉! ok` breaks as `Hi | 🎉! | ok`, not
-  `Hi 🎉 | ! ok`, and `(🎉)` stays whole. It still breaks from a letter, a
-  space or another placeholder. `minIntrinsicWidth` counts such a
-  placeholder and its punctuation as one word.
+- `ParagraphPlaceholder.lineBreak`: `'box'` (the default) breaks lines
+  around the placeholder as before, as Chrome does around an inline-block
+  or an image, on either side even before a "!"; `'emoji'` breaks them as
+  Chrome does around an emoji, keeping the placeholder with the punctuation
+  next to it, so `Hi 🎉! ok` breaks as `Hi | 🎉! | ok`, not `Hi 🎉 | ! ok`,
+  and `(🎉)` stays whole. `@effing/canvas` should pass `lineBreak: 'emoji'`
+  for the emoji it lays out as placeholders. `minIntrinsicWidth` counts an
+  emoji placeholder and its punctuation as one word.
 - When `maxLines` cuts wrapping text off at a hard break, the last line
   shown has the `ellipsis` after it, as Chrome's `-webkit-line-clamp` has
   it: `'ab\ncd'` with `maxLines: 1` is "ab…", no longer "ab", and an empty

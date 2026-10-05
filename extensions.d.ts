@@ -71,8 +71,7 @@ export interface ParagraphStyle {
 
 /**
  * An inline box in a paragraph's text, e.g. for an image or an emoji drawn as
- * one: it takes `width` on its line, lines break around it as around an emoji
- * (not before the "!" after it, say), and it draws nothing. It never grows its
+ * one: it takes `width` on its line and draws nothing. It never grows its
  * line box.
  */
 export interface ParagraphPlaceholder {
@@ -88,6 +87,16 @@ export interface ParagraphPlaceholder {
   verticalAlign?: 'baseline' | 'middle' | 'top' | 'bottom' | 'text-top' | 'text-bottom' | null
   /** For `baseline`: from the box's top down to its own baseline. Defaults to `height`, its bottom edge, as for an image. Null means the default. */
   baselineOffset?: number | null
+  /**
+   * How lines break around the box. `box` (the default), as Chrome breaks them
+   * around an inline-block or an image: on either side of it, even before
+   * the "!" after it. `emoji`, as Chrome breaks them around an emoji (UAX #14
+   * class ID): between it and a letter, a space or another box, but not
+   * between it and the punctuation next to it, so `Hi 🎉! ok` breaks as
+   * `Hi | 🎉! | ok`. Pass `emoji` for an emoji drawn in the box. Null means
+   * the default.
+   */
+  lineBreak?: 'box' | 'emoji' | null
 }
 
 /** A paragraph's text: a string, or strings and inline placeholders in order. */
