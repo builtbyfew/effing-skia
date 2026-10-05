@@ -15,7 +15,7 @@ const fonts = join(__dirname, 'fonts')
 // the ellipsis alone doesn't, Chrome keeps that cluster and puts the
 // ellipsis after it, both overflowing the line, for -webkit-line-clamp and
 // for text-overflow alike (Chrome 154, headless, macOS, the same font files).
-// Iosevka Slab advances every character, the ellipsis too, 10px at 20px:
+// Iosevka Slab advances every letter 10px at 20px, and the ellipsis 20px:
 // "a…" is 30px wide.
 const IOSEVKA: ParagraphStyle = { fontFamily: 'WB Iosevka', fontSize: 20, lineHeight: 40 }
 const HARMATTAN: ParagraphStyle = { fontFamily: 'WB Harmattan', fontSize: 20, lineHeight: 40 }

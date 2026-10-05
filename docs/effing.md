@@ -97,11 +97,13 @@ top:
   than the box is start-aligned and overflows the end edge, as in CSS, for
   every alignment. `justify` is Skia's, for wrapped text only: the lines of
   `noWrap` text all end at a hard break or the text, which CSS never
-  justifies. A justified paragraph laid out again at another width gets the
-  lines a fresh one gets: SkParagraph breaks the lines again before it
-  clears the last layout's justification, which its line breaker then
-  measures trailing spaces with, so the fork clears it first
-  (`__test__/effing-paragraph-relayout.spec.ts`).
+  justifies. A justified paragraph laid out again, at any width, gets the
+  lines a fresh one gets and paints as one does
+  (`__test__/effing-paragraph-relayout.spec.ts`; its `maxIntrinsicWidth`
+  aside). SkParagraph would keep the last layout's justification in the
+  lines it formats again at the same width, which then paint unjustified,
+  and measure trailing spaces with it when it breaks them at a new width,
+  so the fork breaks a justified paragraph's lines anew each time.
 - `minIntrinsicWidth` is the widest word, or for `noWrap` text the widest
   line, as CSS min-content is.
 - `wordBreak` and `overflowWrap` say where lines may break within and around
@@ -110,8 +112,8 @@ top:
   line to the width instead. `maxLines` truncates with the `ellipsis` too.
   Without either, the `ellipsis` does nothing, as `text-overflow` doesn't on
   wrapped text.
-- A truncated line keeps at least its first grapheme cluster (with any spaces
-  before it), with the `ellipsis` after it, both overflowing the line when
+- A truncated line keeps at least its first grapheme cluster (in `noWrap`
+  text, with any spaces before it), with the `ellipsis` after it, both overflowing the line when
   not even they fit, as Chrome's `-webkit-line-clamp` and `text-overflow`
   do (`__test__/effing-paragraph-ellipsis.spec.ts`). SkParagraph would
   instead empty the line and drop the ellipsis, and, under `justify`, never
@@ -130,6 +132,10 @@ top:
     directions need not be the one Chrome keeps, the first on screen.
   - A line of nothing but spaces keeps none of them: it is the ellipsis
     alone, at the line's start, where Chrome keeps the spaces before it.
+    In wrapped text, a space that starts the text and doesn't fit with the
+    word after it makes such a line (`' cd ef'` at 25px, `maxLines: 1`,
+    is "…"), where Chrome drops the space, as `white-space: normal`
+    collapses it, and shows "c…".
   - `text-overflow` clips the line, ellipsis included, to the box; the fork
     clips nothing, so a `noWrap` line's kept cluster and ellipsis show past
     the width, as a clamped line's do in Chrome.
