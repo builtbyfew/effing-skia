@@ -225,7 +225,13 @@ How:
   grapheme clusters of that word. A grapheme cluster wider than the line
   overflows it whole. The pieces are painted on effing's lines like the
   whole paragraph, and `layout` at the width it last laid out at returns at
-  once.
+  once. A layout at another width reuses the pieces it can, already shaped,
+  and under `maxLines` a piece holds no more text than its lines can show,
+  so a long text clamped to a few lines lays out in about the time an
+  unsplit one does. The first layout of a split paragraph shapes its text
+  twice, as a whole and in pieces. As with SkParagraph, the empty line after
+  a hard break that ends the text shows if there is room and is not one of
+  the lines `maxLines` counts.
 - SkParagraph caches the opportunities with the shaped text, under a key
   that leaves them out, so the strut's font families carry a tag for each
   set of them. SkParagraph also leaves out of its cache a paragraph whose

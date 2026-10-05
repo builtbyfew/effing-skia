@@ -715,3 +715,63 @@ test('maxLines with an ellipsis ending at an empty line', (t) => {
     [4, 4, 20, true],
   ])
 })
+
+test('a hard break that ends the text is no line of maxLines', (t) => {
+  // As without a split, and in Chrome: the empty line after it shows if
+  // there is room, and doesn't make the text overflow its lines.
+  const layout = (text: string, style: ParagraphStyle) => {
+    const result = new Paragraph(text, { ...IOSEVKA, ...style }).layout(100)
+    return {
+      lines: result.lines.map((line) => [line.startIndex, line.endIndex, Math.round(line.width), line.hardBreak]),
+      exceeded: result.didExceedMaxLines,
+    }
+  }
+  for (const ellipsis of [undefined, '…']) {
+    t.deepEqual(layout('Overlongwordhere\n', { maxLines: 1, ellipsis }), {
+      lines: [[0, 16, 160, true]],
+      exceeded: false,
+    })
+  }
+  t.deepEqual(layout('Overlongwordhere\n\n', { maxLines: 2, ellipsis: '…' }), {
+    lines: [
+      [0, 16, 160, true],
+      [17, 17, 0, true],
+    ],
+    exceeded: false,
+  })
+  t.deepEqual(layout('ab Overlongwordhere\n', { maxLines: 2, ellipsis: '…' }), {
+    lines: [
+      [0, 2, 20, false],
+      [3, 19, 160, true],
+    ],
+    exceeded: false,
+  })
+  // Broken under break-word, the word takes two lines.
+  t.deepEqual(layout('ab Overlongwordhere\n', { maxLines: 3, ellipsis: '…', overflowWrap: 'break-word' }), {
+    lines: [
+      [0, 2, 20, false],
+      [3, 13, 100, false],
+      [13, 19, 60, true],
+    ],
+    exceeded: false,
+  })
+  t.deepEqual(layout('ab Overlongwordhere\n', { maxLines: 2, ellipsis: '…', overflowWrap: 'break-word' }), {
+    lines: [
+      [0, 2, 20, false],
+      [3, 11, 100, true],
+    ],
+    exceeded: true,
+  })
+})
+
+test('keepTrailingWhitespace keeps the spaces before an ellipsis', (t) => {
+  // Chrome: "ab   …", with white-space: pre-wrap and line-clamp 1.
+  const layout = new Paragraph('ab   Overlongwordhere cd', {
+    ...IOSEVKA,
+    keepTrailingWhitespace: true,
+    maxLines: 1,
+    ellipsis: '…',
+  }).layout(100)
+  expectLines(t, layout, [[0, 5, 70]])
+  t.true(layout.didExceedMaxLines)
+})
