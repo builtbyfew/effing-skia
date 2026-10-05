@@ -1322,7 +1322,12 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
           soft_lines = misplaced.lines;
         } else if (window < stop && probed.size() >= 2 &&
                    !probe.paragraph->didExceedMaxLines()) {
-          to = start + probed.back().text().start;
+          // The empty line after a hard break that ends the window starts at
+          // the break itself (its text is the break): the piece then takes
+          // the window, break and all, and ends at that hard break.
+          const size_t last = start + probed.back().text().start;
+          to = hard_break_at(text.data(), len, last, nullptr, 0) > 0 ? window
+                                                                     : last;
           soft_lines = static_cast<int>(probed.size()) - 1;
         }
         // A line before a hard break ends the piece as any hard break does.

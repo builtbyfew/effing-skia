@@ -461,3 +461,26 @@ test('a line ended where it should be beside a placeholder keeps its bidi and ju
     near(t, justified.lines[0].left, 0)
   }
 })
+
+test('a hard break at the edge of a window of emoji text', (t) => {
+  // Text with emoji placeholders beside punctuation is laid out a few lines
+  // at a time; here a window ends right after the hard break. It is the
+  // hard break of the line before it, with no empty line of its own.
+  const parts: Array<string | ParagraphPlaceholder> = ['ab ']
+  for (let i = 0; i < 17; i++) {
+    parts.push(i === 16 ? 'word\n' : 'word ', box({ lineBreak: 'emoji' }), '! ')
+  }
+  parts.push('word end.')
+  for (const direction of ['ltr', 'rtl'] as const) {
+    const layout = new Paragraph(parts, { ...STYLE, direction }).layout(101)
+    const lines = layout.lines.map((line) => [line.startIndex, line.endIndex, line.hardBreak])
+    t.is(lines.length, 19, direction)
+    t.is(layout.height, 19 * 40)
+    t.deepEqual(lines.slice(15), [
+      [120, 127, false],
+      [128, 135, true],
+      [136, 143, false],
+      [144, 148, true],
+    ])
+  }
+})
