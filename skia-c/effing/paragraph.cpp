@@ -52,6 +52,9 @@ struct effing_paragraph {
   float descent = 0;
   // The primary font's x-height, for middle-aligned placeholders.
   float x_height = 0;
+  // Where `text` has the U+2063 that stands for each lone CR (hide_lone_crs),
+  // by UTF-8 offset, in order.
+  std::vector<size_t> lone_crs;
   // Each placeholder, in order, with the paragraph it went into (SIZE_MAX if
   // its line was dropped) and its UTF-16 index in that paragraph's text.
   struct Placeholder {
@@ -275,14 +278,16 @@ size_t hard_break_at(const char* text,
 // font's .notdef where the font maps no glyph to it, and break lines after
 // it. U+2063 is default-ignorable, which HarfBuzz hides, and to the line
 // breaker a letter (UAX #14 class AL), and it is a grapheme cluster of its
-// own and one UTF-16 unit, as CR is, so indices don't move.
-bool hide_lone_crs(
-    const char* text,
-    size_t len,
-    const effing_paragraph_placeholder* placeholders,
-    size_t placeholder_count,
-    std::string* out_text,
-    std::vector<effing_paragraph_placeholder>* out_placeholders) {
+// own and one UTF-16 unit, as CR is, so indices don't move. Where it is in
+// `out_text` goes to `positions`. Unlike CR, U+2063 is transparent to
+// shaping, which add_content makes up for.
+bool hide_lone_crs(const char* text,
+                   size_t len,
+                   const effing_paragraph_placeholder* placeholders,
+                   size_t placeholder_count,
+                   std::string* out_text,
+                   std::vector<effing_paragraph_placeholder>* out_placeholders,
+                   std::vector<size_t>* positions) {
   const auto lone = [&](size_t i) {
     return text[i] == '\r' &&
            hard_break_at(text, len, i, placeholders, placeholder_count) == 0;
@@ -307,6 +312,7 @@ bool hide_lone_crs(
     for (; next < placeholder_count && placeholders[next].offset <= i; next++) {
       (*out_placeholders)[next].offset += out_text->size() - i;
     }
+    positions->push_back(out_text->size());
     out_text->append("\xE2\x81\xA3");
   }
   for (; next < placeholder_count; next++) {
@@ -365,6 +371,10 @@ size_t without_hard_break(const char* text,
 // Advances `*next` past them, and reports each one's index in `placeholders`
 // and its UTF-16 index from `start`, where Skia's U+FFFC for it lands, to
 // `placed`.
+// The U+2063 at each of `lone_crs` (offsets in `text`, sorted) gets
+// `cr_style`, which ends the shaping run before it and starts another after
+// it, as a CR ends one in Chrome: HarfBuzz sees through U+2063, and would
+// kern, ligate and join the letters on either side of it.
 template <typename Placed>
 void add_content(ParagraphBuilder* builder,
                  const char* text,
@@ -373,7 +383,24 @@ void add_content(ParagraphBuilder* builder,
                  const effing_paragraph_placeholder* placeholders,
                  size_t placeholder_count,
                  size_t* next,
-                 Placed placed) {
+                 Placed placed,
+                 const std::vector<size_t>& lone_crs = {},
+                 const TextStyle* cr_style = nullptr) {
+  const auto add_text = [&](size_t from, size_t to) {
+    auto cr = std::lower_bound(lone_crs.begin(), lone_crs.end(), from);
+    for (; cr != lone_crs.end() && *cr < to && cr_style != nullptr; ++cr) {
+      if (*cr > from) {
+        builder->addText(text + from, *cr - from);
+      }
+      builder->pushStyle(*cr_style);
+      builder->addText(text + *cr, 3);
+      builder->pop();
+      from = *cr + 3;
+    }
+    if (to > from) {
+      builder->addText(text + from, to - from);
+    }
+  };
   size_t at = start;
   size_t index = 0;
   for (; *next < placeholder_count && placeholders[*next].offset <= end;
@@ -381,7 +408,7 @@ void add_content(ParagraphBuilder* builder,
     const auto& spec = placeholders[*next];
     const size_t offset = std::max(spec.offset, at);
     if (offset > at) {
-      builder->addText(text + at, offset - at);
+      add_text(at, offset);
       index += utf16_length(text + at, offset - at);
       at = offset;
     }
@@ -396,7 +423,7 @@ void add_content(ParagraphBuilder* builder,
     placed(*next, index++);
   }
   if (end > at) {
-    builder->addText(text + at, end - at);
+    add_text(at, end);
   }
 }
 
@@ -577,10 +604,19 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
       effing::make_word_break_unicode(p->word_break, break_first_word,
                                       std::move(ideographs), std::move(bidi)));
   size_t next = first;
-  add_content(&builder, p->text.data(), start, end, p->placeholder_specs.data(),
-              last, &next, [&](size_t placeholder, size_t index) {
-                placed->emplace_back(placeholder, index);
-              });
+  // The lone CRs' U+2063 differ from the text around them in an attribute
+  // that SkParagraph's shaper splits runs at but that changes nothing they
+  // render with: the language they are shaped in ("zxx", no linguistic
+  // content).
+  TextStyle cr_style = style.getTextStyle();
+  cr_style.setLocale(SkString("zxx"));
+  add_content(
+      &builder, p->text.data(), start, end, p->placeholder_specs.data(), last,
+      &next,
+      [&](size_t placeholder, size_t index) {
+        placed->emplace_back(placeholder, index);
+      },
+      p->lone_crs, &cr_style);
   if (sentinel) {
     builder.addPlaceholder(PlaceholderStyle(kUnbounded, 1,
                                             PlaceholderAlignment::kBaseline,
@@ -1713,8 +1749,9 @@ effing_paragraph* effing_paragraph_create(
   c_collection->flushCachesIfDirty();
   std::string shown_text;
   std::vector<effing_paragraph_placeholder> shown_placeholders;
+  std::vector<size_t> lone_crs;
   if (hide_lone_crs(text, text_len, placeholders, placeholder_count,
-                    &shown_text, &shown_placeholders)) {
+                    &shown_text, &shown_placeholders, &lone_crs)) {
     text = shown_text.data();
     text_len = shown_text.size();
     placeholders = shown_placeholders.data();
@@ -1815,6 +1852,7 @@ effing_paragraph* effing_paragraph_create(
   out->max_lines = s->max_lines;
   out->text.assign(text, text_len);
   out->placeholder_specs.assign(placeholders, placeholders + placeholder_count);
+  out->lone_crs = std::move(lone_crs);
   out->paragraph_style = paragraph_style;
   out->strut_families = families;
   out->font_collection = font_collection;

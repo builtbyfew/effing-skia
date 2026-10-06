@@ -16,6 +16,9 @@ const KEEP: ParagraphStyle = { ...STYLE, keepTrailingWhitespace: true }
 test.before((t) => {
   t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'iosevka-slab-regular.ttf')))
   t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'SourceHanSerifCN-Bold.ttf'), 'WB Source Han'))
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Lato-Regular.ttf'), 'WB Lato'))
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Harmattan-Regular.ttf'), 'WB Harmattan'))
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'NotoSansDevanagari-Regular.ttf'), 'WB Devanagari'))
 })
 
 function near(t: import('ava').ExecutionContext, actual: number, expected: number, epsilon = 0.01) {
@@ -466,7 +469,7 @@ function pixels(paragraph: Paragraph) {
   return Array.from(ctx.getImageData(0, 0, 100, 30).data.filter((_, i) => i % 4 === 3))
 }
 
-test('a lone CR is laid out as nothing', (t) => {
+test('a lone CR takes no width and draws nothing', (t) => {
   // Chrome 154 (headless, macOS, the same font files), `white-space: pre`
   // and `pre-wrap`: "a\rb" measures 24.98, as "ab" does, in Source Han
   // Serif, which maps no glyph to CR (SkParagraph drew its .notdef, 20px
@@ -482,7 +485,10 @@ test('a lone CR is laid out as nothing', (t) => {
       const [line] = paragraph.layout(100).lines
       near(t, line.width, 24.98)
       t.deepEqual([line.startIndex, line.endIndex], [0, text.length])
-      t.deepEqual(pixels(paragraph), pixels(plain), JSON.stringify({ text, mode }))
+      // Shaped apart, "b" can land a fraction of a pixel off.
+      const expected = pixels(plain)
+      const off = Math.max(...pixels(paragraph).map((alpha, i) => Math.abs(alpha - expected[i])))
+      t.true(off <= 4, JSON.stringify({ text, mode, off }))
     }
   }
   t.is(new Paragraph('ab\r\ncd', { ...SOURCE_HAN, keepTrailingWhitespace: true }).layout(100).lines.length, 2)
@@ -499,6 +505,34 @@ test('a lone CR is laid out as nothing', (t) => {
     ],
   )
   t.deepEqual([layout.lines[0].startIndex, layout.lines[0].endIndex], [0, 7])
+})
+
+test('a lone CR ends the shaping run', (t) => {
+  // Chrome 154 (headless, macOS, the same font files), `white-space: pre`
+  // at 40px: the letters on either side of a lone CR are shaped apart, so
+  // they don't kern ("A\rV" is wider than "AV"), ligate ("f\ri" is no fi
+  // ligature) or join (Arabic letters take their isolated forms, and lam
+  // and alef make no lam-alef), as if the CR were a run boundary.
+  const cases: Array<[string, string, number]> = [
+    ['WB Lato', 'A\rV', 54.406],
+    ['WB Lato', 'AV', 51.688],
+    ['WB Lato', 'T\ro', 45.859],
+    ['WB Lato', 'f\ri', 23.734],
+    ['WB Lato', 'fi', 22.813],
+    ['WB Harmattan', 'ب\rب', 79.313],
+    ['WB Harmattan', 'بب', 47.875],
+    ['WB Harmattan', 'ل\rا', 25.875],
+    ['WB Harmattan', 'لا', 15.75],
+    ['WB Devanagari', 'क्\rष', 53.859],
+    ['WB Devanagari', 'क्ष', 28.688],
+  ]
+  for (const [fontFamily, text, width] of cases) {
+    for (const mode of [{ noWrap: true }, { keepTrailingWhitespace: true }]) {
+      const [line] = new Paragraph(text, { fontFamily, fontSize: 40, ...mode }).layout(1000).lines
+      // Chrome rounds advances to 1/64px.
+      near(t, line.width, width, 0.03)
+    }
+  }
 })
 
 test('a lone CR is no line-break opportunity', (t) => {
