@@ -317,7 +317,8 @@ size_t without_hard_break(const char* text,
 // `*next` on whose offset is at most `end`, each where its offset puts it.
 // Advances `*next` past them, and reports each one's index in `placeholders`
 // and its UTF-16 index from `start`, where Skia's U+FFFC for it lands, to
-// `placed`.
+// `placed`. The text goes in through effing::add_text, which leaves out the
+// letter spacing Chrome doesn't add.
 template <typename Placed>
 void add_content(ParagraphBuilder* builder,
                  const char* text,
@@ -334,7 +335,7 @@ void add_content(ParagraphBuilder* builder,
     const auto& spec = placeholders[*next];
     const size_t offset = std::max(spec.offset, at);
     if (offset > at) {
-      builder->addText(text + at, offset - at);
+      effing::add_text(builder, text + at, offset - at, effing::TextKind::kCss);
       index += utf16_length(text + at, offset - at);
       at = offset;
     }
@@ -349,7 +350,7 @@ void add_content(ParagraphBuilder* builder,
     placed(*next, index++);
   }
   if (end > at) {
-    builder->addText(text + at, end - at);
+    effing::add_text(builder, text + at, end - at, effing::TextKind::kCss);
   }
 }
 

@@ -20,7 +20,7 @@ upstream file has at most a few marked hook lines.
 
 | Layer                  | Fork code                                                       | Upstream hooks                                                                                                                                                                        |
 | ---------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group}.{hpp,cpp}`     | `skia-c/skia_c.cpp` (include + two `text_rendering` checks)                                                                                                                           |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group}.{hpp,cpp}`     | `skia-c/skia_c.cpp` (include + four `text_rendering` checks)                                                                                                                          |
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group}.rs`   | `src/sk.rs` (`mod effing`)                                                                                                                                                            |
 | Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`)                                                                                |
 | Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)         | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`) |
@@ -49,6 +49,19 @@ then follows sub-pixel coordinates and lands in the same place whether the
 canvas is drawn at 1x or any other scale, which is what a video renderer
 producing several resolutions needs. Runs with glyphs that have no outline
 (color or bitmap emoji) fall back to masks with baseline snapping off.
+
+Under `geometricPrecision`, `fillText`, `strokeText` and `measureText` also
+leave out the letter spacing Chrome doesn't add, after default-ignorable code
+points, as a `Paragraph` does (see letter spacing under `Paragraph`).
+
+The text's `measureText` bounding box (`actualBoundingBoxLeft` and
+`actualBoundingBoxRight`) is upstream's, which counts SkParagraph's
+half-letter-spacing shift of the line twice. Text that starts with such a
+code point has no shift, so at a letter spacing of 10px `'ab'` has an
+`actualBoundingBoxLeft` of 10 and `'\u200Bab'` one of 0, and their
+`actualBoundingBoxRight` differs by 5, though the two paint the same ink:
+the change moves upstream's error rather than adding one. The `width` is
+right in both.
 
 The other `textRendering` values behave as upstream. Skia caches shaped
 text under a key that ignores hinting, so the fork marks its unhinted
@@ -208,6 +221,59 @@ top:
   piece ending at the hard break before such spaces.
 - Glyphs are unhinted and painted unsnapped, exactly as `fillText` does under
   `geometricPrecision`; the two agree pixel for pixel.
+- `letterSpacing` follows each character, as in Chrome, except the ones
+  Chrome adds none after (below).
+
+#### Letter spacing
+
+Chrome adds no letter spacing after a character it takes for a zero-width
+space: a default-ignorable code point (ZWSP, ZWJ, ZWNJ, WJ, U+FEFF, the bidi
+controls, the variation selectors, a soft hyphen, ...), U+FFFC, and a
+carriage return. Neither does the fork (`__test__/effing-letter-spacing.spec.ts`):
+`'a\u200Bb'` is as wide as `'ab'`, and the NBSP and ZWSP `@effing/canvas`
+draws for a line or paragraph separator get one gap between them and the
+next letter, not two. SkParagraph spaces every glyph, these zero-width ones
+included, so the fork gives such code points a text style of their own
+without letter spacing. A style that differs only there doesn't split
+SkParagraph's shaping runs: ZWJ still makes emoji sequences, half forms and
+Arabic joins, and ZWNJ still breaks them.
+
+Where the fork still differs from Chrome, as before:
+
+- Chrome spaces a cluster (HarfBuzz's, which keeps a mark with its letter and
+  an emoji sequence together) once, after its last glyph; SkParagraph spaces
+  each glyph of a cluster. So a cluster of several glyphs gets more: a
+  combining mark with no precomposed form (`'q\u0301'`), a Devanagari vowel
+  sign (`'कि'`, `'स्ते'`), and an emoji sequence with a variation selector
+  inside, such as ❤️‍🔥 or a keycap, whose selector is a hidden glyph of the
+  sequence. An emoji sequence the font draws as one glyph, a family say,
+  gets one gap, as in Chrome, in LTR text and in an RTL run of a strong RTL
+  script.
+- In an RTL paragraph, a run of neutral characters such as emoji or symbols
+  takes the paragraph's level, and HarfBuzz merges each base with the ZWJ or
+  variation selector after it into one cluster when it reverses the run.
+  SkParagraph looks a cluster's style up at its start, the base, so the
+  ignorable's own style doesn't apply and it is spaced as on `main`: with
+  `direction: 'rtl'`, `'❤️'` gets 2 gaps where Chrome has 1, `'+\uFE0F+'`
+  3 where Chrome has 2, and `'👨‍👩'` 3. The other way round, a merged
+  cluster that starts with the ZWJ or selector, as in a contrived
+  `'a\u200D👩'` in RTL, goes without its base's spacing, so it gets fewer
+  gaps than on `main` and than in Chrome.
+- Chrome tests the first UTF-16 unit of a cluster, so a code point past the
+  BMP that starts one, default-ignorable or not (U+E0001), is spaced in
+  both. Chrome's canvas spaces TAG SPACE (U+E0020) but not CANCEL TAG
+  (U+E007F); the fork's `fillText` spaces neither of the two.
+- A paragraph with letter spacing and many such code points lays out more
+  slowly, since SkParagraph looks each cluster's style up from the first
+  one: with a ZWSP between each two of 1000 words, a layout takes 4.6ms
+  instead of 0.9ms, and with 4000 words 77ms instead of 3.6ms. Calling
+  `layout()` again on the same `Paragraph` is cheap, as its text isn't
+  shaped again, but SkParagraph's cache doesn't always spare a new one with
+  the same text: it leaves out a text of 40 or more characters whose first
+  or last 40 are those of the last text it cached
+  (`ParagraphCache::isPossiblyTextEditing`), so two long captions that
+  share their start or end, laid out in turn each frame, are shaped anew
+  every time.
 
 `layout(width)` must be called before painting, which throws otherwise. It
 returns the paragraph's
@@ -493,6 +559,16 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- No letter spacing after default-ignorable code points (ZWSP, ZWJ, ZWNJ,
+  WJ, U+FEFF, the bidi controls, variation selectors, a soft hyphen, ...),
+  U+FFFC, and in a `Paragraph` a carriage return, as in Chrome: with
+  `letterSpacing: 10`, `'a\u200Bb'` is 41.33px wide, as `'ab'` is, not
+  51.33px, and `@effing/canvas`'s NBSP and ZWSP for a line separator get one
+  gap, not two. This covers `Paragraph`, and `fillText`, `strokeText` and
+  `measureText` under `textRendering = 'geometricPrecision'`; the other
+  `textRendering` values keep upstream's spacing. A paragraph with many such
+  code points and letter spacing lays out more slowly (1000 ZWSPs: 4.6ms
+  instead of 0.9ms).
 - `ParagraphLayout.lineGap`: the primary font's hhea line gap in px at the
   font size, 0 if negative, as Chrome takes it. With `ascent` and
   `descent` it gives Chrome's `line-height: normal`,
