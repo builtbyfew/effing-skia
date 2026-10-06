@@ -262,6 +262,55 @@ size_t hard_break_at(const char* text,
   return 0;
 }
 
+// Replaces each lone CR in the text, one that is not part of a CRLF, with
+// U+2063 INVISIBLE SEPARATOR, into `out_text`, moving the placeholders after
+// it into `out_placeholders`; false, leaving both alone, when there is none.
+// Chrome lays a lone CR out under white-space: pre and pre-wrap as nothing:
+// zero-width, with no letter spacing, and no line-break opportunity before it
+// but after spaces, nor after it. SkParagraph would shape it, drawing the
+// font's .notdef where the font maps no glyph to it, and break lines after
+// it. U+2063 is default-ignorable, which HarfBuzz hides, and to the line
+// breaker a letter (UAX #14 class AL), and it is a grapheme cluster of its
+// own and one UTF-16 unit, as CR is, so indices don't move.
+bool hide_lone_crs(
+    const char* text,
+    size_t len,
+    const effing_paragraph_placeholder* placeholders,
+    size_t placeholder_count,
+    std::string* out_text,
+    std::vector<effing_paragraph_placeholder>* out_placeholders) {
+  const auto lone = [&](size_t i) {
+    return text[i] == '\r' &&
+           hard_break_at(text, len, i, placeholders, placeholder_count) == 0;
+  };
+  size_t i = 0;
+  while (i < len && !lone(i)) {
+    i++;
+  }
+  if (i == len) {
+    return false;
+  }
+  out_text->assign(text, i);
+  out_placeholders->assign(placeholders, placeholders + placeholder_count);
+  // The next placeholder to move: those at a lone CR's offset come before
+  // it, and stay.
+  size_t next = 0;
+  for (; i < len; i++) {
+    if (!lone(i)) {
+      out_text->push_back(text[i]);
+      continue;
+    }
+    for (; next < placeholder_count && placeholders[next].offset <= i; next++) {
+      (*out_placeholders)[next].offset += out_text->size() - i;
+    }
+    out_text->append("\xE2\x81\xA3");
+  }
+  for (; next < placeholder_count; next++) {
+    (*out_placeholders)[next].offset += out_text->size() - len;
+  }
+  return true;
+}
+
 // The number of UTF-16 code units in `len` bytes of UTF-8.
 size_t utf16_length(const char* text, size_t len) {
   size_t units = 0;
@@ -1636,6 +1685,14 @@ effing_paragraph* effing_paragraph_create(
     const effing_paragraph_placeholder* placeholders,
     size_t placeholder_count) {
   c_collection->flushCachesIfDirty();
+  std::string shown_text;
+  std::vector<effing_paragraph_placeholder> shown_placeholders;
+  if (hide_lone_crs(text, text_len, placeholders, placeholder_count,
+                    &shown_text, &shown_placeholders)) {
+    text = shown_text.data();
+    text_len = shown_text.size();
+    placeholders = shown_placeholders.data();
+  }
   auto font_collection = c_collection->collection;
   const auto families = split_families(font_family);
   const auto font_style =

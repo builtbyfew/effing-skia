@@ -166,6 +166,18 @@ top:
   (U+2029). A lone CR and NEL (U+0085) are not breaks. Chrome's
   `white-space: pre` breaks at LF and CRLF only and draws VT, FF, LS and PS
   inline, so a caller after Chrome's result replaces those first.
+- A lone CR, one not part of a CRLF, is laid out as nothing, as Chrome lays
+  it out under `white-space: pre` and `pre-wrap`: no width and no glyph,
+  where SkParagraph would draw the font's missing glyph, and no line-break
+  opportunity beside it but after the spaces before it, so `'aaaa\rbbbb'`
+  stays one line (`__test__/effing-paragraph-whitespace.spec.ts`).
+  SkParagraph is given U+2063 INVISIBLE SEPARATOR in its place, which
+  HarfBuzz hides and the line breaker takes for a letter. So the CR still
+  takes `letterSpacing`, which Chrome doesn't add, and where a line breaks
+  after spaces before it, the next line starts at the CR, where Chrome ends
+  the first line after it; it shows nothing either way. Under
+  `white-space: normal` Chrome makes a lone CR a space, collapsed with the
+  spaces around it, which a caller after that does itself.
 - A hard break that ends the text gives an empty last line, as SkParagraph
   lays it out: `'ab\n'` has two lines. That line starts and ends at the end
   of the text (`[3, 3)` here), after the break, whatever the break, as an
@@ -479,6 +491,14 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### Unreleased
+
+- A lone CR is laid out as nothing, as Chrome lays it out under
+  `white-space: pre` and `pre-wrap`: it used to be drawn as the font's
+  missing glyph (a box 15px wide at 20px in Liberation Sans) and be a
+  line-break opportunity. `'a\rb'` now measures and paints as `'ab'`, and
+  `'aaaa\rbbbb'` stays on one line. A CRLF is still a hard break.
 
 ### 1.0.10-effing.4
 

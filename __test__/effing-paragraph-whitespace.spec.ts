@@ -15,6 +15,7 @@ const KEEP: ParagraphStyle = { ...STYLE, keepTrailingWhitespace: true }
 
 test.before((t) => {
   t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'iosevka-slab-regular.ttf')))
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'SourceHanSerifCN-Bold.ttf'), 'WB Source Han'))
 })
 
 function near(t: import('ava').ExecutionContext, actual: number, expected: number, epsilon = 0.01) {
@@ -453,6 +454,83 @@ test('spaces that start a line collapse unless whitespace is kept', (t) => {
       layout.lines.map((line) => [line.startIndex, line.endIndex, round(line.width), round(line.left)]),
       expected,
       JSON.stringify({ text, style, width }),
+    )
+  }
+})
+
+// The alpha of every pixel of `paragraph` painted at (5, 0) on a 100x30
+// canvas.
+function pixels(paragraph: Paragraph) {
+  const ctx = createCanvas(100, 30).getContext('2d')
+  fillParagraph(ctx, paragraph, 5, 0)
+  return Array.from(ctx.getImageData(0, 0, 100, 30).data.filter((_, i) => i % 4 === 3))
+}
+
+test('a lone CR is laid out as nothing', (t) => {
+  // Chrome 154 (headless, macOS, the same font files), `white-space: pre`
+  // and `pre-wrap`: "a\rb" measures 24.98, as "ab" does, in Source Han
+  // Serif, which maps no glyph to CR (SkParagraph drew its .notdef, 20px
+  // wide), and Range.getClientRects() gives the CR no width. A CRLF stays a
+  // hard break.
+  const SOURCE_HAN: ParagraphStyle = { fontFamily: 'WB Source Han', fontSize: 20, lineHeight: 30 }
+  for (const mode of [{ keepTrailingWhitespace: true }, { noWrap: true }, { noWrap: true, ellipsis: '…' }, {}]) {
+    const style = { ...SOURCE_HAN, ...mode }
+    const plain = new Paragraph('ab', style)
+    plain.layout(100)
+    for (const text of ['a\rb', '\rab', 'ab\r', 'a\r\rb']) {
+      const paragraph = new Paragraph(text, style)
+      const [line] = paragraph.layout(100).lines
+      near(t, line.width, 24.98)
+      t.deepEqual([line.startIndex, line.endIndex], [0, text.length])
+      t.deepEqual(pixels(paragraph), pixels(plain), JSON.stringify({ text, mode }))
+    }
+  }
+  t.is(new Paragraph('ab\r\ncd', { ...SOURCE_HAN, keepTrailingWhitespace: true }).layout(100).lines.length, 2)
+
+  // Placeholders after a lone CR keep their place in the text.
+  const layout = new Paragraph(['a\r', { width: 20, height: 20 }, 'b\r', { width: 10, height: 10 }, 'c'], KEEP).layout(
+    200,
+  )
+  t.deepEqual(
+    layout.placeholders.map((box) => box && [Math.round(box.x * 100) / 100, box.line]),
+    [
+      [10, 0],
+      [40, 0],
+    ],
+  )
+  t.deepEqual([layout.lines[0].startIndex, layout.lines[0].endIndex], [0, 7])
+})
+
+test('a lone CR is no line-break opportunity', (t) => {
+  // Chrome 154, `white-space: pre-wrap` at 50px, Range.getClientRects() on
+  // each character: "aaaa\rbbbb" is one line, overflowing; after a space,
+  // the line breaks after the space. Lines as [startIndex, endIndex].
+  const cases: Array<[string, Array<[number, number]>]> = [
+    ['aaaa\rbbbb', [[0, 9]]],
+    ['aaaa\r\rbbbb', [[0, 10]]],
+    [
+      'aaaa\r bbbb',
+      [
+        [0, 5],
+        [6, 10],
+      ],
+    ],
+    [
+      // Chrome puts the CR on the first line, after the space; it shows
+      // nothing either way.
+      'aaaa \rbbbb',
+      [
+        [0, 4],
+        [5, 10],
+      ],
+    ],
+  ]
+  for (const [text, expected] of cases) {
+    const layout = new Paragraph(text, KEEP).layout(50)
+    t.deepEqual(
+      layout.lines.map((line) => [line.startIndex, line.endIndex]),
+      expected,
+      JSON.stringify(text),
     )
   }
 })
