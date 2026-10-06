@@ -68,6 +68,10 @@ struct effing_paragraph {
   std::vector<size_t> first_lines;
   // The UTF-16 index of each hard break in the whole text.
   std::vector<size_t> hard_breaks;
+  // The whole text's length in UTF-16 units, and whether a hard break ends
+  // it, which makes an empty last line.
+  size_t length = 0;
+  bool ends_in_hard_break = false;
   // Where each placeholder landed.
   std::vector<effing_paragraph_placeholder_box> placeholder_boxes;
 
@@ -98,6 +102,9 @@ struct effing_paragraph {
   std::vector<Word> graphemes;
   bool measured = false;
   float widest_word = 0;
+  // CSS max-content: the widest hard line of the whole text, measured on the
+  // first layout (measure_max_content), or negative before it.
+  float max_content = -1;
   // That Skia text's UTF-8 offset at each UTF-16 offset.
   std::vector<size_t> utf8_offsets;
   // Laid out and painted in place of `paragraphs` when a word too wide for
@@ -639,6 +646,137 @@ void measure_words(effing_paragraph* p) {
   }
 }
 
+// Rounds `width` up to the precision of SkParagraph's line breaker (too_wide),
+// so that a line it adds up to `width` in another order, give or take a
+// rounding error, still fits in that.
+float round_up_for_line_breaker(float width) {
+  const float val = std::fabs(width);
+  return val < 10000    ? std::ceil(width * 100) * (1.f / 100)
+         : val < 100000 ? std::ceil(width * 10) * (1.f / 10)
+                        : std::ceil(width);
+}
+
+// The width at which every hard line of `paragraph`'s text fits on a line
+// of its own, from SkParagraph's clusters, which are what its line breaker
+// measures: the clusters between two hard breaks, without the whitespace that
+// ends them unless it is kept, as CSS max-content has it. That is the widest
+// line laid out at the unbounded width, unless a negative letter spacing
+// gave an invisible character a negative width: the breaker then needs the
+// widest the line gets as it adds up its clusters. Skia's own maximum adds up
+// the lines it broke at the last layout's width, trailing whitespace
+// included, so it changes with the width. With `collapse_leading`, the
+// spaces and tabs that start a line are left out too, as white-space: normal
+// collapses them away, and as layout does in wrapping text whose whitespace
+// isn't kept (#19).
+float widest_hard_line(Paragraph* paragraph,
+                       bool keep_trailing_whitespace,
+                       bool collapse_leading) {
+  auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  const SkSpan<const char> text = impl->text();
+  float widest = 0;
+  // The line so far, and the widest it was at a cluster that isn't
+  // whitespace, which is where the line breaker checks it.
+  float width = 0;
+  float peak = 0;
+  const auto end_line = [&] {
+    widest = std::max(widest,
+                      keep_trailing_whitespace ? std::max(peak, width) : peak);
+    width = 0;
+    peak = 0;
+  };
+  // Where the last hard break ends, CRLF being one.
+  size_t break_end = 0;
+  // Whether only spaces and tabs came on the line so far.
+  bool leading = true;
+  for (const Cluster& cluster : impl->clusters()) {
+    const TextRange range = cluster.textRange();
+    if (range.width() == 0 || range.start < break_end) {
+      continue;
+    }
+    // Placeholders are U+FFFC in the Skia text, not offsets.
+    const size_t brk =
+        hard_break_at(text.data(), text.size(), range.start, nullptr, 0);
+    if (brk > 0) {
+      end_line();
+      break_end = range.start + brk;
+      leading = true;
+      continue;
+    }
+    if (leading) {
+      leading = std::all_of(text.data() + range.start, text.data() + range.end,
+                            [](char c) { return c == ' ' || c == '\t'; });
+      if (leading && collapse_leading) {
+        continue;
+      }
+    }
+    width += cluster.width();
+    if (!cluster.isWhitespaceBreak()) {
+      peak = std::max(peak, width);
+    }
+  }
+  end_line();
+  return round_up_for_line_breaker(widest);
+}
+
+// Measures CSS max-content once, after the first layout has shaped the
+// paragraphs: the widest hard line of the whole text, laid out unbounded and
+// without max_lines, as CSS doesn't clamp intrinsic sizes. The hard lines
+// that nowrap text with an ellipsis dropped for max_lines are shaped here.
+void measure_max_content(effing_paragraph* p) {
+  p->max_content = 0;
+  const bool collapse_leading = !p->keep_trailing_whitespace && !p->nowrap;
+  for (const auto& paragraph : p->paragraphs) {
+    p->max_content =
+        std::max(p->max_content,
+                 widest_hard_line(paragraph.get(), p->keep_trailing_whitespace,
+                                  collapse_leading));
+  }
+  if (!p->dropped_lines || p->sources.empty()) {
+    return;
+  }
+  const auto& last = p->sources.back();
+  const size_t start =
+      last.end + hard_break_at(p->text.data(), p->text.size(), last.end,
+                               p->placeholder_specs.data(),
+                               p->placeholder_specs.size());
+  if (start >= p->text.size() && last.last == p->placeholder_specs.size()) {
+    return;  // only the empty line after a hard break that ends the text
+  }
+  // A paragraph per line, as effing_paragraph_create builds those it keeps:
+  // shaped together, the lines can come out differently.
+  const char* text = p->text.data();
+  const size_t len = p->text.size();
+  const auto* specs = p->placeholder_specs.data();
+  const size_t count = p->placeholder_specs.size();
+  size_t first = last.last;
+  for (size_t line_start = start, i = start; i <= len;) {
+    const size_t brk = i < len ? hard_break_at(text, len, i, specs, count) : 0;
+    if (brk == 0 && i < len) {
+      i++;
+      continue;
+    }
+    size_t end = first;
+    while (end < count && specs[end].offset <= i) {
+      end++;
+    }
+    if (i > line_start || end > first) {
+      std::vector<std::pair<size_t, size_t>> placed;
+      auto line = build(p, line_start, i, first, end, 0, PieceKind::kUnbounded,
+                        SkString(), &placed);
+      line->layout(kUnbounded);
+      p->max_content = std::max(
+          p->max_content,
+          widest_hard_line(line.get(), p->keep_trailing_whitespace, false));
+    }
+    if (brk == 0) {
+      break;
+    }
+    first = end;
+    i += brk;
+    line_start = i;
+  }
+}
+
 // Lays the text out at width `w` the way CSS treats a word too wide for its
 // line, which SkParagraph would break wherever the line ends, inside grapheme
 // clusters too. The text is split into pieces, each a paragraph of its own,
@@ -1130,6 +1268,20 @@ effing_paragraph* effing_paragraph_create(
 
   out->hard_breaks =
       hard_break_indices(text, text_len, placeholders, placeholder_count);
+  out->length = utf16_length(text, text_len) + placeholder_count;
+  // A placeholder at the end of the text comes after a break there.
+  if (placeholder_count == 0 ||
+      placeholders[placeholder_count - 1].offset < text_len) {
+    for (size_t i = text_len - std::min<size_t>(text_len, 3); i < text_len;
+         i++) {
+      const size_t brk =
+          hard_break_at(text, text_len, i, placeholders, placeholder_count);
+      if (brk > 0 && i + brk == text_len) {
+        out->ends_in_hard_break = true;
+        break;
+      }
+    }
+  }
   out->placeholders.reserve(placeholder_count);
   for (size_t i = 0; i < placeholder_count; i++) {
     out->placeholders.push_back({placeholders[i]});
@@ -1181,7 +1333,9 @@ effing_paragraph* effing_paragraph_create(
       continue;
     }
     if (out->paragraphs.size() == max_lines) {
-      out->dropped_lines = true;
+      // The empty line after a hard break that ends the text is not one of
+      // the lines max_lines counts, as when Skia lays out the whole text.
+      out->dropped_lines = start < text_len || next < placeholder_count;
       break;
     }
     add(start, i, 1);
@@ -1226,6 +1380,9 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
   if (!p->nowrap && !p->measured) {
     measure_words(p);
   }
+  if (p->max_content < 0) {
+    measure_max_content(p);
+  }
   split_around_long_words(p, w, any_emptied);
   if (p->nowrap && any_emptied) {
     truncate_nowrap_lines(p, w, emptied);
@@ -1243,9 +1400,10 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
     p->first_lines.push_back(first);
     std::vector<LineMetrics> lines;
     paragraph->getLineMetrics(lines);
-    if (lines.empty() && (paragraphs.size() > 1 || !p->pieces.empty())) {
+    if (lines.empty() && p->length > 0) {
       // An empty hard-broken line still takes a line box, as it does when
-      // Skia lays out the whole text.
+      // Skia lays out the whole text, also when it is the only line nowrap
+      // text with an ellipsis keeps. Only empty text has no line.
       lines.emplace_back();
       lines.back().fHardBreak = true;
     }
@@ -1273,6 +1431,15 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
       line.fEndIndex += offset;
       line.fEndExcludingWhitespaces += offset;
       line.fEndIncludingNewline += offset;
+      // Skia gives the empty line after a hard break that ends the text the
+      // break's last unit, [length - 1, length), the LF of a CRLF; it starts
+      // after the break, at the end of the text, as an empty line between
+      // two hard breaks starts after the first.
+      if (p->ends_in_hard_break && line.fStartIndex >= p->hard_breaks.back() &&
+          line.fEndExcludingWhitespaces > line.fStartIndex) {
+        line.fStartIndex = line.fEndIndex = line.fEndExcludingWhitespaces =
+            line.fEndIncludingNewline = p->length;
+      }
       // Skia counts a hard break that ends the text in the line before it;
       // the line's text stops at its first hard break.
       const auto brk = std::lower_bound(p->hard_breaks.begin(),
@@ -1301,10 +1468,14 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
     }
     if (p->ellipsized) {
       // A line's metrics leave out an ellipsis Skia appended to it; the
-      // painted runs include it.
-      const size_t n = lines.size();
+      // painted runs include it. Only that line's: elsewhere a run can end
+      // past the line, as one does in RTL whose zero-width character (a
+      // ZWSP) a negative letter spacing gives a negative width.
+      const auto& text_lines = static_cast<ParagraphImpl*>(paragraph)->lines();
+      const size_t n = std::min(lines.size(), text_lines.size());
       paragraph->visit([&](int line, const Paragraph::VisitorInfo* run) {
-        if (run == nullptr || line < 0 || static_cast<size_t>(line) >= n) {
+        if (run == nullptr || line < 0 || static_cast<size_t>(line) >= n ||
+            text_lines[line].ellipsis() == nullptr) {
           return;
         }
         const float right =
@@ -1414,20 +1585,14 @@ void effing_paragraph_get_metrics(effing_paragraph* p,
     m->longest_line =
         std::max(m->longest_line, laid.paragraph->getLongestLine());
   }
-  for (const auto& paragraph : p->paragraphs) {
-    m->min_intrinsic_width =
-        std::max(m->min_intrinsic_width, paragraph->getMinIntrinsicWidth());
-    m->max_intrinsic_width =
-        std::max(m->max_intrinsic_width, paragraph->getMaxIntrinsicWidth());
-  }
-  if (p->measured) {
-    m->min_intrinsic_width = p->widest_word;
-  }
-  // Skia's minimum is the widest word, which nowrap text cannot shrink to:
-  // its min-content width is its max-content width, as in CSS.
-  if (p->nowrap) {
-    m->min_intrinsic_width = m->max_intrinsic_width;
-  }
+  // Both measured once, on the first layout, so they don't depend on the
+  // width or on the layouts before. nowrap text cannot shrink to its widest
+  // word: its min-content width is its max-content width, as in CSS.
+  const float max_content = std::max(p->max_content, 0.f);
+  m->min_intrinsic_width = p->nowrap ? max_content : p->widest_word;
+  // Never less than min-content, as in CSS, which a negative letter spacing
+  // on an invisible character (a soft hyphen) could make it.
+  m->max_intrinsic_width = std::max(max_content, m->min_intrinsic_width);
   // Each line of nowrap text with an ellipsis is its own one-line paragraph,
   // which "exceeds" its one line whenever it is truncated to the width.
   if (!(p->nowrap && p->ellipsized)) {
