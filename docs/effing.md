@@ -159,6 +159,15 @@ top:
     where Chrome hides it, and the fork clips nothing.
   - The cluster kept is the first in the text, which in a line of mixed
     directions need not be the one Chrome keeps, the first on screen.
+  - SkParagraph takes grapheme clusters off the end of the line's text, in
+    logical order, until the ellipsis fits. Chrome truncates the line on
+    screen, at the ellipsis, so where an LTR line ends in an RTL word the
+    two keep different parts of that word: `'ab بتثبتث بتث'` clamped to one
+    line at 70px shows "ab بتثبت…" here, and more of the word in Chrome.
+  - Under `justify`, Chrome justifies the clamped line as it laid it out
+    before truncating it, the ellipsis taking the place of what it cut
+    ("dd ee …" spread over the width); the fork start-aligns it, as a line
+    ending in the ellipsis.
   - A line of nothing but spaces keeps none of them: it is the ellipsis
     alone, at the line's start, where Chrome keeps the spaces before it.
     Wrapped text has such lines only with `keepTrailingWhitespace`, or from
@@ -508,7 +517,6 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   keep the CR as trailing whitespace, drawn as the font's missing glyph
   before the ellipsis where the font maps none to it, and in its
   `endIndex` (`'ab\r\ncd'` was `[0, 3)`, now `[0, 2)`, "ab…").
-
 - `noWrap` text with `maxLines` and an `ellipsis` ends the last line it
   keeps with the ellipsis whenever it drops lines after it, as Chrome's
   `-webkit-line-clamp` does under `white-space: pre`: `'ab\ncd'` with
