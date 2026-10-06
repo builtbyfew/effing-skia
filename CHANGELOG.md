@@ -1,3 +1,19 @@
+## [1.0.10-effing.4](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.3...v1.0.10-effing.4) (2026-10-06)
+
+
+### Features
+
+* **paragraph:** placeholder lineBreak, and line breaks and ellipsis as in Chrome ([#19](https://github.com/builtbyfew/effing-skia/issues/19)) ([713e74a](https://github.com/builtbyfew/effing-skia/commit/713e74aeb608bb45651a152f951e57c95cf7c094)), closes [#13](https://github.com/builtbyfew/effing-skia/issues/13) [#14](https://github.com/builtbyfew/effing-skia/issues/14)
+
+
+### Bug Fixes
+
+* **paragraph:** consistent intrinsic widths and line metrics ([#18](https://github.com/builtbyfew/effing-skia/issues/18)) ([b5c79aa](https://github.com/builtbyfew/effing-skia/commit/b5c79aa724c0cdf7ec14075a3b28752cf60d4a81)), closes [#15](https://github.com/builtbyfew/effing-skia/issues/15)
+
+
+### BREAKING CHANGES
+
+* **paragraph:** without `keepTrailingWhitespace`, spaces and tabs at the start of wrapping text or after a hard break no longer take room or a line of their own, and the lines' `startIndex` is after them. Pass `keepTrailingWhitespace` to keep them.
 ## [1.0.10-effing.3](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.2...v1.0.10-effing.3) (2026-10-05)
 
 

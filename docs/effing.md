@@ -480,7 +480,7 @@ the CI matrix.
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
-### Unreleased
+### 1.0.10-effing.4
 
 - `ParagraphPlaceholder.lineBreak`: `'box'` (the default) breaks lines
   around the placeholder as before, as Chrome does around an inline-block

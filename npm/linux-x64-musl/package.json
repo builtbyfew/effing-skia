@@ -1,6 +1,6 @@
 {
   "name": "@effing/skia-linux-x64-musl",
-  "version": "1.0.10-effing.3",
+  "version": "1.0.10-effing.4",
   "cpu": [
     "x64"
   ],
