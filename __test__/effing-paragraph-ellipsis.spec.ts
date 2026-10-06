@@ -41,6 +41,40 @@ const lines = (layout: ParagraphLayout): Line[] =>
 
 const round = (x: number) => Math.round(x * 100) / 100
 
+// The columns each line of `paragraph` inks, painted at (0, 0) at its last
+// layout: [first, end) of those with a pixel in the line's band more than
+// ~40% opaque, or null for a line with no ink. Columns, not pixels, so that
+// antialiasing on another platform moves an edge by a pixel at most.
+function inkPerLine(paragraph: Paragraph, layout: ParagraphLayout, width = 300): Array<[number, number] | null> {
+  const height = Math.max(1, Math.ceil(layout.height))
+  const ctx = createCanvas(width, height).getContext('2d')
+  fillParagraph(ctx, paragraph, 0, 0)
+  const { data } = ctx.getImageData(0, 0, width, height)
+  return layout.lines.map((_, k) => {
+    let first = -1
+    let end = -1
+    for (let x = 0; x < width; x++) {
+      for (let y = Math.round(k * layout.lineHeight); y < Math.round((k + 1) * layout.lineHeight); y++) {
+        if (data[(y * width + x) * 4 + 3] > 96) {
+          if (first < 0) first = x
+          end = x + 1
+          break
+        }
+      }
+    }
+    return first < 0 ? null : [first, end]
+  })
+}
+
+function nearInk(t: ExecutionContext, actual: [number, number] | null, expected: [number, number], name: string) {
+  t.truthy(actual, name)
+  if (!actual) return
+  t.true(
+    Math.abs(actual[0] - expected[0]) <= 1 && Math.abs(actual[1] - expected[1]) <= 1,
+    `${name}: inked ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)} within 1px`,
+  )
+}
+
 type Case = { parts: ParagraphContent; style: ParagraphStyle; width: number }
 
 type Result = { lines: Line[]; placeholders: (number | null)[]; didExceedMaxLines: boolean }
@@ -306,8 +340,18 @@ test('the lines before a clamped line are justified', (t) => {
     // Laid out again after other widths, too.
     paragraph.layout(40)
     paragraph.layout(200)
-    t.deepEqual(lines(paragraph.layout(85)), expected, name)
+    const layout = paragraph.layout(85)
+    t.deepEqual(lines(layout), expected, name)
+    // Painted justified: every line before the last inks up to the right
+    // edge, as in Chrome (to 84px), where a start-aligned one stops short.
+    for (const [k, ink] of inkPerLine(paragraph, layout).slice(0, -1).entries()) {
+      t.true(ink !== null && ink[1] >= 83, `${name} line ${k} inked ${JSON.stringify(ink)}`)
+    }
   }
+  // Which tells them apart: start-aligned, the first line stops at 79px.
+  const start = new Paragraph('aa bb cc dd ee ff gg hh', { ...style, textAlign: 'left', maxLines: 2 })
+  const [first] = inkPerLine(start, start.layout(85))
+  t.true(first !== null && first[1] < 81, JSON.stringify(first))
 })
 
 test('noWrap keeps the first cluster of each line it truncates, with the ellipsis after it', (t) => {
@@ -427,6 +471,25 @@ test('a clamped noWrap line gets the ellipsis, as Chrome has it under white-spac
       t.is(layout.didExceedMaxLines, exceeded, name)
     }
   }
+  // Painted: the last line's ink runs from its text to the end of the
+  // ellipsis and no further, over the columns Chrome's screenshots ink
+  // (`ab\ncd` is "ab…" from 1px to 38px; "ab" alone ends at 19px).
+  const inked: Array<[string, ParagraphStyle, number, [number, number]]> = [
+    ['ab\ncd', {}, 100, [1, 38]],
+    ['ab  \ncd', {}, 100, [1, 58]],
+    ['ab  \ncd', { keepTrailingWhitespace: false }, 100, [1, 38]],
+    ['abcd\ncd', {}, 50, [1, 48]],
+    ['abcdefghij\ncd', {}, 15, [1, 28]],
+    ['\ncd', {}, 100, [2, 18]],
+    ['ab\ncd\nef', { maxLines: 2 }, 100, [1, 38]],
+    ['ab\n\n', {}, 100, [1, 38]],
+    ['ab\r\ncd', {}, 100, [1, 38]],
+  ]
+  for (const [text, extra, width, expected] of inked) {
+    const paragraph = new Paragraph(text, { ...style, ...extra })
+    const ink = inkPerLine(paragraph, paragraph.layout(width))
+    nearInk(t, ink[ink.length - 1], expected, JSON.stringify({ text, extra, width }))
+  }
   // The ellipsis leaves max-content alone.
   t.is(new Paragraph('abc\nde', style).layout(100).maxIntrinsicWidth, 30)
 })
@@ -498,15 +561,20 @@ test('an RTL clamped line is as wide as its text, placeholders and ellipsis', (t
     maxLines: 2,
     ellipsis: '…',
   }
-  for (const [textAlign, left, box] of [
-    ['right', 18.12, 90],
-    ['center', 9.06, 80.94],
-    ['left', 0, 71.88],
+  // Painted, the line's ink (fillParagraph paints no placeholder) runs from
+  // the ellipsis, at its left end, to the text before the box: from 19px,
+  // as in Chrome, when right-aligned.
+  for (const [textAlign, left, box, ink] of [
+    ['right', 18.12, 90, [19, 88]],
+    ['center', 9.06, 80.94, [10, 79]],
+    ['left', 0, 71.88, [1, 70]],
   ] as const) {
-    const layout = new Paragraph(parts, { ...style, textAlign }).layout(110)
+    const paragraph = new Paragraph(parts, { ...style, textAlign })
+    const layout = paragraph.layout(110)
     t.deepEqual(lines(layout)[1], [12, 22, 91.88, left], textAlign)
     t.is(round(layout.placeholders[0]?.x ?? NaN), box, textAlign)
     t.is(layout.placeholders[0]?.line, 1)
+    nearInk(t, inkPerLine(paragraph, layout, 200)[1], [...ink], textAlign)
   }
 })
 
