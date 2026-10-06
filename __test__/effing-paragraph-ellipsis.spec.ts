@@ -377,12 +377,22 @@ test('a clamped noWrap line gets the ellipsis, as Chrome has it under white-spac
   // shows has the ellipsis after it whenever lines are clamped away after
   // it ("ab…", inked from 1px to 38px), truncated with it to fit the width
   // ("abc…" at 50px, "a…" at 15px), with the spaces before it kept ("ab  …")
-  // and alone on an empty line. Lines as [startIndex, endIndex, width,
-  // left].
-  const style: ParagraphStyle = { ...IOSEVKA, noWrap: true, maxLines: 1, ellipsis: '…' }
+  // and alone on an empty line. Without `keepTrailingWhitespace`, as under
+  // `white-space: pre-line` with `text-wrap-mode: nowrap`, the spaces before
+  // it hang, as at the end of any line ("ab…"). Lines as [startIndex,
+  // endIndex, width, left].
+  const style: ParagraphStyle = {
+    ...IOSEVKA,
+    noWrap: true,
+    keepTrailingWhitespace: true,
+    maxLines: 1,
+    ellipsis: '…',
+  }
   const cases: Array<[ParagraphContent, ParagraphStyle, number, Line[], boolean]> = [
     ['ab\ncd', {}, 100, [[0, 2, 40, 0]], true],
     ['ab  \ncd', {}, 100, [[0, 4, 60, 0]], true],
+    ['ab  \ncd', { keepTrailingWhitespace: false }, 100, [[0, 2, 40, 0]], true],
+    ['ab\t \ncd', { keepTrailingWhitespace: false }, 100, [[0, 2, 40, 0]], true],
     ['abcd\ncd', {}, 50, [[0, 3, 50, 0]], true],
     ['abcdefghij\ncd', {}, 15, [[0, 1, 30, 0]], true],
     ['\ncd', {}, 100, [[0, 0, 20, 0]], true],

@@ -1982,8 +1982,16 @@ effing_paragraph* effing_paragraph_create(
     // and is truncated to fit it.
     if (brk > 0 && out->paragraphs.size() + 1 == max_lines &&
         (i + brk < text_len || placeholders_to(i) < placeholder_count)) {
-      out->clamped_end = utf16_length(text, i) + placeholders_to(i);
-      add(start, i, 1, paragraph_style.getEllipsis());
+      // Without the spaces and tabs that end it, unless whitespace is kept:
+      // they hang at the end of a line, before the ellipsis too.
+      size_t end = i;
+      while (!out->keep_trailing_whitespace && end > start &&
+             (text[end - 1] == ' ' || text[end - 1] == '\t') &&
+             !placeholder_at(placeholders, placeholder_count, end)) {
+        end--;
+      }
+      out->clamped_end = utf16_length(text, end) + placeholders_to(end);
+      add(start, end, 1, paragraph_style.getEllipsis());
     } else {
       add(start, i, 1);
     }
