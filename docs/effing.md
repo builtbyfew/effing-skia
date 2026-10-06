@@ -99,13 +99,30 @@ top:
   `noWrap` text all end at a hard break or the text, which CSS never
   justifies. A justified paragraph laid out again, at any width, gets the
   lines a fresh one gets and paints as one does
-  (`__test__/effing-paragraph-relayout.spec.ts`; its `maxIntrinsicWidth`
-  aside). SkParagraph would keep the last layout's justification in the
-  lines it formats again at the same width, which then paint unjustified,
-  and measure trailing spaces with it when it breaks them at a new width,
-  so the fork breaks a justified paragraph's lines anew each time.
+  (`__test__/effing-paragraph-relayout.spec.ts`). SkParagraph would keep
+  the last layout's justification in the lines it formats again at the
+  same width, which then paint unjustified, and measure trailing spaces
+  with it when it breaks them at a new width, so the fork breaks a
+  justified paragraph's lines anew each time.
 - `minIntrinsicWidth` is the widest word, or for `noWrap` text the widest
   line, as CSS min-content is.
+- `maxIntrinsicWidth` is the widest line between hard breaks, its trailing
+  whitespace hanging and, in wrapping text, the spaces and tabs that start
+  it collapsed, unless whitespace is kept, as CSS max-content is
+  (`__test__/effing-paragraph-metrics.spec.ts`). It is measured once, from
+  the whole text, so neither the width nor the layouts before change it,
+  and `maxLines` and the `ellipsis` leave it alone, as line clamping leaves
+  Chrome's, except that `noWrap` text with an `ellipsis` is measured as it
+  is laid out, a line at a time, and a line shaped on its own can come out
+  wider or narrower (an RTL line with fallback fonts, by 14px in one
+  case). It is rounded up to the 0.01px SkParagraph's line breaker tells
+  apart, so the text laid out at it breaks only at hard breaks; under a
+  negative `letterSpacing` it can be wider than the widest line, by what
+  the breaker needs (a character with no advance of its own, such as a
+  combining mark, has a negative width there). `noWrap` text with an
+  `ellipsis` and `maxLines` shapes the hard lines it drops, once, to
+  measure them, where it used to shape only the lines it shows: 2000
+  dropped lines take about 14ms more on the first layout.
 - `wordBreak` and `overflowWrap` say where lines may break within and around
   words (below).
 - `noWrap` breaks only at hard breaks; with an `ellipsis` it truncates each
@@ -149,9 +166,11 @@ top:
   `white-space: pre` breaks at LF and CRLF only and draws VT, FF, LS and PS
   inline, so a caller after Chrome's result replaces those first.
 - A hard break that ends the text gives an empty last line, as SkParagraph
-  lays it out: `'ab\n'` has two lines. Chrome gives `white-space: pre` text
-  ending in a newline one line, so a caller that wants that drops the final
-  break, or the last line.
+  lays it out: `'ab\n'` has two lines. That line starts and ends at the end
+  of the text (`[3, 3)` here), after the break, whatever the break, as an
+  empty line between two hard breaks starts after the first. Chrome gives
+  `white-space: pre` text ending in a newline one line, so a caller that
+  wants that drops the final break, or the last line.
 - Whitespace at the end of a line hangs: it is left out of the line's width
   and alignment, as CSS does for `white-space: normal`. With
   `keepTrailingWhitespace`, spaces and tabs before a hard break or the end of
@@ -493,6 +512,32 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   at the edge of a piece used to take the paragraph's direction, and land
   on the wrong side of the Arabic or Hebrew around them. The line before a
   word too wide for the line is now justified under `justify`.
+- `maxIntrinsicWidth` is CSS max-content: the widest line between hard
+  breaks, trailing whitespace hanging and, in wrapping text, leading spaces
+  and tabs collapsed (as the layout collapses them), unless whitespace is
+  kept, measured once from the whole text and rounded up to 0.01px. It used
+  to be SkParagraph's sum
+  of the lines broken at the last layout's width, trailing whitespace
+  included, so it changed with the width and, where a word too wide for its
+  line split the text, kept an earlier layout's figure, by up to hundreds of
+  px. `minIntrinsicWidth` of `noWrap` text, which is the same figure,
+  follows. `maxLines` and the `ellipsis` leave it alone, except that
+  `noWrap` text with an `ellipsis`, laid out a line at a time, is measured
+  as its lines shape on their own. `noWrap` text with an `ellipsis` and
+  `maxLines` shapes the lines past `maxLines` once to measure them, which
+  costs its first layout about 14ms for 2000 dropped lines.
+- With an `ellipsis`, only the line SkParagraph ellipsized is measured by its
+  painted runs, to include the ellipsis. Every line was, so a line whose run
+  ends past it, as an RTL line ending in a zero-width space does under a
+  negative `letterSpacing`, came out wider than without the ellipsis.
+- The empty last line after a hard break that ends the text starts and ends
+  at the end of the text, `[length, length)`, for every kind of hard break.
+  It used to cover the break's last unit, `[length - 1, length)`, except in
+  `noWrap` text with an `ellipsis`.
+- `noWrap` text with an `ellipsis` and `maxLines` counts its lines as other
+  text does: the empty line after a hard break that ends the text no longer
+  sets `didExceedMaxLines`, and an empty first line that is all `maxLines`
+  keeps is a line (it used to leave the paragraph with none).
 
 ### 1.0.10-effing.3
 
