@@ -515,6 +515,11 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   `maxLines: 1` is "ab…", no longer "ab", and the line is truncated with
   the ellipsis to fit the width (`'abcd\ncd'` at 50px is "abc…"). Only a
   line too wide for the width used to get it.
+- An RTL line clamped with an `ellipsis` is as wide as its text, its
+  placeholders and the ellipsis together. It used to leave the ellipsis
+  out when a placeholder ended the line on its right, so a right-aligned
+  such line pushed the placeholder past the right edge by the ellipsis's
+  width.
 
 ### 1.0.10-effing.4
 

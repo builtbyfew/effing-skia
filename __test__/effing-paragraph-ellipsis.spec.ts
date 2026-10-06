@@ -473,6 +473,33 @@ test('a clamped line is aligned with its ellipsis', (t) => {
   }
 })
 
+test('an RTL clamped line is as wide as its text, placeholders and ellipsis', (t) => {
+  // In RTL the ellipsis lies left of the line's text, and a placeholder can
+  // end the line on its right. Chrome 154 (`dir=rtl`, `text-align: right`,
+  // `-webkit-line-clamp: 2`, 110px wide, the box an inline-block) puts the
+  // box at 90px, against the right edge, and the line's ink from 19px; the
+  // line used to leave the ellipsis out of its width, and push the box past
+  // the right edge, to 102.63px.
+  const parts: ParagraphContent = ['بتث بتث بتث ', { width: 20, height: 20 }, '! 2026 بتث بتث بتث']
+  const style: ParagraphStyle = {
+    ...HARMATTAN,
+    fontFamily: 'WB Harmattan, WB Iosevka',
+    direction: 'rtl',
+    maxLines: 2,
+    ellipsis: '…',
+  }
+  for (const [textAlign, left, box] of [
+    ['right', 18.12, 90],
+    ['center', 9.06, 80.94],
+    ['left', 0, 71.88],
+  ] as const) {
+    const layout = new Paragraph(parts, { ...style, textAlign }).layout(110)
+    t.deepEqual(lines(layout)[1], [12, 22, 91.88, left], textAlign)
+    t.is(round(layout.placeholders[0]?.x ?? NaN), box, textAlign)
+    t.is(layout.placeholders[0]?.line, 1)
+  }
+})
+
 test('the clamped line keeps the bidi levels its text has in the paragraph', (t) => {
   // An LTR paragraph of Arabic, as canvas lays it out: in Chrome 154 the box
   // and the digits on the clamped line sit where they do without the clamp,

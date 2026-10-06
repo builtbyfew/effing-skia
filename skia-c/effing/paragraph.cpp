@@ -2037,6 +2037,18 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
       // ZWSP) a negative letter spacing gives a negative width.
       const auto& text_lines = static_cast<ParagraphImpl*>(paragraph)->lines();
       const size_t n = std::min(lines.size(), text_lines.size());
+      // The ellipsis comes after the line's text, which in RTL is on its
+      // left, so the runs visited there can end before a placeholder on the
+      // line's right (which isn't visited).
+      for (size_t i = 0; i < n; i++) {
+        if (const Run* ellipsis = text_lines[i].ellipsis()) {
+          float& line_width = p->line_widths[first + i];
+          line_width =
+              std::max(line_width, static_cast<float>(lines[i].fWidth) +
+                                       ellipsis->advance().fX +
+                                       p->kept_whitespace[first + i]);
+        }
+      }
       paragraph->visit([&](int line, const Paragraph::VisitorInfo* run) {
         if (run == nullptr || line < 0 || static_cast<size_t>(line) >= n ||
             text_lines[line].ellipsis() == nullptr) {
