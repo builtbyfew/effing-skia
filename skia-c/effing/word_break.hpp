@@ -6,6 +6,7 @@
 #define EFFING_WORD_BREAK_HPP
 
 #include <string>
+#include <vector>
 
 #include "include/core/SkRefCnt.h"
 #include "modules/skunicode/include/SkUnicode.h"
@@ -36,8 +37,22 @@ enum class OverflowWrap : int {
 // the opportunities adjusted for kBreakAll and kKeepAll. With
 // `break_first_word`, a line may also break between any two grapheme
 // clusters of the text's first word, which is how an overflow-wrap:
-// break-word word is broken.
-sk_sp<SkUnicode> make_word_break_unicode(WordBreak mode, bool break_first_word);
+// break-word word is broken. Lines break around the U+FFFC at each UTF-8
+// offset in `ideographs`, a placeholder, as around an emoji (UAX #14 class
+// ID); SkParagraph's cache keys a paragraph on its placeholders but not on
+// which those are, so the caller tags it. `bidi`, when given, are the bidi
+// levels of the text, for a piece of a paragraph whose levels depend on the
+// text around it; they need bidi_cache_tag.
+sk_sp<SkUnicode> make_word_break_unicode(
+    WordBreak mode,
+    bool break_first_word,
+    std::vector<size_t> ideographs = {},
+    std::vector<SkUnicode::BidiRegion> bidi = {});
+
+// A font family name for a paragraph's strut that keeps SkParagraph's cache
+// apart for each set of bidi levels given to make_word_break_unicode, or
+// empty for none.
+std::string bidi_cache_tag(const std::vector<SkUnicode::BidiRegion>& bidi);
 
 // A font family name for a paragraph's strut, which nothing resolves, that
 // keeps SkParagraph's cache apart for each set of opportunities, or empty

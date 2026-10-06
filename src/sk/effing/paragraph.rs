@@ -45,6 +45,7 @@ mod ffi {
     pub height: f32,
     pub align: i32,
     pub baseline_offset: f32,
+    pub line_break: i32,
   }
 
   unsafe extern "C" {
@@ -180,6 +181,17 @@ pub enum PlaceholderAlign {
   TextBottom = 5,
 }
 
+/// How lines break around a placeholder. Mirrors
+/// `effing_placeholder_line_break`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PlaceholderLineBreak {
+  /// As around a CSS inline-block or image: on either side of it.
+  #[default]
+  Box = 0,
+  /// As around an emoji: not between it and the punctuation next to it.
+  Emoji = 1,
+}
+
 /// An inline box in a paragraph's text: it takes `width` on its line and
 /// draws nothing.
 #[derive(Debug, Clone, Copy)]
@@ -191,6 +203,7 @@ pub struct Placeholder {
   pub align: PlaceholderAlign,
   /// For `Baseline`: its baseline's distance from its top.
   pub baseline_offset: f32,
+  pub line_break: PlaceholderLineBreak,
 }
 
 /// Mirrors `effing_paragraph_placeholder_box`.
@@ -288,6 +301,7 @@ impl Paragraph {
         height: p.height,
         align: p.align as i32,
         baseline_offset: p.baseline_offset,
+        line_break: p.line_break as i32,
       })
       .collect();
     let ptr = unsafe {

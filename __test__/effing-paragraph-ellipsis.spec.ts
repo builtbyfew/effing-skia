@@ -4,8 +4,14 @@ import { fileURLToPath } from 'node:url'
 
 import test, { type ExecutionContext } from 'ava'
 
-import { GlobalFonts } from '../index'
-import { Paragraph, type ParagraphContent, type ParagraphLayout, type ParagraphStyle } from '../extensions'
+import { GlobalFonts, createCanvas } from '../index'
+import {
+  Paragraph,
+  fillParagraph,
+  type ParagraphContent,
+  type ParagraphLayout,
+  type ParagraphStyle,
+} from '../extensions'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = join(__dirname, '..')
@@ -260,4 +266,143 @@ test('noWrap keeps the first cluster of each line it truncates, with the ellipsi
     [3, 8, 50, 0],
     [9, 13, 45, 0],
   ])
+})
+
+test('a clamped line that ends at a hard break gets the ellipsis', (t) => {
+  // Chrome 154's -webkit-line-clamp (headless, macOS, the same font file,
+  // `white-space: pre-line`, or `pre-wrap` for keepTrailingWhitespace) puts
+  // the ellipsis after the last line it shows whenever text is clamped away,
+  // even after a hard break, and on an empty line alone; compared in
+  // screenshots. Lines as [startIndex, endIndex, width, left].
+  const style: ParagraphStyle = { ...IOSEVKA, ellipsis: '…' }
+  const cases: Array<[ParagraphContent, ParagraphStyle, number, Line[], boolean]> = [
+    ['ab\ncd', { maxLines: 1 }, 100, [[0, 2, 40, 0]], true],
+    [
+      'ab\n\ncd',
+      { maxLines: 2 },
+      100,
+      [
+        [0, 2, 20, 0],
+        [3, 3, 20, 0],
+      ],
+      true,
+    ],
+    ['\ncd', { maxLines: 1 }, 100, [[0, 0, 20, 0]], true],
+    // Nothing is clamped away: Chrome has 'ab\n' as one line.
+    ['ab\n', { maxLines: 1 }, 100, [[0, 2, 20, 0]], false],
+    ['ab\n\n', { maxLines: 1 }, 100, [[0, 2, 40, 0]], true],
+    // "abcdefgh…": the line's text, cut to fit the ellipsis.
+    ['abcdefghi\nk', { maxLines: 1 }, 100, [[0, 8, 100, 0]], true],
+    // "ab  …": kept spaces stay before the ellipsis.
+    ['ab  \ncd', { maxLines: 1, keepTrailingWhitespace: true }, 100, [[0, 4, 60, 0]], true],
+    [['ab ', box, '\ncd'], { maxLines: 1 }, 100, [[0, 4, 65, 0]], true],
+    ['ab\ncd', { maxLines: 1, textAlign: 'justify' }, 100, [[0, 2, 40, 0]], true],
+  ]
+  for (const [parts, extra, width, expected, exceeded] of cases) {
+    const layout = new Paragraph(parts, { ...style, ...extra }).layout(width)
+    const name = JSON.stringify({ parts, extra })
+    t.deepEqual(lines(layout), expected, name)
+    t.is(layout.didExceedMaxLines, exceeded, name)
+  }
+})
+
+test('the last line is its own text with the ellipsis after it, as Chrome has it', (t) => {
+  // Chrome 154's -webkit-line-clamp, compared in screenshots as above, puts
+  // the ellipsis after the last line's own text, without the spaces that
+  // hang at its end under `pre-line` (kept under `pre-wrap`, which is
+  // keepTrailingWhitespace), and takes grapheme clusters off the end of it
+  // until the two fit, keeping the spaces that are then last. SkParagraph
+  // would fill the line with the start of the next word instead ("ab cd
+  // e…"). Lines as [startIndex, endIndex, width, left].
+  const style: ParagraphStyle = { ...IOSEVKA, maxLines: 1, ellipsis: '…' }
+  const kept: ParagraphStyle = { keepTrailingWhitespace: true }
+  const cases: Array<[ParagraphContent, number, Line, ParagraphStyle?]> = [
+    ['aaaa bbbb cccc', 100, [0, 8, 100, 0]], // "aaaa bbb…"
+    ['aaaa bb cccc', 100, [0, 7, 90, 0]], // "aaaa bb…"
+    ['aaaa bb cccc', 100, [0, 8, 100, 0], kept], // "aaaa bb …"
+    ['ab cd efgh ij', 95, [0, 5, 70, 0]], // "ab cd…"
+    ['ab cd efgh ij', 95, [0, 6, 80, 0], kept], // "ab cd …"
+    ['a b c d e f g h', 100, [0, 8, 100, 0]], // "a b c d …"
+    ['ab cd\nef', 55, [0, 3, 50, 0]], // "ab …"
+    ['ab-cd-efgh-ij', 100, [0, 6, 80, 0]], // "ab-cd-…"
+    [['ab ', { width: 70, height: 10 }, ' cd'], 100, [0, 3, 50, 0]], // "ab …"
+  ]
+  for (const [parts, width, expected, extra] of cases) {
+    const layout = new Paragraph(parts, { ...style, ...extra }).layout(width)
+    t.deepEqual(lines(layout), [expected], JSON.stringify({ parts, extra }))
+    t.true(layout.didExceedMaxLines)
+  }
+  // A box wider than the line stays on the last line, overflowing it with
+  // the ellipsis after it; Chrome clips both to the box.
+  const wide = new Paragraph(['ab ', { width: 130, height: 10 }, ' cd'], { ...style, maxLines: 2 }).layout(100)
+  t.deepEqual(lines(wide), [
+    [0, 2, 20, 0],
+    [3, 4, 150, 0],
+  ])
+  t.is(wide.placeholders[0]?.line, 1)
+})
+
+test('a clamped line is aligned with its ellipsis', (t) => {
+  // Chrome 154 aligns the line by its text alone and puts the ellipsis
+  // after it, past the end edge where it doesn't fit ("ab" from 80px, the
+  // ellipsis from 100px; "aaaa bbb…" from 10px to 110px), where overflow
+  // hides it. The paragraph aligns the line it shows, ellipsis included, so
+  // the ellipsis stays in the box (docs/effing.md).
+  const style: ParagraphStyle = { ...IOSEVKA, maxLines: 1, ellipsis: '…' }
+  for (const [textAlign, left] of [
+    ['right', 60],
+    ['center', 30],
+  ] as const) {
+    t.deepEqual(lines(new Paragraph('ab\ncd', { ...style, textAlign }).layout(100)), [[0, 2, 40, left]])
+    t.deepEqual(lines(new Paragraph('aaaa bbbb cccc', { ...style, textAlign }).layout(100)), [[0, 8, 100, 0]])
+  }
+})
+
+test('the clamped line keeps the bidi levels its text has in the paragraph', (t) => {
+  // An LTR paragraph of Arabic, as canvas lays it out: in Chrome 154 the box
+  // and the digits on the clamped line sit where they do without the clamp,
+  // between the Arabic words, since bidi is resolved for the whole
+  // paragraph. Laid out on its own, the line would put them at its start.
+  const style: ParagraphStyle = { ...HARMATTAN, maxLines: 2, ellipsis: '…' }
+  const boxed = new Paragraph(['بتث بتث بتث ', { width: 20, height: 20 }, ' بتث بتث بتث بتث بتث'], style).layout(110)
+  t.is(boxed.placeholders[0]?.line, 1)
+  t.is(round(boxed.placeholders[0]!.x), 68.05) // Chrome: 68.05
+  // Where '2026' is drawn on the second line: right of the Arabic, as in
+  // Chrome, not at the line's start.
+  const inkColumns = (paragraph: Paragraph, line: number) => {
+    const canvas = createCanvas(200, 80)
+    const ctx = canvas.getContext('2d')
+    fillParagraph(ctx, paragraph, 0, 0)
+    const data = ctx.getImageData(0, line * 40, 200, 40).data
+    return Array.from({ length: 200 }, (_, x) => {
+      let sum = 0
+      for (let y = 0; y < 40; y++) sum += data[(y * 200 + x) * 4 + 3]
+      return sum
+    })
+  }
+  const digits = new Paragraph('2026', HARMATTAN)
+  digits.layout(1000)
+  const pattern = inkColumns(digits, 0).slice(0, 40)
+  const at = (paragraph: Paragraph) => {
+    const columns = inkColumns(paragraph, 1)
+    let best = -Infinity
+    let where = 0
+    for (let x = 0; x < 160; x++) {
+      let score = 0
+      for (let k = 0; k < 40; k++) score -= Math.abs((columns[x + k] ?? 0) - pattern[k])
+      if (score > best) {
+        best = score
+        where = x
+      }
+    }
+    return where
+  }
+  const text = 'بتث بتث بتث 2026 بتث بتث بتث بتث بتث'
+  const plain = new Paragraph(text, HARMATTAN)
+  plain.layout(110)
+  const clamped = new Paragraph(text, style)
+  clamped.layout(110)
+  t.is(at(plain), 68)
+  // The clamped line's text is cut short before the digits, logically last.
+  t.true(at(clamped) >= 40, `${at(clamped)}`)
 })

@@ -372,3 +372,87 @@ test('kept trailing whitespace moves the glyphs it precedes', (t) => {
     }
   }
 })
+
+test('spaces that start a line collapse unless whitespace is kept', (t) => {
+  // Chrome 154 (headless, macOS, the same font file), compared in
+  // screenshots: under `white-space: pre-line` (as under `normal`) the
+  // spaces and tabs at the start of the text or after a hard break are
+  // removed, so they neither take a line of their own nor push the text
+  // along; under `pre-wrap` (keepTrailingWhitespace) they stay. Lines as
+  // [startIndex, endIndex, width, left].
+  const ellipsis: ParagraphStyle = { maxLines: 1, ellipsis: '…' }
+  const cases: Array<[string, ParagraphStyle, number, Array<[number, number, number, number]>]> = [
+    [
+      ' cd ef',
+      {},
+      25,
+      [
+        [1, 3, 20, 0],
+        [4, 6, 20, 0],
+      ],
+    ],
+    ['  ab', {}, 100, [[2, 4, 20, 0]]],
+    ['  ab', { textAlign: 'right' }, 100, [[2, 4, 20, 80]]],
+    ['\t ab', {}, 100, [[2, 4, 20, 0]]],
+    [
+      'ab\n  cd',
+      {},
+      100,
+      [
+        [0, 2, 20, 0],
+        [5, 7, 20, 0],
+      ],
+    ],
+    [
+      'ab\n  \ncd',
+      {},
+      100,
+      [
+        [0, 2, 20, 0],
+        [5, 5, 0, 0],
+        [6, 8, 20, 0],
+      ],
+    ],
+    [
+      ' ab cd',
+      { wordBreak: 'break-all' },
+      25,
+      [
+        [1, 3, 20, 0],
+        [4, 6, 20, 0],
+      ],
+    ],
+    // "c…" and "a…", where the leading space used to leave "…" alone.
+    [' cd ef', ellipsis, 25, [[1, 2, 30, 0]]],
+    [' ab cd', { ...ellipsis, wordBreak: 'break-all' }, 15, [[1, 2, 30, 0]]],
+    [
+      ' cd ef',
+      { keepTrailingWhitespace: true },
+      25,
+      [
+        [0, 0, 0, 0],
+        [1, 3, 20, 0],
+        [4, 6, 20, 0],
+      ],
+    ],
+    ['  ab', { keepTrailingWhitespace: true }, 100, [[0, 4, 40, 0]]],
+    [
+      'ab\n  cd',
+      { keepTrailingWhitespace: true },
+      100,
+      [
+        [0, 2, 20, 0],
+        [3, 7, 40, 0],
+      ],
+    ],
+  ]
+  const round = (x: number) => Math.round(x * 100) / 100
+  for (const [text, style, width, expected] of cases) {
+    const layout = new Paragraph(text, { ...STYLE, ...style }).layout(width)
+    t.deepEqual(
+      layout.lines.map((line) => [line.startIndex, line.endIndex, round(line.width), round(line.left)]),
+      expected,
+      JSON.stringify({ text, style, width }),
+    )
+  }
+})

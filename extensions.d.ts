@@ -48,8 +48,10 @@ export interface ParagraphStyle {
   ellipsis?: string
   /**
    * Count spaces and tabs before a hard break or the end of the text in the
-   * line's `width` and alignment instead of hanging them, as CSS
-   * `white-space: pre` and `pre-wrap` do. Spaces at a soft wrap still hang.
+   * line's `width` and alignment instead of hanging them, and keep those that
+   * start a line (at the start of the text or after a hard break) instead of
+   * collapsing them away, as CSS `white-space: pre` and `pre-wrap` do. Spaces
+   * at a soft wrap still hang.
    */
   keepTrailingWhitespace?: boolean
   /**
@@ -69,8 +71,8 @@ export interface ParagraphStyle {
 
 /**
  * An inline box in a paragraph's text, e.g. for an image or an emoji drawn as
- * one: it takes `width` on its line, can break from the text on either side,
- * and draws nothing. It never grows its line box.
+ * one: it takes `width` on its line and draws nothing. It never grows its
+ * line box.
  */
 export interface ParagraphPlaceholder {
   width: number
@@ -85,6 +87,16 @@ export interface ParagraphPlaceholder {
   verticalAlign?: 'baseline' | 'middle' | 'top' | 'bottom' | 'text-top' | 'text-bottom' | null
   /** For `baseline`: from the box's top down to its own baseline. Defaults to `height`, its bottom edge, as for an image. Null means the default. */
   baselineOffset?: number | null
+  /**
+   * How lines break around the box. `box` (the default), as Chrome breaks them
+   * around an inline-block or an image: on either side of it, even before
+   * the "!" after it. `emoji`, as Chrome breaks them around an emoji (UAX #14
+   * class ID): between it and a letter, a space or another box, but not
+   * between it and the punctuation next to it, so `Hi 🎉! ok` breaks as
+   * `Hi | 🎉! | ok`. Pass `emoji` for an emoji drawn in the box. Null means
+   * the default.
+   */
+  lineBreak?: 'box' | 'emoji' | null
 }
 
 /** A paragraph's text: a string, or strings and inline placeholders in order. */

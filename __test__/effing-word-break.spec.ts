@@ -777,8 +777,8 @@ test('keepTrailingWhitespace keeps the spaces before an ellipsis', (t) => {
 })
 
 test('maxLines with leading whitespace after a word wider than the line', (t) => {
-  // The whitespace after a hard break starts the next line; it isn't the
-  // overflowing word's.
+  // The whitespace after a hard break starts the next line, which collapses
+  // it away; it isn't the overflowing word's.
   const layout = (text: string, style: ParagraphStyle) => {
     const result = new Paragraph(text, { ...IOSEVKA, ...style }).layout(100)
     return {
@@ -788,9 +788,9 @@ test('maxLines with leading whitespace after a word wider than the line', (t) =>
     }
   }
   for (const [text, second] of [
-    ['Overlongwordhere\n  ab', [17, 21, 40, true]],
-    ['Overlongwordhere\r\n  ab', [18, 22, 40, true]],
-    ['Overlongwordhere\n\tab', [17, 20, 30, true]],
+    ['Overlongwordhere\n  ab', [19, 21, 20, true]],
+    ['Overlongwordhere\r\n  ab', [20, 22, 20, true]],
+    ['Overlongwordhere\n\tab', [18, 20, 20, true]],
   ] as const) {
     t.deepEqual(layout(text, {}).lines, [[0, 16, 160, true], second])
     t.deepEqual(layout(text, { maxLines: 1 }), { lines: [[0, 16, 160, true]], exceeded: true, height: 1 })

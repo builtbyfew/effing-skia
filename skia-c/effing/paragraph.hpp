@@ -58,6 +58,16 @@ enum effing_placeholder_align {
   EFFING_PLACEHOLDER_TEXT_BOTTOM = 5,
 };
 
+// How lines break around a placeholder.
+enum effing_placeholder_line_break {
+  // As around a CSS inline-block or image: on either side of it, whatever
+  // is next to it.
+  EFFING_PLACEHOLDER_BREAK_BOX = 0,
+  // As around an emoji (UAX #14 class ID): not between it and the
+  // punctuation that sticks to a word.
+  EFFING_PLACEHOLDER_BREAK_EMOJI = 1,
+};
+
 // An inline box in the text, which takes `width` on its line and draws
 // nothing. Placeholders never change a line box's height.
 struct effing_paragraph_placeholder {
@@ -69,6 +79,8 @@ struct effing_paragraph_placeholder {
   int align;
   // For EFFING_PLACEHOLDER_BASELINE: its baseline's distance from its top.
   float baseline_offset;
+  // An effing_placeholder_line_break.
+  int line_break;
 };
 
 // Where layout put a placeholder, from the top-left corner of the paragraph.

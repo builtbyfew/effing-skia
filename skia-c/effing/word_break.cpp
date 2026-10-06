@@ -1,9 +1,12 @@
 // SkParagraph takes its line-break opportunities from the SkUnicode it is
-// built with, so break-all, keep-all and a word that break-word breaks wrap
-// ICU's in one that moves them before SkParagraph sees them. Nothing else
-// changes: shaping, bidi and grapheme clusters are ICU's.
+// built with, so break-all, keep-all, a word that break-word breaks and the
+// text around placeholders wrap ICU's in one that moves them before
+// SkParagraph sees them. A piece of a paragraph can also be handed the bidi
+// levels its text has in the whole paragraph. Nothing else changes: shaping
+// and grapheme clusters are ICU's.
 #include "word_break.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -108,8 +111,18 @@ Letter classify(SkBreakIterator* lines, SkUnichar c) {
 
 class WordBreakUnicode final : public SkUnicode {
  public:
-  WordBreakUnicode(sk_sp<SkUnicode> icu, WordBreak mode, bool break_first_word)
-      : fIcu(std::move(icu)), fMode(mode), fBreakFirstWord(break_first_word) {}
+  WordBreakUnicode(sk_sp<SkUnicode> icu,
+                   WordBreak mode,
+                   bool break_first_word,
+                   std::vector<size_t> ideographs,
+                   std::vector<BidiRegion> bidi)
+      : fIcu(std::move(icu)),
+        fMode(mode),
+        fBreakFirstWord(break_first_word),
+        fIdeographs(std::move(ideographs)),
+        fBidi(std::move(bidi)) {
+    std::sort(fIdeographs.begin(), fIdeographs.end());
+  }
 
   SkString toUpper(const SkString& s) override { return fIcu->toUpper(s); }
   SkString toUpper(const SkString& s, const char* locale) override {
@@ -155,10 +168,17 @@ class WordBreakUnicode final : public SkUnicode {
     return fIcu->makeBreakIterator(type);
   }
 
+  // The levels the text has in context, when it was given them for text of
+  // its length.
   bool getBidiRegions(const char utf8[],
                       int utf8Units,
                       TextDirection dir,
                       std::vector<BidiRegion>* results) override {
+    if (!fBidi.empty() &&
+        fBidi.back().end == static_cast<Position>(utf8Units)) {
+      results->insert(results->end(), fBidi.begin(), fBidi.end());
+      return true;
+    }
     return fIcu->getBidiRegions(utf8, utf8Units, dir, results);
   }
   bool getWords(const char utf8[],
@@ -233,6 +253,9 @@ class WordBreakUnicode final : public SkUnicode {
         graphemes.push_back({start, i - start, c});
       }
     }
+    if (!fIdeographs.empty() && fMode != WordBreak::kBreakAll) {
+      this->placeholders_as_ideographs(utf8, len, results);
+    }
     if (fMode != WordBreak::kNormal) {
       const auto letters = this->letters(graphemes);
       if (fMode == WordBreak::kBreakAll) {
@@ -243,6 +266,66 @@ class WordBreakUnicode final : public SkUnicode {
     }
     if (fBreakFirstWord) {
       break_first_word(graphemes, results);
+    }
+  }
+
+  // Whether the U+FFFC at `at` is a placeholder that breaks lines as an
+  // emoji.
+  bool ideograph_at(size_t at) const {
+    return std::binary_search(fIdeographs.begin(), fIdeographs.end(), at);
+  }
+
+  // A placeholder of fIdeographs (U+FFFC in SkParagraph's text) breaks lines
+  // as an emoji does, UAX #14 class ID, where ICU takes U+FFFC for class CB,
+  // which breaks before a hyphen, a percent sign or an ellipsis after it and
+  // after a currency or plus sign before it. effing lays emoji out as
+  // placeholders. ICU breaks the text with each such U+FFFC replaced by an
+  // ideograph, which is as long in UTF-8.
+  void placeholders_as_ideographs(const char* utf8,
+                                  size_t len,
+                                  skia_private::TArray<Flags, true>* results) {
+    std::string text(utf8, len);
+    bool any = false;
+    for (const size_t at : fIdeographs) {
+      if (at + 3 <= len && text.compare(at, 3, kObjectReplacement) == 0) {
+        text.replace(at, 3, kIdeograph);
+        any = true;
+      }
+    }
+    if (any) {
+      this->rebreak(text, [](size_t at) { return at; }, results);
+    }
+  }
+
+  // Replaces the soft line breaks in `results` by ICU's in `text`, with
+  // each offset in it at `to_utf8(offset)` in SkParagraph's text, or none
+  // for an offset with no counterpart there (SIZE_MAX).
+  template <typename ToUtf8>
+  void rebreak(const std::string& text,
+               ToUtf8 to_utf8,
+               skia_private::TArray<Flags, true>* results) {
+    auto lines = fIcu->makeBreakIterator(BreakType::kLines);
+    if (!lines || !lines->setText(text.data(), static_cast<int>(text.size()))) {
+      return;
+    }
+    std::vector<bool> soft(results->size());
+    for (int i = 0; i < results->size(); i++) {
+      auto& flags = (*results)[i];
+      soft[i] = flags & kSoftLineBreakBefore;
+      flags = static_cast<Flags>(flags & ~kSoftLineBreakBefore);
+    }
+    for (auto pos = lines->first(); !lines->isDone(); pos = lines->next()) {
+      const size_t at = pos > 0 ? to_utf8(static_cast<size_t>(pos)) : SIZE_MAX;
+      if (at == SIZE_MAX) {
+        continue;
+      }
+      // ICU's own flags take some breaks of the hard kind for soft ones (a
+      // lone CR's), which stay as they were.
+      auto& flags = (*results)[at];
+      if (lines->status() < static_cast<int>(LineBreakType::kHardLineBreak) ||
+          soft[at]) {
+        flags = static_cast<Flags>(flags | kSoftLineBreakBefore);
+      }
     }
   }
 
@@ -280,8 +363,8 @@ class WordBreakUnicode final : public SkUnicode {
                  const std::vector<Grapheme>& graphemes,
                  const std::vector<Letter>& letters,
                  skia_private::TArray<Flags, true>* results) {
-    // The text with every letter an ideograph, and the offset in `utf8` of
-    // each grapheme's offset in it.
+    // The text with every letter (and placeholder) an ideograph, and the
+    // offset in `utf8` of each grapheme's offset in it.
     std::string text;
     text.reserve(len + len / 2);
     std::unordered_map<size_t, size_t> offsets;
@@ -291,34 +374,29 @@ class WordBreakUnicode final : public SkUnicode {
           g + 1 < graphemes.size() ? graphemes[g + 1].start : len;
       offsets[text.size()] = start;
       // Chrome also breaks before a hyphen-minus or a vertical line and
-      // after a plus sign; taking them for letters comes closest.
+      // after a plus sign; taking them for letters comes closest. Not before
+      // a hyphen-minus after an emoji, though.
       const SkUnichar c = graphemes[g].c;
-      if (letters[g] == Letter::kNone && c != '-' && c != '|' && c != '+') {
+      const bool placeholder = c == 0xFFFC && this->ideograph_at(start);
+      const bool after_placeholder = g > 0 && graphemes[g - 1].c == 0xFFFC &&
+                                     this->ideograph_at(graphemes[g - 1].start);
+      if (letters[g] == Letter::kNone && !placeholder &&
+          (c != '-' || after_placeholder) && c != '|' && c != '+') {
         text.append(utf8 + start, end - start);
       } else {
-        text.append("\xE4\xB8\x80");  // U+4E00
+        text.append(kIdeograph);
         const size_t rest = start + graphemes[g].length;
         text.append(utf8 + rest, end - rest);
       }
     }
     offsets[text.size()] = len;
-    auto lines = fIcu->makeBreakIterator(BreakType::kLines);
-    if (!lines || !lines->setText(text.data(), static_cast<int>(text.size()))) {
-      return;
-    }
-    for (int i = 0; i < results->size(); i++) {
-      auto& flags = (*results)[i];
-      flags = static_cast<Flags>(flags & ~kSoftLineBreakBefore);
-    }
-    for (auto pos = lines->first(); !lines->isDone(); pos = lines->next()) {
-      const auto found = offsets.find(static_cast<size_t>(pos));
-      if (pos <= 0 || found == offsets.end() ||
-          lines->status() >= static_cast<int>(LineBreakType::kHardLineBreak)) {
-        continue;
-      }
-      auto& flags = (*results)[found->second];
-      flags = static_cast<Flags>(flags | kSoftLineBreakBefore);
-    }
+    this->rebreak(
+        text,
+        [&](size_t at) {
+          const auto found = offsets.find(at);
+          return found == offsets.end() ? SIZE_MAX : found->second;
+        },
+        results);
   }
 
   // Classifies each grapheme's first code point, through a cache shared by
@@ -351,20 +429,44 @@ class WordBreakUnicode final : public SkUnicode {
     return out;
   }
 
+  static constexpr const char* kIdeograph = "\xE4\xB8\x80";  // U+4E00
+  static constexpr const char* kObjectReplacement = "\xEF\xBF\xBC";
+
   sk_sp<SkUnicode> fIcu;
   WordBreak fMode;
   bool fBreakFirstWord;
+  // The UTF-8 offsets of the placeholders that break lines as emoji, sorted.
+  std::vector<size_t> fIdeographs;
+  // The text's bidi levels in context, or empty for ICU's own.
+  std::vector<BidiRegion> fBidi;
 };
 
 }  // namespace
 
-sk_sp<SkUnicode> make_word_break_unicode(WordBreak mode,
-                                         bool break_first_word) {
+sk_sp<SkUnicode> make_word_break_unicode(
+    WordBreak mode,
+    bool break_first_word,
+    std::vector<size_t> ideographs,
+    std::vector<SkUnicode::BidiRegion> bidi) {
   auto icu = SkUnicodes::ICU::Make();
-  if (!icu || (mode == WordBreak::kNormal && !break_first_word)) {
+  if (!icu || (mode == WordBreak::kNormal && !break_first_word &&
+               ideographs.empty() && bidi.empty())) {
     return icu;
   }
-  return sk_make_sp<WordBreakUnicode>(std::move(icu), mode, break_first_word);
+  return sk_make_sp<WordBreakUnicode>(std::move(icu), mode, break_first_word,
+                                      std::move(ideographs), std::move(bidi));
+}
+
+std::string bidi_cache_tag(const std::vector<SkUnicode::BidiRegion>& bidi) {
+  if (bidi.empty()) {
+    return std::string();
+  }
+  std::string tag = "effing-bidi:";
+  for (const auto& region : bidi) {
+    tag += " " + std::to_string(region.start) + "-" +
+           std::to_string(region.end) + ":" + std::to_string(region.level);
+  }
+  return tag;
 }
 
 std::string word_break_cache_tag(WordBreak mode, bool break_first_word) {

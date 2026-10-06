@@ -142,17 +142,23 @@ top:
   paragraph start-aligned first, justifies it only when no line was emptied,
   and lays an emptied line out anew, as a piece of its own, after the lines
   before it, which stay justified. Where this differs from Chrome:
-  - Chrome aligns the line before truncating it, so where the line's text
-    would have fit, `right` and `center` put such a line further along than
-    the fork's start-aligned overflow.
+  - Chrome aligns a clamped line by its own text, before it puts the
+    ellipsis after that text and truncates the two to fit the width, so
+    under `right` and `center` the ellipsis can end up past the end edge.
+    `'ab\ncd'` with `maxLines: 1`, right-aligned at 100px, has "ab" at the
+    right edge and the ellipsis after it, outside the box, where the
+    `overflow: hidden` used with line clamping hides it, and
+    `'aaaa bbbb cccc'` is "aaaa bbb…" from 10px to 110px. The fork aligns
+    the line it shows, ellipsis included, and start-aligns it when it
+    overflows, as it does any line: "ab…" from 60px to 100px and
+    "aaaa bbb…" from 0 to 100px. Matching Chrome would put the ellipsis
+    where Chrome hides it, and the fork clips nothing.
   - The cluster kept is the first in the text, which in a line of mixed
     directions need not be the one Chrome keeps, the first on screen.
   - A line of nothing but spaces keeps none of them: it is the ellipsis
     alone, at the line's start, where Chrome keeps the spaces before it.
-    In wrapped text, a space that starts the text and doesn't fit with the
-    word after it makes such a line (`' cd ef'` at 25px, `maxLines: 1`,
-    is "…"), where Chrome drops the space, as `white-space: normal`
-    collapses it, and shows "c…".
+    Wrapped text has such lines only with `keepTrailingWhitespace`, or from
+    spaces that end the text after a hard break (below).
   - `text-overflow` clips the line, ellipsis included, to the box; the fork
     clips nothing, so a `noWrap` line's kept cluster and ellipsis show past
     the width, as a clamped line's do in Chrome.
@@ -178,6 +184,17 @@ top:
   space wide (SkParagraph replaces it), where Chrome advances to the next tab
   stop, and that whether an `ellipsis` truncates a line ignores its kept
   whitespace.
+- Spaces and tabs that start a line, at the start of the text or after a
+  hard break, collapse away, as `white-space: normal` and `pre-line` remove
+  them: `'  ab'` is "ab" at the line's start, and `' cd ef'` at 25px is
+  "cd" and "ef", with no line of its own for the space ("c…" with
+  `maxLines: 1` and an ellipsis). The lines' `startIndex` is after them.
+  With `keepTrailingWhitespace` they stay, as `pre-wrap` keeps them; so do
+  spaces that end the text after a hard break, which SkParagraph puts on a
+  line of their own, and those of `noWrap` text, which keeps all its spaces
+  as `white-space: pre` does (CSS `nowrap` collapses them, so a caller after
+  that collapses them itself). Such text is laid out in pieces, as below, a
+  piece ending at the hard break before such spaces.
 - Glyphs are unhinted and painted unsnapped, exactly as `fillText` does under
   `geometricPrecision`; the two agree pixel for pixel.
 
@@ -197,20 +214,40 @@ The style's own font settings are all a paragraph has; `ctx.font`,
 
 ```ts
 const em = 20
-const paragraph = new Paragraph(['Hello ', { width: em, height: em }, ' world'], style)
+const paragraph = new Paragraph(['Hello ', { width: em, height: em, lineBreak: 'emoji' }, ' world'], style)
 const { placeholders } = paragraph.layout(320) // [{ x, y, width, height, line }]
 fillParagraph(ctx, paragraph, x, y)
 ctx.drawImage(emoji, x + placeholders[0].x, y + placeholders[0].y, em, em)
 ```
 
 The text can be an array of strings and placeholders: inline boxes that take
-their `width` on the line, with a break opportunity on either side as
-Chrome gives an inline-block, and draw nothing, for whatever the caller
-draws there, such as emoji images. `layout()` returns one entry per
+their `width` on the line and draw nothing, for whatever the caller draws
+there, such as emoji images. `layout()` returns one entry per
 placeholder in `placeholders`, in order: its box from the paragraph's
 top-left corner and its line, or `null` when `maxLines` or an ellipsis cut it
 off. In the lines' `startIndex`/`endIndex`, each placeholder counts as one
 UTF-16 unit, as if the text had U+FFFC in its place.
+
+A placeholder's `lineBreak` says how lines break around it, as Chrome
+breaks them (`__test__/effing-paragraph-placeholders.spec.ts`):
+
+- `box`, the default, as around an inline-block or an image: on either side
+  of it, even before the "!" after it, so `Hi [img]! ok` at 55px is
+  `Hi [img] | ! ok`. A placeholder is a word of its own. (Chrome differs
+  after a hyphen that follows the box, `[img]-|ab`, which ICU keeps
+  together.)
+- `emoji`, as around an emoji (UAX #14 class ID), for an emoji drawn in the
+  box: between it and a letter, another placeholder or a space, but not
+  between it and the punctuation that sticks to a word, so `Hi 🎉! ok`
+  breaks as `Hi | 🎉! | ok` and `(🎉)` stays whole. SkParagraph's line
+  breaker takes every placeholder for a word of its own and ends a line on
+  either side of it wherever the line is full, so where it ends one beside
+  an `emoji` placeholder at no opportunity, the text is laid out in pieces
+  (below), the line ending at its last opportunity instead.
+
+The two mix in a paragraph. SkParagraph's cache keys a paragraph on its
+placeholders' sizes but not their `lineBreak`, so the strut's font families
+carry a tag for the paragraphs with `emoji` ones.
 
 Skia places a placeholder along its line; effing places it vertically by its
 `verticalAlign`, the CSS `vertical-align` keywords, in effing's line box:
@@ -251,9 +288,11 @@ and default to `normal` as they do:
 
 A word is what lies between two line-break opportunities: ICU's, which also
 break after hyphens and between CJK characters, as `wordBreak` adjusts them.
-A placeholder is a word of its own. `minIntrinsicWidth` is the widest word,
-measured from SkParagraph's clusters, so a single letter under `break-all`
-and a run of CJK under `keep-all`. `overflowWrap: 'break-word'` leaves it
+Around an `emoji` placeholder they are an emoji's (above), so `🎉!` is
+one word; a `box` placeholder is a word of its own.
+`minIntrinsicWidth` is the widest word, measured from SkParagraph's
+clusters, so a single letter under `break-all` and a run of CJK under
+`keep-all`. `overflowWrap: 'break-word'` leaves it
 alone, as CSS `overflow-wrap: break-word` does. CSS's deprecated
 `word-break: break-word` is `overflowWrap: 'break-word'` here; Chrome gives
 it, as `overflow-wrap: anywhere`, a single letter as its min-content.
@@ -284,6 +323,20 @@ How:
   twice, as a whole and in pieces. As with SkParagraph, the empty line after
   a hard break that ends the text shows if there is room and is not one of
   the lines `maxLines` counts.
+- Each piece takes the bidi levels its text has in the whole paragraph,
+  through its SkUnicode, rather than resolving them anew: on its own, a
+  placeholder, punctuation or digits at its start or end would take the
+  paragraph's direction instead of that of the text around them, and land
+  on the other side of an Arabic word in an LTR paragraph, say. A piece
+  that ends at a soft break gets a placeholder after it that no line has
+  room for, and only the lines before that, so that its last line is
+  justified like any line that isn't the paragraph's last.
+- With `emoji` placeholders, where SkParagraph may end a line beside one at
+  no opportunity, the text is laid out a window of about eight lines at a
+  time: a piece ends at the last opportunity of such a line, or else
+  before the window's last line, and the next piece starts there. The work
+  then grows with the text, rather than with its square, as laying out all
+  the text after each such line again would.
 - SkParagraph caches the opportunities with the shaped text, under a key
   that leaves them out, so the strut's font families carry a tag for each
   set of them. SkParagraph also leaves out of its cache a paragraph whose
@@ -297,20 +350,22 @@ Known differences from Chrome:
 - A line ending inside a word, or between CJK characters, can differ in
   width by the kerning between the two characters at the break, which
   Chrome drops and Skia keeps (0.4px in the tests).
-- Under `justify`, the line before a word too wide for its line is not
-  justified: it ends a piece.
 - `break-all` follows CSS Text, which treats letters as ideographs; Chrome
   departs from that around some punctuation (it also breaks before `-` and
   `|` and after `+`, which the fork follows, and not after `–`, which it
   doesn't), and breaks Devanagari conjuncts (स्|ते) where ICU's grapheme
   clusters keep them whole. Around punctuation, ICU's and Chrome's
   opportunities differ anyway, in every mode.
-- With `maxLines` and an `ellipsis`, when the lines run out at a word too
-  wide for its line, the last line is that line's own text with the
-  ellipsis after it, truncated to fit, as Chrome's `-webkit-line-clamp`
-  shows it ("ab…", "Overlong…"). Elsewhere the last line is SkParagraph's
-  truncation, unless not even its first grapheme cluster fits with the
-  ellipsis (above).
+- With `maxLines` and an `ellipsis`, the last line is that line's own text
+  with the ellipsis after it, as Chrome's `-webkit-line-clamp` shows it,
+  whether the lines run out at a soft break, a word too wide for its line or
+  a hard break: without the spaces that hang at its end (unless
+  `keepTrailingWhitespace` keeps them, as `pre-wrap` does), and where the
+  two don't fit, with grapheme clusters taken off its end until they do
+  ("aaaa bbb…", "ab …", "Overlong…"). An empty line is the ellipsis alone.
+  Such a paragraph is laid out in pieces: SkParagraph would fill the last
+  line with the start of the text after it ("ab cd e…" for Chrome's "ab
+  cd…") and leave a line that ends at a hard break without the ellipsis.
 
 ## Compositing groups: `beginGroup` / `endGroup`
 
@@ -427,6 +482,37 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- `ParagraphPlaceholder.lineBreak`: `'box'` (the default) breaks lines
+  around the placeholder as before, as Chrome does around an inline-block
+  or an image, on either side even before a "!"; `'emoji'` breaks them as
+  Chrome does around an emoji, keeping the placeholder with the punctuation
+  next to it, so `Hi 🎉! ok` breaks as `Hi | 🎉! | ok`, not `Hi 🎉 | ! ok`,
+  and `(🎉)` stays whole. `@effing/canvas` should pass `lineBreak: 'emoji'`
+  for the emoji it lays out as placeholders. `minIntrinsicWidth` counts an
+  emoji placeholder and its punctuation as one word.
+- When `maxLines` cuts wrapping text off at a hard break, the last line
+  shown has the `ellipsis` after it, as Chrome's `-webkit-line-clamp` has
+  it: `'ab\ncd'` with `maxLines: 1` is "ab…", no longer "ab", and an empty
+  last line is "…". Text split around a word too wide for the line already
+  did this.
+- The last line `maxLines` shows with an `ellipsis` is that line's own text
+  with the ellipsis after it, cut to fit, as Chrome's line clamp has it: it
+  used to take in the start of the next line's text (`'ab cd efgh ij'` at
+  95px is "ab cd…", not "ab cd e…"), and to keep a hanging space before the
+  ellipsis (`'aaaa bb cccc'` at 100px is "aaaa bb…", not "aaaa bb …").
+- **Breaking:** spaces and tabs that start a line of wrapping text, at the
+  start of the text or after a hard break, collapse away unless
+  `keepTrailingWhitespace` is set, as CSS `white-space: normal` has it:
+  `' cd ef'` at 25px no longer starts with a line of its own for the space
+  (with `maxLines: 1` and an ellipsis it is "c…", not "…"), and
+  `'ab\n  cd'` starts its second line at "cd". Such a line's `startIndex`
+  is now after the spaces. A caller that passes leading spaces it wants
+  kept sets `keepTrailingWhitespace`; `noWrap` text keeps them anyway.
+- Text laid out in pieces (around a word too wide for the line, say) keeps
+  the bidi levels it has as a whole: a placeholder, punctuation or digits
+  at the edge of a piece used to take the paragraph's direction, and land
+  on the wrong side of the Arabic or Hebrew around them. The line before a
+  word too wide for the line is now justified under `justify`.
 - `maxIntrinsicWidth` is CSS max-content: the widest line between hard
   breaks, trailing whitespace hanging and, in wrapping text, leading spaces
   and tabs collapsed (as the layout collapses them), unless whitespace is

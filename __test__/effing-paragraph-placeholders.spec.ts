@@ -14,6 +14,7 @@ const STYLE: ParagraphStyle = { fontFamily: 'Iosevka Slab', fontSize: 20, lineHe
 
 test.before((t) => {
   t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'iosevka-slab-regular.ttf')))
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Harmattan-Regular.ttf'), 'WB Harmattan'))
 })
 
 function near(t: import('ava').ExecutionContext, actual: number, expected: number, epsilon = 0.01) {
@@ -127,16 +128,19 @@ test('a placeholder moves with its line on every line', (t) => {
 })
 
 test('a placeholder can break from the text on either side', (t) => {
-  // Measured in Chrome as above: at these widths the box gets a line of its
-  // own between the two words, even next to punctuation; at 60px 'abc' and
-  // the box share the first line.
-  for (const [width, before, after] of [
-    [50, 'abcd', 'efgh'],
-    [30, 'ab', 'cd'],
-    [45, 'ab.', ',cd'],
+  // Measured in Chrome as above, and with 🎉 for an emoji box: at these
+  // widths the box gets a line of its own between the two words, an
+  // inline-block even next to punctuation; at 60px 'abc' and the box share
+  // the first line.
+  for (const [width, before, after, lineBreak] of [
+    [50, 'abcd', 'efgh', 'box'],
+    [30, 'ab', 'cd', 'box'],
+    [45, 'ab.', ',cd', 'box'],
+    [50, 'abcd', 'efgh', 'emoji'],
+    [30, 'ab', 'cd', 'emoji'],
   ] as const) {
-    const layout = new Paragraph([before, box(), after], STYLE).layout(width)
-    t.is(layout.lines.length, 3, `${before}|${after}`)
+    const layout = new Paragraph([before, box({ lineBreak }), after], STYLE).layout(width)
+    t.is(layout.lines.length, 3, `${before}|${after} ${lineBreak}`)
     t.is(layout.placeholders[0]!.line, 1)
     near(t, layout.placeholders[0]!.x, 0)
   }
@@ -144,6 +148,110 @@ test('a placeholder can break from the text on either side', (t) => {
   t.is(shared.lines.length, 2)
   t.is(shared.placeholders[0]!.line, 0)
   near(t, shared.placeholders[0]!.x, 30)
+})
+
+// Lines break around a `lineBreak: 'emoji'` placeholder as Chrome 154
+// (headless, macOS) breaks them around an emoji, which is what effing lays
+// out as such placeholders, and around a `box` (the default) as around an
+// image (<img style="width: 20px; height: 20px">). Each case is the text
+// with 🎉 in a <span> whose font size makes it 20px wide for 'X', and the
+// image for 'B', in a <div> of the width with `font: 20px <the font>;
+// line-height: 40px`, split where the characters and the image move to the
+// next line. Lines are separated by '|', and the spaces around a break are
+// left out.
+const lineBreakCase = (text: string): Array<string | ParagraphPlaceholder> =>
+  text
+    .split(/([XB])/)
+    .filter(Boolean)
+    .map((part) => (part === 'X' ? box({ lineBreak: 'emoji' }) : part === 'B' ? box() : part))
+
+test('lines break around an emoji placeholder as around an emoji in Chrome', (t) => {
+  const breakAll: ParagraphStyle = { wordBreak: 'break-all' }
+  const rtl: ParagraphStyle = { fontFamily: 'WB Harmattan', direction: 'rtl' }
+  const cases: Array<[text: string, width: number, lines: string, style?: ParagraphStyle]> = [
+    ['Hi X! ok', 55, 'Hi|X!|ok'],
+    ['Hi X, ok', 55, 'Hi|X,|ok'],
+    ['Hi X. ok', 55, 'Hi|X.|ok'],
+    ['Hi X) ok', 55, 'Hi|X)|ok'],
+    ['Hi (X ok', 45, 'Hi|(X|ok'],
+    ['Hi (X) ok', 45, 'Hi|(X)|ok'],
+    ['Hi (X) ok', 55, 'Hi|(X)|ok'],
+    ['Hi "X" ok', 55, 'Hi|"X"|ok'],
+    ["Hi 'X' ok", 55, "Hi|'X'|ok"],
+    ['Hi “X” ok', 55, 'Hi|“X”|ok'],
+    // Between letters and between emoji, lines still break.
+    ['Hi xXx ok', 55, 'Hi x|Xx|ok'],
+    ['Hi XX ok', 55, 'Hi X|X ok'],
+    // A box and the punctuation after it are a word too wide for the line.
+    ['ab.X,cd', 45, 'ab.|X,cd'],
+    ['X-ab', 25, 'X-|ab', breakAll],
+    ['ab X! cd', 45, 'ab|X!|cd', breakAll],
+    ['ab (X) cd', 45, 'ab|(X)|cd', { wordBreak: 'keep-all' }],
+    ['ab X! cd', 45, 'ab|X!|cd', { overflowWrap: 'break-word' }],
+    ['بت X؟ بت', 45, 'بت|X؟|بت', rtl],
+    ['بت X، بت', 45, 'بت|X،|بت', rtl],
+    ['بت (X) بت', 45, 'بت|(X)|بت', rtl],
+    ['بت «X» بت', 50, 'بت|«X»|بت', rtl],
+  ]
+  for (const [text, width, expected, style] of cases) {
+    const layout = new Paragraph(lineBreakCase(text), { ...STYLE, ...style }).layout(width)
+    const lines = layout.lines.map((line) => text.slice(line.startIndex, line.endIndex).trim())
+    t.is(lines.join('|'), expected, `${text} at ${width}px`)
+  }
+})
+
+test('lines break around a box placeholder as around an image in Chrome, and both mix', (t) => {
+  const rtl: ParagraphStyle = { fontFamily: 'WB Harmattan', direction: 'rtl' }
+  const cases: Array<[text: string, width: number, lines: string, style?: ParagraphStyle]> = [
+    ['Hi B! ok', 55, 'Hi B|! ok'],
+    ['Hi B! ok', 45, 'Hi|B!|ok'],
+    ['Hi B, ok', 55, 'Hi B|, ok'],
+    ['Hi (B) ok', 45, 'Hi (|B)|ok'],
+    ['Hi "B" ok', 55, 'Hi "|B"|ok'],
+    ['Hi B% ok', 55, 'Hi B|% ok'],
+    ['Hi $B ok', 45, 'Hi $|B|ok'],
+    ['Hi xBx ok', 55, 'Hi x|Bx|ok'],
+    ['ab.B,cd', 45, 'ab.|B|,cd'],
+    ['ab B! cd', 45, 'ab|B!|cd', { wordBreak: 'break-all' }],
+    ['Hi X! B! ok', 65, 'Hi X!|B! ok'],
+    ['Hi B! X! ok', 65, 'Hi B!|X! ok'],
+    ['X! B! X! B!', 35, 'X!|B!|X!|B!'],
+    ['(B) (X)', 35, '(B|)|(X)'],
+    ['بت B؟ بت', 45, 'بت|B؟|بت', rtl],
+    ['بت (B) بت', 45, 'بت (|B)|بت', rtl],
+    ['بت X! B! بت', 55, 'بت X!|B! بت', rtl],
+  ]
+  for (const [text, width, expected, style] of cases) {
+    const layout = new Paragraph(lineBreakCase(text), { ...STYLE, ...style }).layout(width)
+    const lines = layout.lines.map((line) => text.slice(line.startIndex, line.endIndex).trim())
+    t.is(lines.join('|'), expected, `${text} at ${width}px`)
+  }
+})
+
+test('the same text breaks as its placeholders say, in either order', (t) => {
+  // SkParagraph caches a paragraph's line breaks with its shaped text, under
+  // a key that leaves out how lines break around its placeholders.
+  const layout = (lineBreak: 'box' | 'emoji') =>
+    new Paragraph(['Hi ', box({ lineBreak }), '! ok'], STYLE)
+      .layout(55)
+      .lines.map((line) => [line.startIndex, line.endIndex])
+  const asBox = [
+    [0, 4],
+    [4, 8],
+  ]
+  const asEmoji = [
+    [0, 2],
+    [3, 5],
+    [6, 8],
+  ]
+  for (const order of [
+    ['box', 'emoji', 'box'],
+    ['emoji', 'box', 'emoji'],
+  ] as const) {
+    for (const lineBreak of order) {
+      t.deepEqual(layout(lineBreak), lineBreak === 'box' ? asBox : asEmoji, `${order.join(', ')}: ${lineBreak}`)
+    }
+  }
 })
 
 test('letter spacing is not added to a placeholder', (t) => {
@@ -246,6 +354,11 @@ test('invalid content throws with what is wrong', (t) => {
   throws(['a', box({ width: 1e39 })], /item 1: A placeholder's width must be/)
   throws(['a', box({ baselineOffset: Infinity })], /item 1: A placeholder's baselineOffset must be/)
   throws(['a', box({ verticalAlign: 'center' as 'middle' })], /center is not a valid placeholder verticalAlign/)
+  throws(['a', box({ lineBreak: 'image' as 'box' })], /image is not a valid placeholder lineBreak/)
+  throws(
+    ['a', { width: 20, height: 20, lineBreak: 1 }],
+    /item 1: A placeholder's lineBreak must be a string, not number/,
+  )
   throws(['a', { height: 20 }], /item 1: A placeholder needs a width/)
   throws(['a', { width: '20', height: 20 }], /item 1: A placeholder's width must be a number, not string/)
   throws(['a', 1], /item 1 must be a string or a placeholder, not number/)
@@ -257,7 +370,7 @@ test('invalid content throws with what is wrong', (t) => {
 })
 
 test('null optional placeholder fields take their defaults', (t) => {
-  const content = ['ab', { width: 20, height: 20, verticalAlign: null, baselineOffset: null }, 'cd']
+  const content = ['ab', { width: 20, height: 20, verticalAlign: null, baselineOffset: null, lineBreak: null }, 'cd']
   const layout = new Paragraph(content, STYLE).layout(400)
   near(t, layout.placeholders[0]!.y, layout.lines[0].baseline - 20)
 })
@@ -323,4 +436,51 @@ test('a placeholder before kept whitespace and a final newline', (t) => {
   near(t, ltr.lines[0].width, 70)
   near(t, ltr.placeholders[0]!.x, 20)
   t.deepEqual([ltr.lines[0].startIndex, ltr.lines[0].endIndex], [0, 6])
+})
+
+test('a line ended where it should be beside a placeholder keeps its bidi and justification', (t) => {
+  // In Chrome 154, with 🎉 for the box: 'aa bb' | '🎉! cc' | 'dd ee ff' | 'gg',
+  // RTL and left-aligned: the box at x 0 and '!' at 20, as the Latin around
+  // them sets their direction. Justified, the first line spans the width.
+  const parts = ['aa bb ', box({ lineBreak: 'emoji' }), '! cc dd ee ff gg']
+  const rtl = new Paragraph(parts, { ...STYLE, direction: 'rtl', textAlign: 'left' }).layout(85)
+  t.deepEqual(
+    rtl.lines.map((line) => [line.startIndex, line.endIndex]),
+    [
+      [0, 5],
+      [6, 11],
+      [12, 20],
+      [21, 23],
+    ],
+  )
+  t.is(rtl.placeholders[0]!.line, 1)
+  near(t, rtl.placeholders[0]!.x, 0)
+  for (const direction of ['ltr', 'rtl'] as const) {
+    const justified = new Paragraph(parts, { ...STYLE, direction, textAlign: 'justify' }).layout(85)
+    near(t, justified.lines[0].width, 85)
+    near(t, justified.lines[0].left, 0)
+  }
+})
+
+test('a hard break at the edge of a window of emoji text', (t) => {
+  // Text with emoji placeholders beside punctuation is laid out a few lines
+  // at a time; here a window ends right after the hard break. It is the
+  // hard break of the line before it, with no empty line of its own.
+  const parts: Array<string | ParagraphPlaceholder> = ['ab ']
+  for (let i = 0; i < 17; i++) {
+    parts.push(i === 16 ? 'word\n' : 'word ', box({ lineBreak: 'emoji' }), '! ')
+  }
+  parts.push('word end.')
+  for (const direction of ['ltr', 'rtl'] as const) {
+    const layout = new Paragraph(parts, { ...STYLE, direction }).layout(101)
+    const lines = layout.lines.map((line) => [line.startIndex, line.endIndex, line.hardBreak])
+    t.is(lines.length, 19, direction)
+    t.is(layout.height, 19 * 40)
+    t.deepEqual(lines.slice(15), [
+      [120, 127, false],
+      [128, 135, true],
+      [136, 143, false],
+      [144, 148, true],
+    ])
+  }
 })

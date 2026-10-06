@@ -17,7 +17,7 @@ use crate::font::FontStyle;
 use crate::global_fonts::get_font;
 use crate::sk::effing::paragraph::{
   OverflowWrap, Paragraph as SkParagraph, ParagraphOptions, Placeholder, PlaceholderAlign,
-  WordBreak,
+  PlaceholderLineBreak, WordBreak,
 };
 use crate::sk::effing::text::Painted;
 use crate::sk::{Paint, TextAlign, TextDirection};
@@ -47,8 +47,9 @@ pub struct ParagraphStyle {
   /// Appended where text is truncated by `maxLines` or `noWrap`, e.g. `…`.
   pub ellipsis: Option<String>,
   /// Count spaces and tabs before a hard break or the end of the text in the
-  /// line's width and alignment instead of hanging them, as CSS
-  /// `white-space: pre` and `pre-wrap` do. Spaces at a soft wrap still hang.
+  /// line's width and alignment instead of hanging them, and keep those that
+  /// start a line instead of collapsing them away, as CSS `white-space: pre`
+  /// and `pre-wrap` do. Spaces at a soft wrap still hang.
   pub keep_trailing_whitespace: Option<bool>,
   /// CSS `word-break`: `normal` (the default), `break-all` or `keep-all`.
   pub word_break: Option<String>,
@@ -56,8 +57,8 @@ pub struct ParagraphStyle {
   pub overflow_wrap: Option<String>,
 }
 
-/// An inline box in a paragraph's text, e.g. for an image: it takes `width`
-/// on its line, can break from the text on either side, and draws nothing.
+/// An inline box in a paragraph's text, e.g. for an image or an emoji: it
+/// takes `width` on its line and draws nothing.
 #[napi(object)]
 pub struct ParagraphPlaceholder {
   pub width: f64,
@@ -69,6 +70,10 @@ pub struct ParagraphPlaceholder {
   /// baseline, which sits on the text's. Defaults to `height`, the bottom
   /// edge, as for an image.
   pub baseline_offset: Option<f64>,
+  /// How lines break around it: `box` (the default) as around a CSS
+  /// inline-block or image, on either side; `emoji` as around an emoji, not
+  /// between it and the punctuation next to it.
+  pub line_break: Option<String>,
 }
 
 /// Where layout put a placeholder, from the paragraph's top-left corner.
@@ -115,6 +120,20 @@ pub struct ParagraphLayout {
   /// One per placeholder, in order; null for one that `maxLines` or an
   /// ellipsis cut off.
   pub placeholders: Vec<Option<ParagraphPlaceholderBox>>,
+}
+
+impl FromStr for PlaceholderLineBreak {
+  type Err = SkError;
+
+  fn from_str(value: &str) -> result::Result<Self, SkError> {
+    match value {
+      "box" => Ok(Self::Box),
+      "emoji" => Ok(Self::Emoji),
+      _ => Err(SkError::Generic(format!(
+        "{value} is not a valid placeholder lineBreak"
+      ))),
+    }
+  }
 }
 
 impl FromStr for PlaceholderAlign {
@@ -177,6 +196,10 @@ fn placeholder_at(offset: usize, spec: &ParagraphPlaceholder) -> Result<Placehol
       .as_deref()
       .map_or(Ok(PlaceholderAlign::Baseline), PlaceholderAlign::from_str)?,
     baseline_offset,
+    line_break: spec.line_break.as_deref().map_or(
+      Ok(PlaceholderLineBreak::Box),
+      PlaceholderLineBreak::from_str,
+    )?,
   })
 }
 
@@ -235,6 +258,7 @@ fn read_placeholder(object: &Object) -> Result<ParagraphPlaceholder> {
     height: required("height")?,
     vertical_align: optional_property(object, "verticalAlign", STRING)?,
     baseline_offset: optional_property(object, "baselineOffset", NUMBER)?,
+    line_break: optional_property(object, "lineBreak", STRING)?,
   })
 }
 
@@ -693,6 +717,7 @@ mod tests {
         height: 16.0,
         vertical_align: None,
         baseline_offset: None,
+        line_break: None,
       })
     };
     let content = vec![placeholder(), placeholder()];
