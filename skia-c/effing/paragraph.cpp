@@ -38,6 +38,10 @@ struct effing_paragraph {
   std::vector<Source> sources;
   // Whether hard-broken lines past max_lines were left out.
   bool dropped_lines = false;
+  // When they were, in nowrap text with an ellipsis, the last line kept has
+  // the ellipsis after its text, as CSS line-clamp has it: where that text
+  // ends, in UTF-16 units of the whole text. SIZE_MAX otherwise.
+  size_t clamped_end = SIZE_MAX;
   TextAlign align = TextAlign::kLeft;
   bool rtl = false;
   bool nowrap = false;
@@ -1050,11 +1054,21 @@ float widest_hard_line(Paragraph* paragraph,
 void measure_max_content(effing_paragraph* p) {
   p->max_content = 0;
   const bool collapse_leading = !p->keep_trailing_whitespace && !p->nowrap;
-  for (const auto& paragraph : p->paragraphs) {
-    p->max_content =
-        std::max(p->max_content,
-                 widest_hard_line(paragraph.get(), p->keep_trailing_whitespace,
-                                  collapse_leading));
+  for (size_t k = 0; k < p->paragraphs.size(); k++) {
+    Paragraph* paragraph = p->paragraphs[k].get();
+    // The line clamped with the ellipsis after it is measured without.
+    std::unique_ptr<Paragraph> unclamped;
+    if (p->clamped_end != SIZE_MAX && k + 1 == p->paragraphs.size()) {
+      const auto& source = p->sources[k];
+      std::vector<std::pair<size_t, size_t>> placed;
+      unclamped = build(p, source.start, source.end, source.first, source.last,
+                        0, PieceKind::kUnbounded, SkString(), &placed);
+      unclamped->layout(kUnbounded);
+      paragraph = unclamped.get();
+    }
+    p->max_content = std::max(
+        p->max_content, widest_hard_line(paragraph, p->keep_trailing_whitespace,
+                                         collapse_leading));
   }
   if (!p->dropped_lines || p->sources.empty()) {
     return;
@@ -1605,24 +1619,31 @@ void truncate_nowrap_lines(effing_paragraph* p,
                            const std::vector<bool>& emptied) {
   for (size_t k = 0; k < p->paragraphs.size(); k++) {
     const auto& source = p->sources[k];
+    // The last line kept has the ellipsis after its text when lines were
+    // dropped after it.
+    const bool clamped =
+        p->clamped_end != SIZE_MAX && k + 1 == p->paragraphs.size();
     Piece piece{};
     piece.kind = PieceKind::kWrapped;
     piece.offset = p->offsets[k];
-    piece.hard_break = k + 1 < p->paragraphs.size();
+    piece.hard_break = k + 1 < p->paragraphs.size() || clamped;
     piece.override_hard_break = piece.hard_break;
-    piece.line_end = SIZE_MAX;
+    piece.line_end = clamped ? p->clamped_end : SIZE_MAX;
     if (!emptied[k]) {
       // As effing_paragraph_create built it.
-      piece.paragraph =
-          build(p, source.start, source.end, source.first, source.last, 1,
-                piece.kind, SkString(), &piece.placed);
+      piece.paragraph = build(
+          p, source.start, source.end, source.first, source.last, 1, piece.kind,
+          clamped ? p->paragraph_style.getEllipsis() : SkString(),
+          &piece.placed);
       layout_paragraph(piece.paragraph.get(), w, false);
     } else {
       Paragraph* line = p->paragraphs[k].get();
-      const auto [end, last] = to_text(
-          p, source,
-          first_grapheme_end(line, 0,
-                             static_cast<ParagraphImpl*>(line)->text().size()));
+      // Its text, without the ellipsis after it.
+      const size_t size =
+          static_cast<ParagraphImpl*>(line)->text().size() -
+          (clamped ? p->paragraph_style.getEllipsis().size() : 0);
+      const auto [end, last] =
+          to_text(p, source, first_grapheme_end(line, 0, size));
       piece.kind = PieceKind::kUnbounded;
       piece.line_end =
           piece.offset +
@@ -1801,17 +1822,24 @@ effing_paragraph* effing_paragraph_create(
   size_t next = 0;
   // Builds a paragraph of text[start, end), with the placeholders up to `end`
   // in it.
-  const auto add = [&](size_t start, size_t end, int max_lines) {
+  // The placeholders up to `end` from the next one on end before this.
+  const auto placeholders_to = [&](size_t end) {
     size_t last = next;
     while (last < placeholder_count && placeholders[last].offset <= end) {
       last++;
     }
+    return last;
+  };
+  // With `suffix` after the text.
+  const auto add = [&](size_t start, size_t end, int max_lines,
+                       const SkString& suffix = SkString()) {
+    const size_t last = placeholders_to(end);
     out->offsets.push_back(utf16_length(text, start) + next);
     out->sources.push_back({start, end, next, last});
     const size_t k = out->paragraphs.size();
     std::vector<std::pair<size_t, size_t>> placed;
     out->paragraphs.push_back(build(out, start, end, next, last, max_lines,
-                                    PieceKind::kWrapped, SkString(), &placed));
+                                    PieceKind::kWrapped, suffix, &placed));
     for (const auto& [placeholder, index] : placed) {
       out->placeholders[placeholder].paragraph = k;
       out->placeholders[placeholder].index = index;
@@ -1841,7 +1869,16 @@ effing_paragraph* effing_paragraph_create(
       out->dropped_lines = start < text_len || next < placeholder_count;
       break;
     }
-    add(start, i, 1);
+    // The last line kept, with lines after it that aren't kept, ends with
+    // the ellipsis, as CSS line-clamp has it under white-space: pre (#20),
+    // and is truncated to fit it.
+    if (brk > 0 && out->paragraphs.size() + 1 == max_lines &&
+        (i + brk < text_len || placeholders_to(i) < placeholder_count)) {
+      out->clamped_end = utf16_length(text, i) + placeholders_to(i);
+      add(start, i, 1, paragraph_style.getEllipsis());
+    } else {
+      add(start, i, 1);
+    }
     if (brk == 0) {
       break;
     }
@@ -1943,6 +1980,14 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
                               &last.fEndIncludingNewline}) {
           *index = piece.empty_last_line ? end : std::min(*index, end);
         }
+      }
+    } else if (p->clamped_end != SIZE_MAX && k + 1 == paragraphs.size() &&
+               !lines.empty()) {
+      // The line's text ends before the ellipsis it was given as text.
+      LineMetrics& last = lines.back();
+      for (size_t* index : {&last.fEndExcludingWhitespaces, &last.fEndIndex,
+                            &last.fEndIncludingNewline}) {
+        *index = std::min(*index, p->clamped_end - offset);
       }
     }
     for (LineMetrics& line : lines) {

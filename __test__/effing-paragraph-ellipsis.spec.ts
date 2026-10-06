@@ -306,6 +306,56 @@ test('a clamped line that ends at a hard break gets the ellipsis', (t) => {
   }
 })
 
+test('a clamped noWrap line gets the ellipsis, as Chrome has it under white-space: pre', (t) => {
+  // Chrome 154's -webkit-line-clamp under `white-space: pre` (headless,
+  // macOS, the same font file), compared in screenshots: the last line it
+  // shows has the ellipsis after it whenever lines are clamped away after
+  // it ("ab…", inked from 1px to 38px), truncated with it to fit the width
+  // ("abc…" at 50px, "a…" at 15px), with the spaces before it kept ("ab  …")
+  // and alone on an empty line. Lines as [startIndex, endIndex, width,
+  // left].
+  const style: ParagraphStyle = { ...IOSEVKA, noWrap: true, maxLines: 1, ellipsis: '…' }
+  const cases: Array<[ParagraphContent, ParagraphStyle, number, Line[], boolean]> = [
+    ['ab\ncd', {}, 100, [[0, 2, 40, 0]], true],
+    ['ab  \ncd', {}, 100, [[0, 4, 60, 0]], true],
+    ['abcd\ncd', {}, 50, [[0, 3, 50, 0]], true],
+    ['abcdefghij\ncd', {}, 15, [[0, 1, 30, 0]], true],
+    ['\ncd', {}, 100, [[0, 0, 20, 0]], true],
+    ['\ncd', {}, 10, [[0, 0, 20, 0]], true],
+    [
+      'ab\ncd\nef',
+      { maxLines: 2 },
+      100,
+      [
+        [0, 2, 20, 0],
+        [3, 5, 40, 0],
+      ],
+      true,
+    ],
+    // Nothing is clamped away: Chrome has 'ab\n' as one line.
+    ['ab\n', {}, 100, [[0, 2, 20, 0]], false],
+    ['ab\n\n', {}, 100, [[0, 2, 40, 0]], true],
+    ['ab\r\ncd', {}, 100, [[0, 2, 40, 0]], true],
+    ['ab\ncd', { textAlign: 'right' }, 100, [[0, 2, 40, 60]], true],
+    [['ab', box, '\ncd'], {}, 100, [[0, 3, 55, 0]], true],
+    [['ab\n', box], {}, 100, [[0, 2, 40, 0]], true],
+  ]
+  for (const [parts, extra, width, expected, exceeded] of cases) {
+    const paragraph = new Paragraph(parts, { ...style, ...extra })
+    const name = JSON.stringify({ parts, extra, width })
+    // Fresh, and laid out again after other widths.
+    for (const layout of [
+      paragraph.layout(width),
+      (paragraph.layout(1), paragraph.layout(1000), paragraph.layout(width)),
+    ]) {
+      t.deepEqual(lines(layout), expected, name)
+      t.is(layout.didExceedMaxLines, exceeded, name)
+    }
+  }
+  // The ellipsis leaves max-content alone.
+  t.is(new Paragraph('abc\nde', style).layout(100).maxIntrinsicWidth, 30)
+})
+
 test('the last line is its own text with the ellipsis after it, as Chrome has it', (t) => {
   // Chrome 154's -webkit-line-clamp, compared in screenshots as above, puts
   // the ellipsis after the last line's own text, without the spaces that

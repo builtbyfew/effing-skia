@@ -121,14 +121,18 @@ top:
   the breaker needs (a character with no advance of its own, such as a
   combining mark, has a negative width there). `noWrap` text with an
   `ellipsis` and `maxLines` shapes the hard lines it drops, once, to
-  measure them, where it used to shape only the lines it shows: 2000
-  dropped lines take about 14ms more on the first layout.
+  measure them, where it used to shape only the lines it shows (2000
+  dropped lines take about 14ms more on the first layout), and the last
+  line it keeps once more, without the `ellipsis` it ends with.
 - `wordBreak` and `overflowWrap` say where lines may break within and around
   words (below).
 - `noWrap` breaks only at hard breaks; with an `ellipsis` it truncates each
   line to the width instead. `maxLines` truncates with the `ellipsis` too.
   Without either, the `ellipsis` does nothing, as `text-overflow` doesn't on
-  wrapped text.
+  wrapped text. In `noWrap` text, the last line `maxLines` keeps has the
+  `ellipsis` after its text whenever lines are dropped after it, as Chrome's
+  `-webkit-line-clamp` has it under `white-space: pre`, truncated with it to
+  fit the width: `'ab\ncd'` with `maxLines: 1` is "ab…", and `'\ncd'` "…".
 - A truncated line keeps at least its first grapheme cluster (in `noWrap`
   text, with any spaces before it), with the `ellipsis` after it, both overflowing the line when
   not even they fit, as Chrome's `-webkit-line-clamp` and `text-overflow`
@@ -504,6 +508,13 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   keep the CR as trailing whitespace, drawn as the font's missing glyph
   before the ellipsis where the font maps none to it, and in its
   `endIndex` (`'ab\r\ncd'` was `[0, 3)`, now `[0, 2)`, "ab…").
+
+- `noWrap` text with `maxLines` and an `ellipsis` ends the last line it
+  keeps with the ellipsis whenever it drops lines after it, as Chrome's
+  `-webkit-line-clamp` does under `white-space: pre`: `'ab\ncd'` with
+  `maxLines: 1` is "ab…", no longer "ab", and the line is truncated with
+  the ellipsis to fit the width (`'abcd\ncd'` at 50px is "abc…"). Only a
+  line too wide for the width used to get it.
 
 ### 1.0.10-effing.4
 
