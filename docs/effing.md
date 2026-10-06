@@ -54,6 +54,15 @@ Under `geometricPrecision`, `fillText`, `strokeText` and `measureText` also
 leave out the letter spacing Chrome doesn't add, after default-ignorable code
 points, as a `Paragraph` does (see letter spacing under `Paragraph`).
 
+The text's `measureText` bounding box (`actualBoundingBoxLeft` and
+`actualBoundingBoxRight`) is upstream's, which counts SkParagraph's
+half-letter-spacing shift of the line twice. Text that starts with such a
+code point has no shift, so at a letter spacing of 10px `'ab'` has an
+`actualBoundingBoxLeft` of 10 and `'\u200Bab'` one of 0, and their
+`actualBoundingBoxRight` differs by 5, though the two paint the same ink:
+the change moves upstream's error rather than adding one. The `width` is
+right in both.
+
 The other `textRendering` values behave as upstream. Skia caches shaped
 text under a key that ignores hinting, so the fork marks its unhinted
 paragraphs apart (`effing::make_unhinted`): measuring or drawing a text under
@@ -227,14 +236,33 @@ Where the fork still differs from Chrome, as before:
   sign (`'कि'`, `'स्ते'`), and an emoji sequence with a variation selector
   inside, such as ❤️‍🔥 or a keycap, whose selector is a hidden glyph of the
   sequence. An emoji sequence the font draws as one glyph, a family say,
-  gets one gap, as in Chrome.
+  gets one gap, as in Chrome, in LTR text and in an RTL run of a strong RTL
+  script.
+- In an RTL paragraph, a run of neutral characters such as emoji or symbols
+  takes the paragraph's level, and HarfBuzz merges each base with the ZWJ or
+  variation selector after it into one cluster when it reverses the run.
+  SkParagraph looks a cluster's style up at its start, the base, so the
+  ignorable's own style doesn't apply and it is spaced as on `main`: with
+  `direction: 'rtl'`, `'❤️'` gets 2 gaps where Chrome has 1, `'+\uFE0F+'`
+  3 where Chrome has 2, and `'👨‍👩'` 3. The other way round, a merged
+  cluster that starts with the ZWJ or selector, as in a contrived
+  `'a\u200D👩'` in RTL, goes without its base's spacing, so it gets fewer
+  gaps than on `main` and than in Chrome.
 - Chrome tests the first UTF-16 unit of a cluster, so a code point past the
   BMP that starts one, default-ignorable or not (U+E0001), is spaced in
-  both.
+  both. Chrome's canvas spaces TAG SPACE (U+E0020) but not CANCEL TAG
+  (U+E007F); the fork's `fillText` spaces neither of the two.
 - A paragraph with letter spacing and many such code points lays out more
   slowly, since SkParagraph looks each cluster's style up from the first
   one: with a ZWSP between each two of 1000 words, a layout takes 4.6ms
-  instead of 0.9ms, and with 4000 words 77ms instead of 3.6ms.
+  instead of 0.9ms, and with 4000 words 77ms instead of 3.6ms. Calling
+  `layout()` again on the same `Paragraph` is cheap, as its text isn't
+  shaped again, but SkParagraph's cache doesn't always spare a new one with
+  the same text: it leaves out a text of 40 or more characters whose first
+  or last 40 are those of the last text it cached
+  (`ParagraphCache::isPossiblyTextEditing`), so two long captions that
+  share their start or end, laid out in turn each frame, are shaped anew
+  every time.
 
 `layout(width)` must be called before painting, which throws otherwise. It
 returns the paragraph's
