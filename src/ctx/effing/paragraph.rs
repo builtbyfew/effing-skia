@@ -116,6 +116,9 @@ pub struct ParagraphLayout {
   /// The primary font's hhea ascender and descender in px.
   pub ascent: f64,
   pub descent: f64,
+  /// The primary font's hhea line gap in px, 0 if negative, as Chrome takes
+  /// it for `line-height: normal`.
+  pub line_gap: f64,
   pub lines: Vec<ParagraphLine>,
   /// One per placeholder, in order; null for one that `maxLines` or an
   /// ellipsis cut off.
@@ -467,6 +470,7 @@ impl Paragraph {
       line_height: metrics.line_height as f64,
       ascent: metrics.ascent as f64,
       descent: metrics.descent as f64,
+      line_gap: metrics.line_gap as f64,
       lines,
       placeholders,
     })

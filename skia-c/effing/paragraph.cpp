@@ -46,6 +46,7 @@ struct effing_paragraph {
   float line_height = 0;
   float ascent = 0;
   float descent = 0;
+  float line_gap = 0;
   // The primary font's x-height, for middle-aligned placeholders.
   float x_height = 0;
   // Each placeholder, in order, with the paragraph it went into (SIZE_MAX if
@@ -187,16 +188,19 @@ int16_t read_be_i16(const uint8_t* p) {
   return static_cast<int16_t>((p[0] << 8) | p[1]);
 }
 
-// The font's hhea ascender and descender in px, which effing (like satori,
-// through opentype.js) uses for line boxes. Skia's own metrics prefer the
-// OS/2 typo values when USE_TYPO_METRICS is set, so read the table directly.
+// The font's hhea ascender, descender and line gap in px, which effing (like
+// satori, through opentype.js) uses for line boxes, as Chrome on macOS
+// (CoreText) does. Skia's own metrics prefer the OS/2 typo values when
+// USE_TYPO_METRICS is set, so read the table directly. A negative line gap is
+// 0, as in Chrome.
 bool hhea_metrics(const sk_sp<SkTypeface>& typeface,
                   float font_size,
                   float* ascent,
-                  float* descent) {
-  uint8_t buf[4];
+                  float* descent,
+                  float* line_gap) {
+  uint8_t buf[6];
   if (!typeface || typeface->getTableData(SkSetFourByteTag('h', 'h', 'e', 'a'),
-                                          4, 4, buf) != 4) {
+                                          4, 6, buf) != 6) {
     return false;
   }
   const int upem = typeface->getUnitsPerEm();
@@ -205,6 +209,8 @@ bool hhea_metrics(const sk_sp<SkTypeface>& typeface,
   }
   *ascent = read_be_i16(buf) / static_cast<float>(upem) * font_size;
   *descent = -read_be_i16(buf + 2) / static_cast<float>(upem) * font_size;
+  *line_gap = std::max(
+      read_be_i16(buf + 4) / static_cast<float>(upem) * font_size, 0.f);
   return true;
 }
 
@@ -1656,12 +1662,14 @@ effing_paragraph* effing_paragraph_create(
       font_collection->findTypefaces(families, font_style, std::nullopt);
   const sk_sp<SkTypeface> primary =
       typefaces.empty() ? nullptr : typefaces.front();
-  if (!hhea_metrics(primary, s->font_size, &out->ascent, &out->descent)) {
+  if (!hhea_metrics(primary, s->font_size, &out->ascent, &out->descent,
+                    &out->line_gap)) {
     SkFont font(primary, s->font_size);
     SkFontMetrics m;
     font.getMetrics(&m);
     out->ascent = -m.fAscent;
     out->descent = m.fDescent;
+    out->line_gap = std::max(m.fLeading, 0.f);
   }
   out->line_height =
       s->line_height >= 0 ? s->line_height : out->ascent + out->descent;
@@ -2060,6 +2068,7 @@ void effing_paragraph_get_metrics(effing_paragraph* p,
   m->line_height = p->line_height;
   m->ascent = p->ascent;
   m->descent = p->descent;
+  m->line_gap = p->line_gap;
 }
 
 void effing_paragraph_get_lines(effing_paragraph* p,

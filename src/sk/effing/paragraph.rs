@@ -230,9 +230,10 @@ pub struct ParagraphMetrics {
   pub did_exceed_max_lines: bool,
   pub line_count: i32,
   pub line_height: f32,
-  /// The primary font's hhea ascender and descender, in px.
+  /// The primary font's hhea ascender, descender and line gap (≥ 0), in px.
   pub ascent: f32,
   pub descent: f32,
+  pub line_gap: f32,
 }
 
 /// Mirrors `effing_paragraph_line`.
