@@ -145,14 +145,21 @@ top:
   the breaker needs (a character with no advance of its own, such as a
   combining mark, has a negative width there). `noWrap` text with an
   `ellipsis` and `maxLines` shapes the hard lines it drops, once, to
-  measure them, where it used to shape only the lines it shows: 2000
-  dropped lines take about 14ms more on the first layout.
+  measure them, where it used to shape only the lines it shows (2000
+  dropped lines take about 14ms more on the first layout), and the last
+  line it keeps once more, without the `ellipsis` it ends with.
 - `wordBreak` and `overflowWrap` say where lines may break within and around
   words (below).
 - `noWrap` breaks only at hard breaks; with an `ellipsis` it truncates each
   line to the width instead. `maxLines` truncates with the `ellipsis` too.
   Without either, the `ellipsis` does nothing, as `text-overflow` doesn't on
-  wrapped text.
+  wrapped text. In `noWrap` text, the last line `maxLines` keeps has the
+  `ellipsis` after its text whenever lines are dropped after it, as Chrome's
+  `-webkit-line-clamp` has it under `white-space: pre`, truncated with it to
+  fit the width: `'ab\ncd'` with `maxLines: 1` is "ab…", and `'\ncd'` "…".
+  The spaces and tabs that end the line stay before the ellipsis with
+  `keepTrailingWhitespace` ("ab …" for `'ab  \ncd'`, as under `pre`), and
+  hang without it ("ab…", as under `pre-line` with `nowrap`).
 - A truncated line keeps at least its first grapheme cluster (in `noWrap`
   text, with any spaces before it), with the `ellipsis` after it, both overflowing the line when
   not even they fit, as Chrome's `-webkit-line-clamp` and `text-overflow`
@@ -179,6 +186,15 @@ top:
     where Chrome hides it, and the fork clips nothing.
   - The cluster kept is the first in the text, which in a line of mixed
     directions need not be the one Chrome keeps, the first on screen.
+  - SkParagraph takes grapheme clusters off the end of the line's text, in
+    logical order, until the ellipsis fits. Chrome truncates the line on
+    screen, at the ellipsis, so where an LTR line ends in an RTL word the
+    two keep different parts of that word: `'ab بتثبتث بتث'` clamped to one
+    line at 70px shows "ab بتثبت…" here, and more of the word in Chrome.
+  - Under `justify`, Chrome justifies the clamped line as it laid it out
+    before truncating it, the ellipsis taking the place of what it cut
+    ("dd ee …" spread over the width); the fork start-aligns it, as a line
+    ending in the ellipsis.
   - A line of nothing but spaces keeps none of them: it is the ellipsis
     alone, at the line's start, where Chrome keeps the spaces before it.
     Wrapped text has such lines only with `keepTrailingWhitespace`, or from
@@ -190,6 +206,31 @@ top:
   (U+2029). A lone CR and NEL (U+0085) are not breaks. Chrome's
   `white-space: pre` breaks at LF and CRLF only and draws VT, FF, LS and PS
   inline, so a caller after Chrome's result replaces those first.
+- A lone CR, one not part of a CRLF, is laid out as Chrome lays it out
+  under `white-space: pre` and `pre-wrap`
+  (`__test__/effing-paragraph-whitespace.spec.ts`): it has no width and no
+  glyph, where SkParagraph would draw the font's missing glyph; it gives no
+  line-break opportunity beside it but after the spaces before it, so
+  `'aaaa\rbbbb'` stays one line; the text on either side of it is shaped
+  apart, so it doesn't kern, ligate or join across it (`'A\rV'` is wider
+  than `'AV'`, and Arabic letters on either side take the forms they take
+  next to a break); and it takes part in bidi as a paragraph separator,
+  which ends the runs of weak and neutral characters before it
+  (`'اد 12\r34 رو'` in LTR is "12 دا" and then "34 ور"). SkParagraph is
+  given U+2063 INVISIBLE SEPARATOR in its place, which HarfBuzz hides and
+  the line breaker takes for a letter, in a text style of its own (shaped
+  in the language `zxx`) so that its shaper ends a run at it, and with bidi
+  levels resolved from the text with the CR, the U+2063 taking those of the
+  character before it. As U+2063 is default-ignorable, it takes no
+  `letterSpacing`, as Chrome adds none after a CR. Where a line breaks
+  after spaces before it, the next line starts at the CR, where Chrome
+  ends the first line after it; it shows nothing either way. Each lone CR
+  is a text style of its own, which SkParagraph's shaper walks once per
+  style, so text with thousands of them lays out much more slowly (4000
+  lone CRs: 87ms instead of 0.8ms). Under `white-space: normal`,
+  `pre-line` and `nowrap`, Chrome makes a lone CR a space (`'a\rb'` is a
+  space wider than `'ab'`), collapsed with the spaces around it, which a
+  caller after that replaces and collapses itself.
 - A hard break that ends the text gives an empty last line, as SkParagraph
   lays it out: `'ab\n'` has two lines. That line starts and ends at the end
   of the text (`[3, 3)` here), after the break, whatever the break, as an
@@ -575,6 +616,32 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   `round(ascent) + round(descent) + round(lineGap)`, without reading font
   tables in JavaScript, for system fonts too. `lineHeight`'s own `normal`
   is still `ascent + descent`.
+- A lone CR is laid out as Chrome lays it out under `white-space: pre` and
+  `pre-wrap`: with no width and no glyph, and no line-break opportunity
+  beside it. It used to be drawn as the font's missing glyph (a box 15px
+  wide at 20px in Liberation Sans) and be a line-break opportunity.
+  `'a\rb'` now measures as `'ab'` in a font that doesn't kern the two, and
+  `'aaaa\rbbbb'` stays on one line. As in Chrome, the text on either side
+  of it is shaped apart, without kerning, ligatures or Arabic joining
+  across it, and bidi resolves the characters around it as around a
+  paragraph separator. A CRLF is still a hard break.
+- With `keepTrailingWhitespace`, the last line `maxLines` shows with an
+  `ellipsis` ends before a CRLF that ends it, as before an LF: it used to
+  keep the CR as trailing whitespace, drawn as the font's missing glyph
+  before the ellipsis where the font maps none to it, and in its
+  `endIndex` (`'ab\r\ncd'` was `[0, 3)`, now `[0, 2)`, "ab…").
+- `noWrap` text with `maxLines` and an `ellipsis` ends the last line it
+  keeps with the ellipsis whenever it drops lines after it, as Chrome's
+  `-webkit-line-clamp` does under `white-space: pre`: `'ab\ncd'` with
+  `maxLines: 1` is "ab…", no longer "ab", and the line is truncated with
+  the ellipsis to fit the width (`'abcd\ncd'` at 50px is "abc…"). Only a
+  line too wide for the width used to get it. The spaces that end the line
+  stay before the ellipsis only with `keepTrailingWhitespace`.
+- An RTL line clamped with an `ellipsis` is as wide as its text, its
+  placeholders and the ellipsis together. It used to leave the ellipsis
+  out when a placeholder ended the line on its right, so a right-aligned
+  such line pushed the placeholder past the right edge by the ellipsis's
+  width.
 
 ### 1.0.10-effing.4
 

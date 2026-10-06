@@ -15,6 +15,10 @@ const KEEP: ParagraphStyle = { ...STYLE, keepTrailingWhitespace: true }
 
 test.before((t) => {
   t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'iosevka-slab-regular.ttf')))
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'SourceHanSerifCN-Bold.ttf'), 'WB Source Han'))
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Lato-Regular.ttf'), 'WB Lato'))
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Harmattan-Regular.ttf'), 'WB Harmattan'))
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'NotoSansDevanagari-Regular.ttf'), 'WB Devanagari'))
 })
 
 function near(t: import('ava').ExecutionContext, actual: number, expected: number, epsilon = 0.01) {
@@ -454,5 +458,172 @@ test('spaces that start a line collapse unless whitespace is kept', (t) => {
       expected,
       JSON.stringify({ text, style, width }),
     )
+  }
+})
+
+// The alpha of every pixel of `paragraph` painted at (5, 0) on a 100x30
+// canvas.
+function pixels(paragraph: Paragraph) {
+  const ctx = createCanvas(100, 30).getContext('2d')
+  fillParagraph(ctx, paragraph, 5, 0)
+  return Array.from(ctx.getImageData(0, 0, 100, 30).data.filter((_, i) => i % 4 === 3))
+}
+
+test('a lone CR takes no width and draws nothing', (t) => {
+  // Chrome 154 (headless, macOS, the same font files), `white-space: pre`
+  // and `pre-wrap`: "a\rb" measures 24.98, as "ab" does, in Source Han
+  // Serif, which maps no glyph to CR (SkParagraph drew its .notdef, 20px
+  // wide), and Range.getClientRects() gives the CR no width. A CRLF stays a
+  // hard break.
+  const SOURCE_HAN: ParagraphStyle = { fontFamily: 'WB Source Han', fontSize: 20, lineHeight: 30 }
+  for (const mode of [{ keepTrailingWhitespace: true }, { noWrap: true }, { noWrap: true, ellipsis: '…' }, {}]) {
+    const style = { ...SOURCE_HAN, ...mode }
+    const plain = new Paragraph('ab', style)
+    plain.layout(100)
+    for (const text of ['a\rb', '\rab', 'ab\r', 'a\r\rb']) {
+      const paragraph = new Paragraph(text, style)
+      const [line] = paragraph.layout(100).lines
+      near(t, line.width, 24.98)
+      t.deepEqual([line.startIndex, line.endIndex], [0, text.length])
+      // Shaped apart, "b" can land a fraction of a pixel off.
+      const expected = pixels(plain)
+      const off = Math.max(...pixels(paragraph).map((alpha, i) => Math.abs(alpha - expected[i])))
+      t.true(off <= 4, JSON.stringify({ text, mode, off }))
+    }
+  }
+  t.is(new Paragraph('ab\r\ncd', { ...SOURCE_HAN, keepTrailingWhitespace: true }).layout(100).lines.length, 2)
+
+  // Placeholders after a lone CR keep their place in the text.
+  const layout = new Paragraph(['a\r', { width: 20, height: 20 }, 'b\r', { width: 10, height: 10 }, 'c'], KEEP).layout(
+    200,
+  )
+  t.deepEqual(
+    layout.placeholders.map((box) => box && [Math.round(box.x * 100) / 100, box.line]),
+    [
+      [10, 0],
+      [40, 0],
+    ],
+  )
+  t.deepEqual([layout.lines[0].startIndex, layout.lines[0].endIndex], [0, 7])
+})
+
+test('a lone CR ends the shaping run', (t) => {
+  // Chrome 154 (headless, macOS, the same font files), `white-space: pre`
+  // at 40px: the letters on either side of a lone CR are shaped apart, so
+  // they don't kern ("A\rV" is wider than "AV"), ligate ("f\ri" is no fi
+  // ligature) or join (Arabic letters take their isolated forms, and lam
+  // and alef make no lam-alef), as if the CR were a run boundary.
+  const cases: Array<[string, string, number]> = [
+    ['WB Lato', 'A\rV', 54.406],
+    ['WB Lato', 'AV', 51.688],
+    ['WB Lato', 'T\ro', 45.859],
+    ['WB Lato', 'f\ri', 23.734],
+    ['WB Lato', 'fi', 22.813],
+    ['WB Harmattan', 'ب\rب', 79.313],
+    ['WB Harmattan', 'بب', 47.875],
+    ['WB Harmattan', 'ل\rا', 25.875],
+    ['WB Harmattan', 'لا', 15.75],
+    ['WB Devanagari', 'क्\rष', 53.859],
+    ['WB Devanagari', 'क्ष', 28.688],
+  ]
+  for (const [fontFamily, text, width] of cases) {
+    for (const mode of [{ noWrap: true }, { keepTrailingWhitespace: true }]) {
+      const [line] = new Paragraph(text, { fontFamily, fontSize: 40, ...mode }).layout(1000).lines
+      // Chrome rounds advances to 1/64px.
+      near(t, line.width, width, 0.03)
+    }
+  }
+})
+
+test('a lone CR resolves bidi levels as in Chrome', (t) => {
+  // Chrome 154 takes a lone CR for a paragraph separator when it resolves
+  // the weak and neutral characters around it: in an LTR `pre` box,
+  // "اد 12\rx34 رو" shows "12 دا" and then "34 ور", each half laid out as
+  // a paragraph of its own (Range.getClientRects() on each character).
+  const style: ParagraphStyle = {
+    fontFamily: 'WB Harmattan, Iosevka Slab',
+    fontSize: 40,
+    lineHeight: 60,
+    noWrap: true,
+  }
+  const paint = (parts: Array<[string, number]>) => {
+    const ctx = createCanvas(300, 60).getContext('2d')
+    for (const [text, x] of parts) {
+      const paragraph = new Paragraph(text, style)
+      paragraph.layout(1000)
+      fillParagraph(ctx, paragraph, x, 0)
+    }
+    return Array.from(ctx.getImageData(0, 0, 300, 60).data.filter((_, i) => i % 4 === 3))
+  }
+  const first = new Paragraph('اد 12', style).layout(1000).lines[0].width
+  t.deepEqual(
+    paint([['اد 12\r34 رو', 0]]),
+    paint([
+      ['اد 12', 0],
+      ['34 رو', first],
+    ]),
+  )
+})
+
+test('a lone CR is no line-break opportunity', (t) => {
+  // Chrome 154, `white-space: pre-wrap` at 50px, Range.getClientRects() on
+  // each character: "aaaa\rbbbb" is one line, overflowing; after a space,
+  // the line breaks after the space. Lines as [startIndex, endIndex].
+  const cases: Array<[string, Array<[number, number]>]> = [
+    ['aaaa\rbbbb', [[0, 9]]],
+    ['aaaa\r\rbbbb', [[0, 10]]],
+    [
+      'aaaa\r bbbb',
+      [
+        [0, 5],
+        [6, 10],
+      ],
+    ],
+    [
+      // Chrome puts the CR on the first line, after the space; it shows
+      // nothing either way.
+      'aaaa \rbbbb',
+      [
+        [0, 4],
+        [5, 10],
+      ],
+    ],
+  ]
+  for (const [text, expected] of cases) {
+    const layout = new Paragraph(text, KEEP).layout(50)
+    t.deepEqual(
+      layout.lines.map((line) => [line.startIndex, line.endIndex]),
+      expected,
+      JSON.stringify(text),
+    )
+  }
+})
+
+test('a clamped line with kept whitespace ends before a CRLF', (t) => {
+  // Chrome 154 (headless, macOS, the same font file), `white-space:
+  // pre-wrap` with `-webkit-line-clamp`, compared in screenshots: "ab\r\ncd"
+  // clamped to one line shows "ab…", inked over the same columns as
+  // "ab\ncd", and "ab \r\ncd" "ab …"; the CR, which Source Han Serif maps no
+  // glyph to, draws nothing.
+  const style: ParagraphStyle = {
+    fontFamily: 'WB Source Han',
+    fontSize: 20,
+    lineHeight: 30,
+    keepTrailingWhitespace: true,
+    maxLines: 1,
+    ellipsis: '…',
+  }
+  for (const [text, end] of [
+    ['ab\r\ncd', 2],
+    ['ab \r\ncd', 3],
+    ['ab\r\n\r\ncd', 2],
+  ] as const) {
+    const paragraph = new Paragraph(text, style)
+    const [line] = paragraph.layout(100).lines
+    const lf = new Paragraph(text.replaceAll('\r\n', '\n'), style)
+    const [expected] = lf.layout(100).lines
+    t.deepEqual([line.startIndex, line.endIndex], [0, end], JSON.stringify(text))
+    near(t, line.width, expected.width)
+    t.deepEqual(pixels(paragraph), pixels(lf), JSON.stringify(text))
   }
 })

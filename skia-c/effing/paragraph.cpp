@@ -38,6 +38,10 @@ struct effing_paragraph {
   std::vector<Source> sources;
   // Whether hard-broken lines past max_lines were left out.
   bool dropped_lines = false;
+  // When they were, in nowrap text with an ellipsis, the last line kept has
+  // the ellipsis after its text, as CSS line-clamp has it: where that text
+  // ends, in UTF-16 units of the whole text. SIZE_MAX otherwise.
+  size_t clamped_end = SIZE_MAX;
   TextAlign align = TextAlign::kLeft;
   bool rtl = false;
   bool nowrap = false;
@@ -49,6 +53,9 @@ struct effing_paragraph {
   float line_gap = 0;
   // The primary font's x-height, for middle-aligned placeholders.
   float x_height = 0;
+  // Where `text` has the U+2063 that stands for each lone CR (hide_lone_crs),
+  // by UTF-8 offset, in order.
+  std::vector<size_t> lone_crs;
   // Each placeholder, in order, with the paragraph it went into (SIZE_MAX if
   // its line was dropped) and its UTF-16 index in that paragraph's text.
   struct Placeholder {
@@ -268,6 +275,58 @@ size_t hard_break_at(const char* text,
   return 0;
 }
 
+// Replaces each lone CR in the text, one that is not part of a CRLF, with
+// U+2063 INVISIBLE SEPARATOR, into `out_text`, moving the placeholders after
+// it into `out_placeholders`; false, leaving both alone, when there is none.
+// Chrome lays a lone CR out under white-space: pre and pre-wrap as nothing:
+// zero-width, with no letter spacing, and no line-break opportunity before it
+// but after spaces, nor after it. SkParagraph would shape it, drawing the
+// font's .notdef where the font maps no glyph to it, and break lines after
+// it. U+2063 is default-ignorable, which HarfBuzz hides, and to the line
+// breaker a letter (UAX #14 class AL), and it is a grapheme cluster of its
+// own and one UTF-16 unit, as CR is, so indices don't move. Where it is in
+// `out_text` goes to `positions`. Unlike CR, U+2063 is transparent to
+// shaping and bidi, which add_content and compute_bidi make up for.
+bool hide_lone_crs(const char* text,
+                   size_t len,
+                   const effing_paragraph_placeholder* placeholders,
+                   size_t placeholder_count,
+                   std::string* out_text,
+                   std::vector<effing_paragraph_placeholder>* out_placeholders,
+                   std::vector<size_t>* positions) {
+  const auto lone = [&](size_t i) {
+    return text[i] == '\r' &&
+           hard_break_at(text, len, i, placeholders, placeholder_count) == 0;
+  };
+  size_t i = 0;
+  while (i < len && !lone(i)) {
+    i++;
+  }
+  if (i == len) {
+    return false;
+  }
+  out_text->assign(text, i);
+  out_placeholders->assign(placeholders, placeholders + placeholder_count);
+  // The next placeholder to move: those at a lone CR's offset come before
+  // it, and stay.
+  size_t next = 0;
+  for (; i < len; i++) {
+    if (!lone(i)) {
+      out_text->push_back(text[i]);
+      continue;
+    }
+    for (; next < placeholder_count && placeholders[next].offset <= i; next++) {
+      (*out_placeholders)[next].offset += out_text->size() - i;
+    }
+    positions->push_back(out_text->size());
+    out_text->append("\xE2\x81\xA3");
+  }
+  for (; next < placeholder_count; next++) {
+    (*out_placeholders)[next].offset += out_text->size() - len;
+  }
+  return true;
+}
+
 // The number of UTF-16 code units in `len` bytes of UTF-8.
 size_t utf16_length(const char* text, size_t len) {
   size_t units = 0;
@@ -319,6 +378,10 @@ size_t without_hard_break(const char* text,
 // and its UTF-16 index from `start`, where Skia's U+FFFC for it lands, to
 // `placed`. The text goes in through effing::add_text, which leaves out the
 // letter spacing Chrome doesn't add.
+// The U+2063 at each of `lone_crs` (offsets in `text`, sorted) gets
+// `cr_style`, which ends the shaping run before it and starts another after
+// it, as a CR ends one in Chrome: HarfBuzz sees through U+2063, and would
+// kern, ligate and join the letters on either side of it.
 template <typename Placed>
 void add_content(ParagraphBuilder* builder,
                  const char* text,
@@ -327,7 +390,25 @@ void add_content(ParagraphBuilder* builder,
                  const effing_paragraph_placeholder* placeholders,
                  size_t placeholder_count,
                  size_t* next,
-                 Placed placed) {
+                 Placed placed,
+                 const std::vector<size_t>& lone_crs = {},
+                 const TextStyle* cr_style = nullptr) {
+  const auto add_run = [&](size_t from, size_t to) {
+    auto cr = std::lower_bound(lone_crs.begin(), lone_crs.end(), from);
+    for (; cr != lone_crs.end() && *cr < to && cr_style != nullptr; ++cr) {
+      if (*cr > from) {
+        effing::add_text(builder, text + from, *cr - from,
+                         effing::TextKind::kCss);
+      }
+      builder->pushStyle(*cr_style);
+      effing::add_text(builder, text + *cr, 3, effing::TextKind::kCss);
+      builder->pop();
+      from = *cr + 3;
+    }
+    if (to > from) {
+      effing::add_text(builder, text + from, to - from, effing::TextKind::kCss);
+    }
+  };
   size_t at = start;
   size_t index = 0;
   for (; *next < placeholder_count && placeholders[*next].offset <= end;
@@ -335,7 +416,7 @@ void add_content(ParagraphBuilder* builder,
     const auto& spec = placeholders[*next];
     const size_t offset = std::max(spec.offset, at);
     if (offset > at) {
-      effing::add_text(builder, text + at, offset - at, effing::TextKind::kCss);
+      add_run(at, offset);
       index += utf16_length(text + at, offset - at);
       at = offset;
     }
@@ -350,7 +431,7 @@ void add_content(ParagraphBuilder* builder,
     placed(*next, index++);
   }
   if (end > at) {
-    effing::add_text(builder, text + at, end - at, effing::TextKind::kCss);
+    add_run(at, end);
   }
 }
 
@@ -491,9 +572,12 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
   if (ideographs.empty()) {
     emoji.clear();
   }
+  // With lone CRs, every paragraph takes the levels too, which only the
+  // whole text with its CRs gives (compute_bidi).
   std::vector<SkUnicode::BidiRegion> bidi;
-  if (piece != nullptr && !p->bidi.empty()) {
-    const size_t from = piece->skia_start;
+  if ((piece != nullptr || !p->lone_crs.empty()) && !p->bidi.empty()) {
+    const size_t from =
+        piece != nullptr ? piece->skia_start : start + 3 * first;
     const size_t to = from + (end - start) + 3 * (last - first);
     for (const auto& region : p->bidi) {
       const size_t a = std::max<size_t>(region.start, from);
@@ -531,10 +615,19 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
       effing::make_word_break_unicode(p->word_break, break_first_word,
                                       std::move(ideographs), std::move(bidi)));
   size_t next = first;
-  add_content(&builder, p->text.data(), start, end, p->placeholder_specs.data(),
-              last, &next, [&](size_t placeholder, size_t index) {
-                placed->emplace_back(placeholder, index);
-              });
+  // The lone CRs' U+2063 differ from the text around them in an attribute
+  // that SkParagraph's shaper splits runs at but that changes nothing they
+  // render with: the language they are shaped in ("zxx", no linguistic
+  // content).
+  TextStyle cr_style = style.getTextStyle();
+  cr_style.setLocale(SkString("zxx"));
+  add_content(
+      &builder, p->text.data(), start, end, p->placeholder_specs.data(), last,
+      &next,
+      [&](size_t placeholder, size_t index) {
+        placed->emplace_back(placeholder, index);
+      },
+      p->lone_crs, &cr_style);
   if (sentinel) {
     builder.addPlaceholder(PlaceholderStyle(kUnbounded, 1,
                                             PlaceholderAlignment::kBaseline,
@@ -792,6 +885,91 @@ size_t first_grapheme_end(Paragraph* paragraph, size_t start, size_t end) {
   return start;
 }
 
+// The bidi levels of the whole paragraph's Skia text (U+FFFC for each
+// placeholder) into p->bidi, from the text as it was given: before
+// SkParagraph replaced its tabs with spaces, which bidi treats otherwise
+// (segment separators, which reset to the paragraph's level), and with its
+// lone CRs, which Chrome takes for paragraph separators (bidi class B), where
+// U+2063 in their place is a boundary neutral. Each CR's U+2063 then takes
+// the level of the character before it (or after it, at the start), as
+// Chrome reorders it: "اد\rرو" stays one run. Left empty
+// when the text has no lone CR and all of it has the paragraph's level.
+void compute_bidi(effing_paragraph* p) {
+  p->bidi.clear();
+  auto icu = SkUnicodes::ICU::Make();
+  if (!icu) {
+    return;
+  }
+  // The text as given, and where each of its bytes is in the Skia text.
+  std::string original;
+  std::vector<size_t> skia_at;
+  original.reserve(p->text.size() + 3 * p->placeholder_specs.size());
+  size_t skia = 0;
+  size_t next = 0;
+  auto cr = p->lone_crs.begin();
+  for (size_t i = 0; i <= p->text.size(); i++) {
+    for (; next < p->placeholder_specs.size() &&
+           p->placeholder_specs[next].offset == i;
+         next++) {
+      original.append("\xEF\xBF\xBC");
+      for (int k = 0; k < 3; k++) {
+        skia_at.push_back(skia++);
+      }
+    }
+    if (i == p->text.size()) {
+      break;
+    }
+    if (cr != p->lone_crs.end() && *cr == i) {
+      original.push_back('\r');
+      skia_at.push_back(skia);
+      skia += 3;
+      i += 2;
+      ++cr;
+      continue;
+    }
+    original.push_back(p->text[i]);
+    skia_at.push_back(skia++);
+  }
+  std::vector<SkUnicode::BidiRegion> regions;
+  if (!icu->getBidiRegions(original.data(), static_cast<int>(original.size()),
+                           p->rtl ? SkUnicode::TextDirection::kRTL
+                                  : SkUnicode::TextDirection::kLTR,
+                           &regions)) {
+    return;
+  }
+  const SkUnicode::BidiLevel base = p->rtl ? 1 : 0;
+  std::vector<SkUnicode::BidiLevel> levels(skia, base);
+  for (const auto& region : regions) {
+    for (size_t j = region.start; j < region.end && j < skia_at.size(); j++) {
+      levels[skia_at[j]] = region.level;
+    }
+  }
+  // The U+2063 of each lone CR, at the Skia offset of its first byte.
+  next = 0;
+  for (const size_t at : p->lone_crs) {
+    while (next < p->placeholder_specs.size() &&
+           p->placeholder_specs[next].offset <= at) {
+      next++;
+    }
+    const size_t k = at + 3 * next;
+    const SkUnicode::BidiLevel level = k > 0          ? levels[k - 1]
+                                       : k + 3 < skia ? levels[k + 3]
+                                                      : base;
+    std::fill(levels.begin() + k, levels.begin() + k + 3, level);
+  }
+  for (size_t j = 0; j < skia; j++) {
+    if (p->bidi.empty() || p->bidi.back().level != levels[j]) {
+      p->bidi.emplace_back(j, j + 1, levels[j]);
+    } else {
+      p->bidi.back().end = j + 1;
+    }
+  }
+  if (p->lone_crs.empty() && p->bidi.size() == 1 &&
+      p->bidi.front().level == base) {
+    p->bidi.clear();
+  }
+}
+
 // Measures the words of wrapping text from SkParagraph's clusters, which are
 // what its line breaker measures: their widths, and the widest one, CSS
 // min-content. Skia's own minimum is off in places: it is the whole text when
@@ -840,28 +1018,7 @@ void measure_words(effing_paragraph* p) {
       }
     }
   }
-  p->bidi.clear();
-  if (auto icu = SkUnicodes::ICU::Make()) {
-    // The Skia text as it was before SkParagraph replaced its tabs with
-    // spaces, which bidi treats otherwise (segment separators, which reset
-    // to the paragraph's level).
-    std::string original;
-    original.reserve(text.size());
-    size_t at = 0;
-    for (const auto& spec : p->placeholder_specs) {
-      original.append(p->text, at, spec.offset - at);
-      original.append("\xEF\xBF\xBC");
-      at = spec.offset;
-    }
-    original.append(p->text, at, std::string::npos);
-    icu->getBidiRegions(original.data(), static_cast<int>(original.size()),
-                        p->rtl ? SkUnicode::TextDirection::kRTL
-                               : SkUnicode::TextDirection::kLTR,
-                        &p->bidi);
-    if (p->bidi.size() == 1 && p->bidi.front().level == (p->rtl ? 1 : 0)) {
-      p->bidi.clear();
-    }
-  }
+  compute_bidi(p);
   // SkParagraph's own flags have an opportunity on either side of every
   // placeholder.
   p->opportunities = std::none_of(p->placeholder_specs.begin(),
@@ -1008,11 +1165,21 @@ float widest_hard_line(Paragraph* paragraph,
 void measure_max_content(effing_paragraph* p) {
   p->max_content = 0;
   const bool collapse_leading = !p->keep_trailing_whitespace && !p->nowrap;
-  for (const auto& paragraph : p->paragraphs) {
-    p->max_content =
-        std::max(p->max_content,
-                 widest_hard_line(paragraph.get(), p->keep_trailing_whitespace,
-                                  collapse_leading));
+  for (size_t k = 0; k < p->paragraphs.size(); k++) {
+    Paragraph* paragraph = p->paragraphs[k].get();
+    // The line clamped with the ellipsis after it is measured without.
+    std::unique_ptr<Paragraph> unclamped;
+    if (p->clamped_end != SIZE_MAX && k + 1 == p->paragraphs.size()) {
+      const auto& source = p->sources[k];
+      std::vector<std::pair<size_t, size_t>> placed;
+      unclamped = build(p, source.start, source.end, source.first, source.last,
+                        0, PieceKind::kUnbounded, SkString(), &placed);
+      unclamped->layout(kUnbounded);
+      paragraph = unclamped.get();
+    }
+    p->max_content = std::max(
+        p->max_content, widest_hard_line(paragraph, p->keep_trailing_whitespace,
+                                         collapse_leading));
   }
   if (!p->dropped_lines || p->sources.empty()) {
     return;
@@ -1113,13 +1280,18 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
               : p->utf8_offsets[piece.offset + lines[k].fStartIndex];
     // The spaces before the ellipsis stay where whitespace is kept, as in
     // Chrome; the hard break after them doesn't.
-    const size_t line_end =
+    size_t line_end =
         empty ? piece.end
         : p->keep_trailing_whitespace
             ? without_hard_break(
                   text.data(), len, line_start,
                   p->utf8_offsets[piece.offset + lines[k].fEndIndex])
             : p->utf8_offsets[piece.offset + lines[k].fEndExcludingWhitespaces];
+    // Skia ends a line before a CRLF between its CR and LF.
+    if (line_end > line_start && line_end < len && text[line_end] == '\n' &&
+        text[line_end - 1] == '\r') {
+      line_end--;
+    }
     if (k == 0) {
       p->pieces.pop_back();
     } else {
@@ -1558,24 +1730,31 @@ void truncate_nowrap_lines(effing_paragraph* p,
                            const std::vector<bool>& emptied) {
   for (size_t k = 0; k < p->paragraphs.size(); k++) {
     const auto& source = p->sources[k];
+    // The last line kept has the ellipsis after its text when lines were
+    // dropped after it.
+    const bool clamped =
+        p->clamped_end != SIZE_MAX && k + 1 == p->paragraphs.size();
     Piece piece{};
     piece.kind = PieceKind::kWrapped;
     piece.offset = p->offsets[k];
-    piece.hard_break = k + 1 < p->paragraphs.size();
+    piece.hard_break = k + 1 < p->paragraphs.size() || clamped;
     piece.override_hard_break = piece.hard_break;
-    piece.line_end = SIZE_MAX;
+    piece.line_end = clamped ? p->clamped_end : SIZE_MAX;
     if (!emptied[k]) {
       // As effing_paragraph_create built it.
-      piece.paragraph =
-          build(p, source.start, source.end, source.first, source.last, 1,
-                piece.kind, SkString(), &piece.placed);
+      piece.paragraph = build(
+          p, source.start, source.end, source.first, source.last, 1, piece.kind,
+          clamped ? p->paragraph_style.getEllipsis() : SkString(),
+          &piece.placed);
       layout_paragraph(piece.paragraph.get(), w, false);
     } else {
       Paragraph* line = p->paragraphs[k].get();
-      const auto [end, last] = to_text(
-          p, source,
-          first_grapheme_end(line, 0,
-                             static_cast<ParagraphImpl*>(line)->text().size()));
+      // Its text, without the ellipsis after it.
+      const size_t size =
+          static_cast<ParagraphImpl*>(line)->text().size() -
+          (clamped ? p->paragraph_style.getEllipsis().size() : 0);
+      const auto [end, last] =
+          to_text(p, source, first_grapheme_end(line, 0, size));
       piece.kind = PieceKind::kUnbounded;
       piece.line_end =
           piece.offset +
@@ -1643,6 +1822,15 @@ effing_paragraph* effing_paragraph_create(
     const effing_paragraph_placeholder* placeholders,
     size_t placeholder_count) {
   c_collection->flushCachesIfDirty();
+  std::string shown_text;
+  std::vector<effing_paragraph_placeholder> shown_placeholders;
+  std::vector<size_t> lone_crs;
+  if (hide_lone_crs(text, text_len, placeholders, placeholder_count,
+                    &shown_text, &shown_placeholders, &lone_crs)) {
+    text = shown_text.data();
+    text_len = shown_text.size();
+    placeholders = shown_placeholders.data();
+  }
   auto font_collection = c_collection->collection;
   const auto families = split_families(font_family);
   const auto font_style =
@@ -1741,6 +1929,10 @@ effing_paragraph* effing_paragraph_create(
   out->max_lines = s->max_lines;
   out->text.assign(text, text_len);
   out->placeholder_specs.assign(placeholders, placeholders + placeholder_count);
+  out->lone_crs = std::move(lone_crs);
+  if (!out->lone_crs.empty()) {
+    compute_bidi(out);
+  }
   out->paragraph_style = paragraph_style;
   out->strut_families = families;
   out->font_collection = font_collection;
@@ -1748,17 +1940,24 @@ effing_paragraph* effing_paragraph_create(
   size_t next = 0;
   // Builds a paragraph of text[start, end), with the placeholders up to `end`
   // in it.
-  const auto add = [&](size_t start, size_t end, int max_lines) {
+  // The placeholders up to `end` from the next one on end before this.
+  const auto placeholders_to = [&](size_t end) {
     size_t last = next;
     while (last < placeholder_count && placeholders[last].offset <= end) {
       last++;
     }
+    return last;
+  };
+  // With `suffix` after the text.
+  const auto add = [&](size_t start, size_t end, int max_lines,
+                       const SkString& suffix = SkString()) {
+    const size_t last = placeholders_to(end);
     out->offsets.push_back(utf16_length(text, start) + next);
     out->sources.push_back({start, end, next, last});
     const size_t k = out->paragraphs.size();
     std::vector<std::pair<size_t, size_t>> placed;
     out->paragraphs.push_back(build(out, start, end, next, last, max_lines,
-                                    PieceKind::kWrapped, SkString(), &placed));
+                                    PieceKind::kWrapped, suffix, &placed));
     for (const auto& [placeholder, index] : placed) {
       out->placeholders[placeholder].paragraph = k;
       out->placeholders[placeholder].index = index;
@@ -1788,7 +1987,24 @@ effing_paragraph* effing_paragraph_create(
       out->dropped_lines = start < text_len || next < placeholder_count;
       break;
     }
-    add(start, i, 1);
+    // The last line kept, with lines after it that aren't kept, ends with
+    // the ellipsis, as CSS line-clamp has it under white-space: pre (#20),
+    // and is truncated to fit it.
+    if (brk > 0 && out->paragraphs.size() + 1 == max_lines &&
+        (i + brk < text_len || placeholders_to(i) < placeholder_count)) {
+      // Without the spaces and tabs that end it, unless whitespace is kept:
+      // they hang at the end of a line, before the ellipsis too.
+      size_t end = i;
+      while (!out->keep_trailing_whitespace && end > start &&
+             (text[end - 1] == ' ' || text[end - 1] == '\t') &&
+             !placeholder_at(placeholders, placeholder_count, end)) {
+        end--;
+      }
+      out->clamped_end = utf16_length(text, end) + placeholders_to(end);
+      add(start, end, 1, paragraph_style.getEllipsis());
+    } else {
+      add(start, i, 1);
+    }
     if (brk == 0) {
       break;
     }
@@ -1891,6 +2107,14 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
           *index = piece.empty_last_line ? end : std::min(*index, end);
         }
       }
+    } else if (p->clamped_end != SIZE_MAX && k + 1 == paragraphs.size() &&
+               !lines.empty()) {
+      // The line's text ends before the ellipsis it was given as text.
+      LineMetrics& last = lines.back();
+      for (size_t* index : {&last.fEndExcludingWhitespaces, &last.fEndIndex,
+                            &last.fEndIncludingNewline}) {
+        *index = std::min(*index, p->clamped_end - offset);
+      }
     }
     for (LineMetrics& line : lines) {
       line.fStartIndex += offset;
@@ -1939,6 +2163,18 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
       // ZWSP) a negative letter spacing gives a negative width.
       const auto& text_lines = static_cast<ParagraphImpl*>(paragraph)->lines();
       const size_t n = std::min(lines.size(), text_lines.size());
+      // The ellipsis comes after the line's text, which in RTL is on its
+      // left, so the runs visited there can end before a placeholder on the
+      // line's right (which isn't visited).
+      for (size_t i = 0; i < n; i++) {
+        if (const Run* ellipsis = text_lines[i].ellipsis()) {
+          float& line_width = p->line_widths[first + i];
+          line_width =
+              std::max(line_width, static_cast<float>(lines[i].fWidth) +
+                                       ellipsis->advance().fX +
+                                       p->kept_whitespace[first + i]);
+        }
+      }
       paragraph->visit([&](int line, const Paragraph::VisitorInfo* run) {
         if (run == nullptr || line < 0 || static_cast<size_t>(line) >= n ||
             text_lines[line].ellipsis() == nullptr) {
