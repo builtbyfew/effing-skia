@@ -280,7 +280,7 @@ size_t hard_break_at(const char* text,
 // breaker a letter (UAX #14 class AL), and it is a grapheme cluster of its
 // own and one UTF-16 unit, as CR is, so indices don't move. Where it is in
 // `out_text` goes to `positions`. Unlike CR, U+2063 is transparent to
-// shaping, which add_content makes up for.
+// shaping and bidi, which add_content and compute_bidi make up for.
 bool hide_lone_crs(const char* text,
                    size_t len,
                    const effing_paragraph_placeholder* placeholders,
@@ -564,9 +564,12 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
   if (ideographs.empty()) {
     emoji.clear();
   }
+  // With lone CRs, every paragraph takes the levels too, which only the
+  // whole text with its CRs gives (compute_bidi).
   std::vector<SkUnicode::BidiRegion> bidi;
-  if (piece != nullptr && !p->bidi.empty()) {
-    const size_t from = piece->skia_start;
+  if ((piece != nullptr || !p->lone_crs.empty()) && !p->bidi.empty()) {
+    const size_t from =
+        piece != nullptr ? piece->skia_start : start + 3 * first;
     const size_t to = from + (end - start) + 3 * (last - first);
     for (const auto& region : p->bidi) {
       const size_t a = std::max<size_t>(region.start, from);
@@ -874,6 +877,91 @@ size_t first_grapheme_end(Paragraph* paragraph, size_t start, size_t end) {
   return start;
 }
 
+// The bidi levels of the whole paragraph's Skia text (U+FFFC for each
+// placeholder) into p->bidi, from the text as it was given: before
+// SkParagraph replaced its tabs with spaces, which bidi treats otherwise
+// (segment separators, which reset to the paragraph's level), and with its
+// lone CRs, which Chrome takes for paragraph separators (bidi class B), where
+// U+2063 in their place is a boundary neutral. Each CR's U+2063 then takes
+// the level of the character before it (or after it, at the start), as
+// Chrome reorders it: "اد\rرو" stays one run. Left empty
+// when the text has no lone CR and all of it has the paragraph's level.
+void compute_bidi(effing_paragraph* p) {
+  p->bidi.clear();
+  auto icu = SkUnicodes::ICU::Make();
+  if (!icu) {
+    return;
+  }
+  // The text as given, and where each of its bytes is in the Skia text.
+  std::string original;
+  std::vector<size_t> skia_at;
+  original.reserve(p->text.size() + 3 * p->placeholder_specs.size());
+  size_t skia = 0;
+  size_t next = 0;
+  auto cr = p->lone_crs.begin();
+  for (size_t i = 0; i <= p->text.size(); i++) {
+    for (; next < p->placeholder_specs.size() &&
+           p->placeholder_specs[next].offset == i;
+         next++) {
+      original.append("\xEF\xBF\xBC");
+      for (int k = 0; k < 3; k++) {
+        skia_at.push_back(skia++);
+      }
+    }
+    if (i == p->text.size()) {
+      break;
+    }
+    if (cr != p->lone_crs.end() && *cr == i) {
+      original.push_back('\r');
+      skia_at.push_back(skia);
+      skia += 3;
+      i += 2;
+      ++cr;
+      continue;
+    }
+    original.push_back(p->text[i]);
+    skia_at.push_back(skia++);
+  }
+  std::vector<SkUnicode::BidiRegion> regions;
+  if (!icu->getBidiRegions(original.data(), static_cast<int>(original.size()),
+                           p->rtl ? SkUnicode::TextDirection::kRTL
+                                  : SkUnicode::TextDirection::kLTR,
+                           &regions)) {
+    return;
+  }
+  const SkUnicode::BidiLevel base = p->rtl ? 1 : 0;
+  std::vector<SkUnicode::BidiLevel> levels(skia, base);
+  for (const auto& region : regions) {
+    for (size_t j = region.start; j < region.end && j < skia_at.size(); j++) {
+      levels[skia_at[j]] = region.level;
+    }
+  }
+  // The U+2063 of each lone CR, at the Skia offset of its first byte.
+  next = 0;
+  for (const size_t at : p->lone_crs) {
+    while (next < p->placeholder_specs.size() &&
+           p->placeholder_specs[next].offset <= at) {
+      next++;
+    }
+    const size_t k = at + 3 * next;
+    const SkUnicode::BidiLevel level = k > 0          ? levels[k - 1]
+                                       : k + 3 < skia ? levels[k + 3]
+                                                      : base;
+    std::fill(levels.begin() + k, levels.begin() + k + 3, level);
+  }
+  for (size_t j = 0; j < skia; j++) {
+    if (p->bidi.empty() || p->bidi.back().level != levels[j]) {
+      p->bidi.emplace_back(j, j + 1, levels[j]);
+    } else {
+      p->bidi.back().end = j + 1;
+    }
+  }
+  if (p->lone_crs.empty() && p->bidi.size() == 1 &&
+      p->bidi.front().level == base) {
+    p->bidi.clear();
+  }
+}
+
 // Measures the words of wrapping text from SkParagraph's clusters, which are
 // what its line breaker measures: their widths, and the widest one, CSS
 // min-content. Skia's own minimum is off in places: it is the whole text when
@@ -922,28 +1010,7 @@ void measure_words(effing_paragraph* p) {
       }
     }
   }
-  p->bidi.clear();
-  if (auto icu = SkUnicodes::ICU::Make()) {
-    // The Skia text as it was before SkParagraph replaced its tabs with
-    // spaces, which bidi treats otherwise (segment separators, which reset
-    // to the paragraph's level).
-    std::string original;
-    original.reserve(text.size());
-    size_t at = 0;
-    for (const auto& spec : p->placeholder_specs) {
-      original.append(p->text, at, spec.offset - at);
-      original.append("\xEF\xBF\xBC");
-      at = spec.offset;
-    }
-    original.append(p->text, at, std::string::npos);
-    icu->getBidiRegions(original.data(), static_cast<int>(original.size()),
-                        p->rtl ? SkUnicode::TextDirection::kRTL
-                               : SkUnicode::TextDirection::kLTR,
-                        &p->bidi);
-    if (p->bidi.size() == 1 && p->bidi.front().level == (p->rtl ? 1 : 0)) {
-      p->bidi.clear();
-    }
-  }
+  compute_bidi(p);
   // SkParagraph's own flags have an opportunity on either side of every
   // placeholder.
   p->opportunities = std::none_of(p->placeholder_specs.begin(),
@@ -1853,6 +1920,9 @@ effing_paragraph* effing_paragraph_create(
   out->text.assign(text, text_len);
   out->placeholder_specs.assign(placeholders, placeholders + placeholder_count);
   out->lone_crs = std::move(lone_crs);
+  if (!out->lone_crs.empty()) {
+    compute_bidi(out);
+  }
   out->paragraph_style = paragraph_style;
   out->strut_families = families;
   out->font_collection = font_collection;

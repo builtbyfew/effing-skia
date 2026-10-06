@@ -535,6 +535,36 @@ test('a lone CR ends the shaping run', (t) => {
   }
 })
 
+test('a lone CR resolves bidi levels as in Chrome', (t) => {
+  // Chrome 154 takes a lone CR for a paragraph separator when it resolves
+  // the weak and neutral characters around it: in an LTR `pre` box,
+  // "اد 12\rx34 رو" shows "12 دا" and then "34 ور", each half laid out as
+  // a paragraph of its own (Range.getClientRects() on each character).
+  const style: ParagraphStyle = {
+    fontFamily: 'WB Harmattan, Iosevka Slab',
+    fontSize: 40,
+    lineHeight: 60,
+    noWrap: true,
+  }
+  const paint = (parts: Array<[string, number]>) => {
+    const ctx = createCanvas(300, 60).getContext('2d')
+    for (const [text, x] of parts) {
+      const paragraph = new Paragraph(text, style)
+      paragraph.layout(1000)
+      fillParagraph(ctx, paragraph, x, 0)
+    }
+    return Array.from(ctx.getImageData(0, 0, 300, 60).data.filter((_, i) => i % 4 === 3))
+  }
+  const first = new Paragraph('اد 12', style).layout(1000).lines[0].width
+  t.deepEqual(
+    paint([['اد 12\r34 رو', 0]]),
+    paint([
+      ['اد 12', 0],
+      ['34 رو', first],
+    ]),
+  )
+})
+
 test('a lone CR is no line-break opportunity', (t) => {
   // Chrome 154, `white-space: pre-wrap` at 50px, Range.getClientRects() on
   // each character: "aaaa\rbbbb" is one line, overflowing; after a space,
