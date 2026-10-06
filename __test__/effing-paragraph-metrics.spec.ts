@@ -211,11 +211,12 @@ test('the text laid out at maxIntrinsicWidth breaks only at hard breaks', (t) =>
 })
 
 test('an ellipsis widens only the line it ends', (t) => {
-  // A negative letter spacing gives the zero-width space a negative width,
-  // which its RTL run's painted extent does not show: line 0 came out 18px
-  // wide, 1px more than without the ellipsis, as the line Skia ellipsized
-  // was measured by its runs and so was every other line.
-  const text = 'ab\u200b\ncd ef gh'
+  // A negative letter spacing gives the zero-width language tag a negative
+  // width, which its RTL run's painted extent does not show: line 0 came out
+  // 18px wide, 1px more than without the ellipsis, as the line Skia
+  // ellipsized was measured by its runs and so was every other line. (A ZWSP
+  // gets no letter spacing, as in Chrome; U+E0001 still does.)
+  const text = 'ab\u{E0001}\ncd ef gh'
   for (const direction of ['ltr', 'rtl'] as const) {
     const style: ParagraphStyle = { ...IOSEVKA, letterSpacing: -1, direction, maxLines: 2 }
     const clamped = new Paragraph(text, { ...style, ellipsis: '…' }).layout(40)

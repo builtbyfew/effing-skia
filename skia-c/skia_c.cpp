@@ -675,7 +675,13 @@ void skiac_canvas_get_line_metrics_or_draw_text(
   paragraph_style.setStrutStyle(struct_style);
   ParagraphBuilderImpl builder(paragraph_style, font_collection,
                                SkUnicodes::ICU::Make());
-  builder.addText(text, text_len);
+  // effing: under geometricPrecision, no letter spacing after
+  // default-ignorable code points, as in Chrome.
+  if (text_rendering == effing::kTextRenderingGeometricPrecision) {
+    effing::add_text(&builder, text, text_len, effing::TextKind::kCanvas);
+  } else {
+    builder.addText(text, text_len);
+  }
   auto paragraph = static_cast<ParagraphImpl*>(builder.Build().release());
   paragraph->layout(MAX_LAYOUT_WIDTH);
   std::vector<LineMetrics> metrics_vec;
@@ -779,6 +785,12 @@ void skiac_canvas_get_line_metrics_or_draw_text(
       (text_direction == TextDirection::kLtr && !run.isCursiveScript())
           ? -letter_spacing / 2
           : 0.0f;
+  // effing: Skia shifts the line by the half letter spacing of its first
+  // cluster, none when add_text left that cluster unspaced.
+  if (text_rendering == effing::kTextRenderingGeometricPrecision &&
+      letter_spacing_offset != 0) {
+    letter_spacing_offset = -effing::leading_half_letter_spacing(paragraph);
+  }
 
   // Determine alignment type
   auto text_align = (TextAlign)align;

@@ -9,13 +9,59 @@
 #include "include/core/SkPath.h"
 #include "include/core/SkPathBuilder.h"
 #include "include/core/SkTextBlob.h"
+#include "modules/skparagraph/src/ParagraphImpl.h"
 
 namespace effing {
 
 namespace {
 
+using skia::textlayout::Cluster;
+using skia::textlayout::ClusterIndex;
+using skia::textlayout::ClusterRange;
 using skia::textlayout::LineMetrics;
 using skia::textlayout::Paragraph;
+using skia::textlayout::ParagraphBuilder;
+using skia::textlayout::ParagraphImpl;
+using skia::textlayout::TextStyle;
+
+// The code point that starts at text[i], of valid UTF-8, and its length in
+// bytes.
+char32_t decode_utf8(const char* text, size_t len, size_t i, size_t* n) {
+  const auto byte = [&](size_t k) {
+    return i + k < len ? static_cast<uint8_t>(text[i + k]) : 0;
+  };
+  const uint8_t lead = byte(0);
+  *n = lead < 0xC0 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+  char32_t c = *n == 1 ? lead : lead & (0x7F >> *n);
+  for (size_t k = 1; k < *n; k++) {
+    c = (c << 6) | (byte(k) & 0x3F);
+  }
+  *n = std::min(*n, len - i);
+  return c;
+}
+
+// Whether Chrome adds no letter spacing after `c`: Blink's
+// Character::TreatAsZeroWidthSpace, which is a soft hyphen, the other
+// default-ignorable code points from U+0100 on, U+FFFC, a form feed and a
+// carriage return. A form feed is a hard break in a Paragraph, and Chrome's
+// canvas draws both as spaces, which it spaces. Blink tests the UTF-16 unit
+// that starts each of HarfBuzz's clusters, a surrogate for a code point past
+// the BMP, so of those only the ones HarfBuzz merges into the cluster before
+// them, the tags and the variation selectors of plane 14, go without.
+bool unspaced(char32_t c, TextKind kind) {
+  if (c < 0x100) {
+    return c == 0xAD || (kind == TextKind::kCss && c == '\r');
+  }
+  if (c < 0x10000) {
+    return c == 0x034F || c == 0x061C || (c >= 0x115F && c <= 0x1160) ||
+           (c >= 0x17B4 && c <= 0x17B5) || (c >= 0x180B && c <= 0x180F) ||
+           (c >= 0x200B && c <= 0x200F) || (c >= 0x202A && c <= 0x202E) ||
+           (c >= 0x2060 && c <= 0x206F) || c == 0x3164 ||
+           (c >= 0xFE00 && c <= 0xFE0F) || c == 0xFEFF || c == 0xFFA0 ||
+           (c >= 0xFFF0 && c <= 0xFFF8) || c == 0xFFFC;
+  }
+  return (c >= 0xE0020 && c <= 0xE007F) || (c >= 0xE0100 && c <= 0xE01EF);
+}
 
 struct GlyphPathContext {
   SkPathBuilder* builder;
@@ -116,6 +162,56 @@ void make_unhinted(skia::textlayout::TextStyle* text_style,
   // and outlines. The key does compare the strut style, and nothing reads the
   // font families of a disabled strut: name the unhinted ones apart there.
   strut_style->setFontFamilies({SkString("effing-unhinted")});
+}
+
+void add_text(ParagraphBuilder* builder,
+              const char* text,
+              size_t len,
+              TextKind kind) {
+  TextStyle without = builder->peekStyle();
+  if (without.getLetterSpacing() == 0) {
+    builder->addText(text, len);
+    return;
+  }
+  without.setLetterSpacing(0);
+  size_t added = 0;
+  for (size_t i = 0; i < len;) {
+    size_t n;
+    if (!unspaced(decode_utf8(text, len, i, &n), kind)) {
+      i += n;
+      continue;
+    }
+    size_t end = i + n;
+    while (end < len && unspaced(decode_utf8(text, len, end, &n), kind)) {
+      end += n;
+    }
+    if (i > added) {
+      builder->addText(text + added, i - added);
+    }
+    builder->pushStyle(without);
+    builder->addText(text + i, end - i);
+    builder->pop();
+    added = i = end;
+  }
+  if (len > added) {
+    builder->addText(text + added, len - added);
+  }
+}
+
+SkScalar leading_half_letter_spacing(Paragraph* paragraph) {
+  auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  if (impl->lines().empty()) {
+    return 0;
+  }
+  // As TextLine's constructor finds it.
+  const ClusterRange clusters = impl->lines().front().clustersWithSpaces();
+  for (ClusterIndex i = clusters.start; i < clusters.end; i++) {
+    const Cluster& cluster = impl->cluster(i);
+    if (!cluster.run().isPlaceholder() && !cluster.run().isCursiveScript()) {
+      return cluster.getHalfLetterSpacing();
+    }
+  }
+  return 0;
 }
 
 void paint_paragraph_unsnapped(Paragraph* paragraph,
