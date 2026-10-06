@@ -133,6 +133,9 @@ top:
   `ellipsis` after its text whenever lines are dropped after it, as Chrome's
   `-webkit-line-clamp` has it under `white-space: pre`, truncated with it to
   fit the width: `'ab\ncd'` with `maxLines: 1` is "ab…", and `'\ncd'` "…".
+  The spaces and tabs that end the line stay before the ellipsis with
+  `keepTrailingWhitespace` ("ab …" for `'ab  \ncd'`, as under `pre`), and
+  hang without it ("ab…", as under `pre-line` with `nowrap`).
 - A truncated line keeps at least its first grapheme cluster (in `noWrap`
   text, with any spaces before it), with the `ellipsis` after it, both overflowing the line when
   not even they fit, as Chrome's `-webkit-line-clamp` and `text-overflow`
@@ -179,18 +182,28 @@ top:
   (U+2029). A lone CR and NEL (U+0085) are not breaks. Chrome's
   `white-space: pre` breaks at LF and CRLF only and draws VT, FF, LS and PS
   inline, so a caller after Chrome's result replaces those first.
-- A lone CR, one not part of a CRLF, is laid out as nothing, as Chrome lays
-  it out under `white-space: pre` and `pre-wrap`: no width and no glyph,
-  where SkParagraph would draw the font's missing glyph, and no line-break
-  opportunity beside it but after the spaces before it, so `'aaaa\rbbbb'`
-  stays one line (`__test__/effing-paragraph-whitespace.spec.ts`).
-  SkParagraph is given U+2063 INVISIBLE SEPARATOR in its place, which
-  HarfBuzz hides and the line breaker takes for a letter. So the CR still
-  takes `letterSpacing`, which Chrome doesn't add, and where a line breaks
-  after spaces before it, the next line starts at the CR, where Chrome ends
-  the first line after it; it shows nothing either way. Under
-  `white-space: normal` Chrome makes a lone CR a space, collapsed with the
-  spaces around it, which a caller after that does itself.
+- A lone CR, one not part of a CRLF, is laid out as Chrome lays it out
+  under `white-space: pre` and `pre-wrap`
+  (`__test__/effing-paragraph-whitespace.spec.ts`): it has no width and no
+  glyph, where SkParagraph would draw the font's missing glyph; it gives no
+  line-break opportunity beside it but after the spaces before it, so
+  `'aaaa\rbbbb'` stays one line; the text on either side of it is shaped
+  apart, so it doesn't kern, ligate or join across it (`'A\rV'` is wider
+  than `'AV'`, and Arabic letters on either side take the forms they take
+  next to a break); and it takes part in bidi as a paragraph separator,
+  which ends the runs of weak and neutral characters before it
+  (`'اد 12\r34 رو'` in LTR is "12 دا" and then "34 ور"). SkParagraph is
+  given U+2063 INVISIBLE SEPARATOR in its place, which HarfBuzz hides and
+  the line breaker takes for a letter, in a text style of its own (shaped
+  in the language `zxx`) so that its shaper ends a run at it, and with bidi
+  levels resolved from the text with the CR, the U+2063 taking those of the
+  character before it. So the CR still takes `letterSpacing`, which Chrome
+  doesn't add, and where a line breaks after spaces before it, the next
+  line starts at the CR, where Chrome ends the first line after it; it
+  shows nothing either way. Under `white-space: normal`, `pre-line` and
+  `nowrap`, Chrome makes a lone CR a space (`'a\rb'` is a space wider than
+  `'ab'`), collapsed with the spaces around it, which a caller after that
+  replaces and collapses itself.
 - A hard break that ends the text gives an empty last line, as SkParagraph
   lays it out: `'ab\n'` has two lines. That line starts and ends at the end
   of the text (`[3, 3)` here), after the break, whatever the break, as an
@@ -507,11 +520,15 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
-- A lone CR is laid out as nothing, as Chrome lays it out under
-  `white-space: pre` and `pre-wrap`: it used to be drawn as the font's
-  missing glyph (a box 15px wide at 20px in Liberation Sans) and be a
-  line-break opportunity. `'a\rb'` now measures and paints as `'ab'`, and
-  `'aaaa\rbbbb'` stays on one line. A CRLF is still a hard break.
+- A lone CR is laid out as Chrome lays it out under `white-space: pre` and
+  `pre-wrap`: with no width and no glyph, and no line-break opportunity
+  beside it. It used to be drawn as the font's missing glyph (a box 15px
+  wide at 20px in Liberation Sans) and be a line-break opportunity.
+  `'a\rb'` now measures as `'ab'` in a font that doesn't kern the two, and
+  `'aaaa\rbbbb'` stays on one line. As in Chrome, the text on either side
+  of it is shaped apart, without kerning, ligatures or Arabic joining
+  across it, and bidi resolves the characters around it as around a
+  paragraph separator. A CRLF is still a hard break.
 - With `keepTrailingWhitespace`, the last line `maxLines` shows with an
   `ellipsis` ends before a CRLF that ends it, as before an LF: it used to
   keep the CR as trailing whitespace, drawn as the font's missing glyph
@@ -522,7 +539,8 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   `-webkit-line-clamp` does under `white-space: pre`: `'ab\ncd'` with
   `maxLines: 1` is "ab…", no longer "ab", and the line is truncated with
   the ellipsis to fit the width (`'abcd\ncd'` at 50px is "abc…"). Only a
-  line too wide for the width used to get it.
+  line too wide for the width used to get it. The spaces that end the line
+  stay before the ellipsis only with `keepTrailingWhitespace`.
 - An RTL line clamped with an `ellipsis` is as wide as its text, its
   placeholders and the ellipsis together. It used to leave the ellipsis
   out when a placeholder ended the line on its right, so a right-aligned
