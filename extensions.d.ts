@@ -152,6 +152,14 @@ export interface ParagraphLayout {
   /** The primary font's hhea ascender and descender in px. */
   ascent: number
   descent: number
+  /**
+   * The primary font's hhea line gap in px at this size, clamped to ≥ 0 (a
+   * negative gap is 0, as in Chrome). Not part of `lineHeight`; Chrome's
+   * `line-height: normal` is `round(ascent) + round(descent) + round(lineGap)`.
+   * Like `ascent` and `descent`, it is the primary font's whatever the text,
+   * so an empty paragraph or one of placeholders only reports it too.
+   */
+  lineGap: number
   lines: ParagraphLine[]
   /** One per placeholder, in order; null for one cut off by `maxLines` or an ellipsis. */
   placeholders: Array<ParagraphPlaceholderBox | null>

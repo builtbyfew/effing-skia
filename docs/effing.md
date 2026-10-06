@@ -106,6 +106,17 @@ top:
   `lineHeight` of 0 collapses the line boxes, as CSS `line-height: 0` does:
   the paragraph is 0px tall and every line's baseline sits at
   `(ascent - descent) / 2`, the glyphs overflowing above and below.
+- The layout reports the primary font's hhea `ascent`, `descent` and
+  `lineGap` in px at the font size, for the caller's own line boxes.
+  `lineGap` is 0 for a negative gap, as Chrome takes it, and is left out of
+  `normal`; Chrome's `line-height: normal` (on macOS, where CoreText reads
+  hhea) is `round(ascent) + round(descent) + round(lineGap)`. They come from
+  the hhea table even when the font sets `USE_TYPO_METRICS`, where FreeType's
+  `SkFontMetrics` would give the OS/2 typo values (Iosevka Slab: a hhea gap
+  of 68 units, a typo gap of 0). They are the primary font's, the first of
+  `fontFamily` there is, whatever the text, so an empty paragraph or one of
+  placeholders only reports them too. A font without a hhea table falls back
+  to `SkFontMetrics` (`fLeading` for the gap).
 - `textAlign` is applied per line relative to the layout width. A line wider
   than the box is start-aligned and overflows the end edge, as in CSS, for
   every alignment. `justify` is Skia's, for wrapped text only: the lines of
@@ -558,6 +569,12 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   `textRendering` values keep upstream's spacing. A paragraph with many such
   code points and letter spacing lays out more slowly (1000 ZWSPs: 4.6ms
   instead of 0.9ms).
+- `ParagraphLayout.lineGap`: the primary font's hhea line gap in px at the
+  font size, 0 if negative, as Chrome takes it. With `ascent` and
+  `descent` it gives Chrome's `line-height: normal`,
+  `round(ascent) + round(descent) + round(lineGap)`, without reading font
+  tables in JavaScript, for system fonts too. `lineHeight`'s own `normal`
+  is still `ascent + descent`.
 
 ### 1.0.10-effing.4
 

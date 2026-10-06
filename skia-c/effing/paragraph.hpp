@@ -103,9 +103,10 @@ struct effing_paragraph_metrics {
   bool did_exceed_max_lines;
   int line_count;
   float line_height;
-  // The primary font's hhea ascender and descender, in px.
+  // The primary font's hhea ascender, descender and line gap (≥ 0), in px.
   float ascent;
   float descent;
+  float line_gap;
 };
 
 struct effing_paragraph_line {
