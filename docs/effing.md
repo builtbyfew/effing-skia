@@ -157,7 +157,8 @@ top:
     directions need not be the one Chrome keeps, the first on screen.
   - A line of nothing but spaces keeps none of them: it is the ellipsis
     alone, at the line's start, where Chrome keeps the spaces before it.
-    Wrapped text has such lines only with `keepTrailingWhitespace` (below).
+    Wrapped text has such lines only with `keepTrailingWhitespace`, or from
+    spaces that end the text after a hard break (below).
   - `text-overflow` clips the line, ellipsis included, to the box; the fork
     clips nothing, so a `noWrap` line's kept cluster and ellipsis show past
     the width, as a clamped line's do in Chrome.
