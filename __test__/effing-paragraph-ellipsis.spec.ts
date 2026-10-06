@@ -245,6 +245,71 @@ test('the lines before a line laid out anew stay justified', (t) => {
   ])
 })
 
+test('the lines before a clamped line are justified', (t) => {
+  // Chrome 154 under `text-align: justify` with `-webkit-line-clamp`,
+  // compared in screenshots, justifies every line before the last it shows
+  // to the width (inked from 1px to 84px at 85px), whether the lines run out
+  // inside the text laid out as one piece, in the piece before a word too
+  // wide for the line, or in a piece that ends beside an emoji placeholder.
+  // Lines as [startIndex, endIndex, width, left].
+  const style: ParagraphStyle = { ...IOSEVKA, textAlign: 'justify', ellipsis: '…' }
+  const emoji = { width: 20, height: 20, lineBreak: 'emoji' } as const
+  const cases: Array<[ParagraphContent, ParagraphStyle, Line[]]> = [
+    [
+      'aa bb cc dd ee ff gg hh',
+      { maxLines: 2 },
+      [
+        [0, 8, 85, 0],
+        [9, 15, 80, 0],
+      ],
+    ],
+    [
+      'aa bb cc dd ee ff gg hh ii jj',
+      { maxLines: 3 },
+      [
+        [0, 8, 85, 0],
+        [9, 17, 85, 0],
+        [18, 24, 80, 0],
+      ],
+    ],
+    [
+      'aa bb cc dd ee Overlongwordhere ff',
+      { maxLines: 3 },
+      [
+        [0, 8, 85, 0],
+        [9, 14, 85, 0],
+        [15, 21, 80, 0],
+      ],
+    ],
+    [
+      ['aa bb ', emoji, '! cc dd ee ff gg hh ii jj'],
+      { maxLines: 3 },
+      [
+        [0, 5, 85, 0],
+        [6, 11, 85, 0],
+        [12, 18, 80, 0],
+      ],
+    ],
+    [
+      'aa bb cc dd ee ff gg hh',
+      { maxLines: 2, direction: 'rtl' },
+      [
+        [0, 8, 85, 0],
+        [9, 15, 80, 5],
+      ],
+    ],
+  ]
+  for (const [parts, extra, expected] of cases) {
+    const paragraph = new Paragraph(parts, { ...style, ...extra })
+    const name = JSON.stringify({ parts, extra })
+    t.deepEqual(lines(paragraph.layout(85)), expected, name)
+    // Laid out again after other widths, too.
+    paragraph.layout(40)
+    paragraph.layout(200)
+    t.deepEqual(lines(paragraph.layout(85)), expected, name)
+  }
+})
+
 test('noWrap keeps the first cluster of each line it truncates, with the ellipsis after it', (t) => {
   // As Chrome's text-overflow: ellipsis, which then clips both to the box.
   const style: ParagraphStyle = { ...IOSEVKA, noWrap: true, ellipsis: '…' }
