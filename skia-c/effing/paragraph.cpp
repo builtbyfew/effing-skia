@@ -1155,13 +1155,18 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
               : p->utf8_offsets[piece.offset + lines[k].fStartIndex];
     // The spaces before the ellipsis stay where whitespace is kept, as in
     // Chrome; the hard break after them doesn't.
-    const size_t line_end =
+    size_t line_end =
         empty ? piece.end
         : p->keep_trailing_whitespace
             ? without_hard_break(
                   text.data(), len, line_start,
                   p->utf8_offsets[piece.offset + lines[k].fEndIndex])
             : p->utf8_offsets[piece.offset + lines[k].fEndExcludingWhitespaces];
+    // Skia ends a line before a CRLF between its CR and LF.
+    if (line_end > line_start && line_end < len && text[line_end] == '\n' &&
+        text[line_end - 1] == '\r') {
+      line_end--;
+    }
     if (k == 0) {
       p->pieces.pop_back();
     } else {

@@ -499,6 +499,11 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   missing glyph (a box 15px wide at 20px in Liberation Sans) and be a
   line-break opportunity. `'a\rb'` now measures and paints as `'ab'`, and
   `'aaaa\rbbbb'` stays on one line. A CRLF is still a hard break.
+- With `keepTrailingWhitespace`, the last line `maxLines` shows with an
+  `ellipsis` ends before a CRLF that ends it, as before an LF: it used to
+  keep the CR as trailing whitespace, drawn as the font's missing glyph
+  before the ellipsis where the font maps none to it, and in its
+  `endIndex` (`'ab\r\ncd'` was `[0, 3)`, now `[0, 2)`, "ab…").
 
 ### 1.0.10-effing.4
 

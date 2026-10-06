@@ -534,3 +534,32 @@ test('a lone CR is no line-break opportunity', (t) => {
     )
   }
 })
+
+test('a clamped line with kept whitespace ends before a CRLF', (t) => {
+  // Chrome 154 (headless, macOS, the same font file), `white-space:
+  // pre-wrap` with `-webkit-line-clamp`, compared in screenshots: "ab\r\ncd"
+  // clamped to one line shows "ab…", inked over the same columns as
+  // "ab\ncd", and "ab \r\ncd" "ab …"; the CR, which Source Han Serif maps no
+  // glyph to, draws nothing.
+  const style: ParagraphStyle = {
+    fontFamily: 'WB Source Han',
+    fontSize: 20,
+    lineHeight: 30,
+    keepTrailingWhitespace: true,
+    maxLines: 1,
+    ellipsis: '…',
+  }
+  for (const [text, end] of [
+    ['ab\r\ncd', 2],
+    ['ab \r\ncd', 3],
+    ['ab\r\n\r\ncd', 2],
+  ] as const) {
+    const paragraph = new Paragraph(text, style)
+    const [line] = paragraph.layout(100).lines
+    const lf = new Paragraph(text.replaceAll('\r\n', '\n'), style)
+    const [expected] = lf.layout(100).lines
+    t.deepEqual([line.startIndex, line.endIndex], [0, end], JSON.stringify(text))
+    near(t, line.width, expected.width)
+    t.deepEqual(pixels(paragraph), pixels(lf), JSON.stringify(text))
+  }
+})
