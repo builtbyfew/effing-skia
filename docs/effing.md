@@ -598,7 +598,7 @@ the CI matrix.
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
-### Unreleased
+### 1.0.10-effing.5
 
 - No letter spacing after default-ignorable code points (ZWSP, ZWJ, ZWNJ,
   WJ, U+FEFF, the bidi controls, variation selectors, a soft hyphen, ...),

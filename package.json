@@ -1,6 +1,6 @@
 {
   "name": "@effing/skia",
-  "version": "1.0.10-effing.4",
+  "version": "1.0.10-effing.5",
   "description": "Effing's fork of @napi-rs/canvas: Canvas for Node.js with skia backend, plus unsnapped text, a Paragraph primitive and compositing groups",
   "main": "index.js",
   "exports": {

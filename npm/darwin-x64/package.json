@@ -1,6 +1,6 @@
 {
   "name": "@effing/skia-darwin-x64",
-  "version": "1.0.10-effing.4",
+  "version": "1.0.10-effing.5",
   "cpu": [
     "x64"
   ],

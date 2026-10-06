@@ -1,3 +1,15 @@
+## [1.0.10-effing.5](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.4...v1.0.10-effing.5) (2026-10-06)
+
+
+### Bug Fixes
+
+* **paragraph:** clamped lines and CR as in Chrome ([#23](https://github.com/builtbyfew/effing-skia/issues/23)) ([debe2e7](https://github.com/builtbyfew/effing-skia/commit/debe2e78b19a94ea7bc7b6bf30e1b57a6f8d388d)), part of [#20](https://github.com/builtbyfew/effing-skia/issues/20)
+* **paragraph:** no letter spacing after default-ignorable code points ([#22](https://github.com/builtbyfew/effing-skia/issues/22)) ([62aff38](https://github.com/builtbyfew/effing-skia/commit/62aff38d67f339994cb49d3ea2fdc08f183c2e22)), closes [#21](https://github.com/builtbyfew/effing-skia/issues/21)
+
+
+### Features
+
+* **paragraph:** report the font's line gap ([#25](https://github.com/builtbyfew/effing-skia/issues/25)) ([3ee27fa](https://github.com/builtbyfew/effing-skia/commit/3ee27fa33f34190b623000d6932886409bcb9620))
 ## [1.0.10-effing.4](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.3...v1.0.10-effing.4) (2026-10-06)
 
 
