@@ -13,6 +13,7 @@
 #include "include/core/SkPoint.h"
 #include "include/core/SkTypeface.h"
 #include "modules/skparagraph/include/Paragraph.h"
+#include "modules/skparagraph/include/ParagraphBuilder.h"
 #include "modules/skparagraph/include/ParagraphStyle.h"
 #include "modules/skparagraph/include/TextStyle.h"
 
@@ -46,6 +47,32 @@ constexpr int kTextRenderingGeometricPrecision = 3;
 // the paragraph apart from its hinted twin in SkParagraph's cache.
 void make_unhinted(skia::textlayout::TextStyle* text_style,
                    skia::textlayout::StrutStyle* strut_style);
+
+// Which text add_text adds: a Paragraph's, laid out as CSS text, or
+// fillText's, which Chrome's canvas lays out with its tabs, line feeds, form
+// feeds and carriage returns turned into spaces.
+enum class TextKind { kCss, kCanvas };
+
+// Adds `text` to `builder` in the builder's current style, giving the code
+// points Chrome adds no letter spacing after a style of their own without
+// it. Blink skips the letter spacing of a character it treats as a
+// zero-width space: a default-ignorable code point (ZWSP, ZWJ, ZWNJ, WJ, the
+// bidi controls, variation selectors, a soft hyphen, ...), U+FFFC and, in CSS
+// text, a carriage return. SkParagraph spaces every glyph, so a ZWSP between
+// two letters would add a third gap to their two. A style that differs only
+// in letter spacing doesn't split SkParagraph's shaping runs, so ZWJ and ZWNJ
+// still join or break ligatures, emoji sequences and conjuncts as before.
+// Text without such code points, or a style without letter spacing, is added
+// as it is.
+void add_text(skia::textlayout::ParagraphBuilder* builder,
+              const char* text,
+              size_t len,
+              TextKind kind);
+
+// The half letter spacing SkParagraph moves a laid-out paragraph's first
+// line right by: that of its first cluster that is not a placeholder or in a
+// cursive script, which add_text can leave without letter spacing.
+SkScalar leading_half_letter_spacing(skia::textlayout::Paragraph* paragraph);
 
 // What the painter drew, for a recording's byte budget.
 struct Painted {

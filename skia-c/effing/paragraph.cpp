@@ -50,6 +50,7 @@ struct effing_paragraph {
   float line_height = 0;
   float ascent = 0;
   float descent = 0;
+  float line_gap = 0;
   // The primary font's x-height, for middle-aligned placeholders.
   float x_height = 0;
   // Where `text` has the U+2063 that stands for each lone CR (hide_lone_crs),
@@ -194,16 +195,19 @@ int16_t read_be_i16(const uint8_t* p) {
   return static_cast<int16_t>((p[0] << 8) | p[1]);
 }
 
-// The font's hhea ascender and descender in px, which effing (like satori,
-// through opentype.js) uses for line boxes. Skia's own metrics prefer the
-// OS/2 typo values when USE_TYPO_METRICS is set, so read the table directly.
+// The font's hhea ascender, descender and line gap in px, which effing (like
+// satori, through opentype.js) uses for line boxes, as Chrome on macOS
+// (CoreText) does. Skia's own metrics prefer the OS/2 typo values when
+// USE_TYPO_METRICS is set, so read the table directly. A negative line gap is
+// 0, as in Chrome.
 bool hhea_metrics(const sk_sp<SkTypeface>& typeface,
                   float font_size,
                   float* ascent,
-                  float* descent) {
-  uint8_t buf[4];
+                  float* descent,
+                  float* line_gap) {
+  uint8_t buf[6];
   if (!typeface || typeface->getTableData(SkSetFourByteTag('h', 'h', 'e', 'a'),
-                                          4, 4, buf) != 4) {
+                                          4, 6, buf) != 6) {
     return false;
   }
   const int upem = typeface->getUnitsPerEm();
@@ -212,6 +216,8 @@ bool hhea_metrics(const sk_sp<SkTypeface>& typeface,
   }
   *ascent = read_be_i16(buf) / static_cast<float>(upem) * font_size;
   *descent = -read_be_i16(buf + 2) / static_cast<float>(upem) * font_size;
+  *line_gap = std::max(
+      read_be_i16(buf + 4) / static_cast<float>(upem) * font_size, 0.f);
   return true;
 }
 
@@ -370,7 +376,8 @@ size_t without_hard_break(const char* text,
 // `*next` on whose offset is at most `end`, each where its offset puts it.
 // Advances `*next` past them, and reports each one's index in `placeholders`
 // and its UTF-16 index from `start`, where Skia's U+FFFC for it lands, to
-// `placed`.
+// `placed`. The text goes in through effing::add_text, which leaves out the
+// letter spacing Chrome doesn't add.
 // The U+2063 at each of `lone_crs` (offsets in `text`, sorted) gets
 // `cr_style`, which ends the shaping run before it and starts another after
 // it, as a CR ends one in Chrome: HarfBuzz sees through U+2063, and would
@@ -386,19 +393,20 @@ void add_content(ParagraphBuilder* builder,
                  Placed placed,
                  const std::vector<size_t>& lone_crs = {},
                  const TextStyle* cr_style = nullptr) {
-  const auto add_text = [&](size_t from, size_t to) {
+  const auto add_run = [&](size_t from, size_t to) {
     auto cr = std::lower_bound(lone_crs.begin(), lone_crs.end(), from);
     for (; cr != lone_crs.end() && *cr < to && cr_style != nullptr; ++cr) {
       if (*cr > from) {
-        builder->addText(text + from, *cr - from);
+        effing::add_text(builder, text + from, *cr - from,
+                         effing::TextKind::kCss);
       }
       builder->pushStyle(*cr_style);
-      builder->addText(text + *cr, 3);
+      effing::add_text(builder, text + *cr, 3, effing::TextKind::kCss);
       builder->pop();
       from = *cr + 3;
     }
     if (to > from) {
-      builder->addText(text + from, to - from);
+      effing::add_text(builder, text + from, to - from, effing::TextKind::kCss);
     }
   };
   size_t at = start;
@@ -408,7 +416,7 @@ void add_content(ParagraphBuilder* builder,
     const auto& spec = placeholders[*next];
     const size_t offset = std::max(spec.offset, at);
     if (offset > at) {
-      add_text(at, offset);
+      add_run(at, offset);
       index += utf16_length(text + at, offset - at);
       at = offset;
     }
@@ -423,7 +431,7 @@ void add_content(ParagraphBuilder* builder,
     placed(*next, index++);
   }
   if (end > at) {
-    add_text(at, end);
+    add_run(at, end);
   }
 }
 
@@ -1843,12 +1851,14 @@ effing_paragraph* effing_paragraph_create(
       font_collection->findTypefaces(families, font_style, std::nullopt);
   const sk_sp<SkTypeface> primary =
       typefaces.empty() ? nullptr : typefaces.front();
-  if (!hhea_metrics(primary, s->font_size, &out->ascent, &out->descent)) {
+  if (!hhea_metrics(primary, s->font_size, &out->ascent, &out->descent,
+                    &out->line_gap)) {
     SkFont font(primary, s->font_size);
     SkFontMetrics m;
     font.getMetrics(&m);
     out->ascent = -m.fAscent;
     out->descent = m.fDescent;
+    out->line_gap = std::max(m.fLeading, 0.f);
   }
   out->line_height =
       s->line_height >= 0 ? s->line_height : out->ascent + out->descent;
@@ -2295,6 +2305,7 @@ void effing_paragraph_get_metrics(effing_paragraph* p,
   m->line_height = p->line_height;
   m->ascent = p->ascent;
   m->descent = p->descent;
+  m->line_gap = p->line_gap;
 }
 
 void effing_paragraph_get_lines(effing_paragraph* p,
