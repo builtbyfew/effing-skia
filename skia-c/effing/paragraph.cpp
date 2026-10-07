@@ -2311,6 +2311,9 @@ effing_paragraph* effing_paragraph_create(
       SkFontStyle(s->weight, SkFontStyle::kNormal_Width,
                   static_cast<SkFontStyle::Slant>(s->slant));
   const auto direction = static_cast<TextDirection>(s->direction);
+  // The text is laid out at the size Chrome lays it out at, floored to
+  // 1/100px, and so are the metrics the line boxes come from (#46).
+  const float font_size = effing::effective_font_size(s->font_size);
 
   auto* out = new effing_paragraph();
   out->align = resolve_align(static_cast<TextAlign>(s->align), direction);
@@ -2325,9 +2328,9 @@ effing_paragraph* effing_paragraph_create(
       font_collection->findTypefaces(families, font_style, std::nullopt);
   const sk_sp<SkTypeface> primary =
       typefaces.empty() ? nullptr : typefaces.front();
-  if (!hhea_metrics(primary, s->font_size, &out->ascent, &out->descent,
+  if (!hhea_metrics(primary, font_size, &out->ascent, &out->descent,
                     &out->line_gap)) {
-    SkFont font(primary, s->font_size);
+    SkFont font(primary, font_size);
     SkFontMetrics m;
     font.getMetrics(&m);
     out->ascent = -m.fAscent;
@@ -2342,11 +2345,11 @@ effing_paragraph* effing_paragraph_create(
                          ? to_layout_units(s->line_height)
                          : out->content_ascent + out->content_descent +
                                round_metric(out->line_gap);
-  out->x_height = placeholder_count > 0 ? x_height(primary, s->font_size) : 0;
+  out->x_height = placeholder_count > 0 ? x_height(primary, font_size) : 0;
 
   TextStyle text_style;
   text_style.setFontFamilies(families);
-  text_style.setFontSize(s->font_size);
+  text_style.setFontSize(font_size);
   text_style.setFontStyle(font_style);
   text_style.setLetterSpacing(s->letter_spacing);
   // Unhinted outlines, so layout and placement don't depend on the device.
@@ -2360,8 +2363,8 @@ effing_paragraph* effing_paragraph_create(
   strut.setForceStrutHeight(true);
   strut.setFontFamilies(families);
   strut.setFontStyle(font_style);
-  strut.setFontSize(s->font_size);
-  strut.setHeight(out->line_height / s->font_size);
+  strut.setFontSize(font_size);
+  strut.setHeight(out->line_height / font_size);
   strut.setHeightOverride(true);
   strut.setHalfLeading(true);
   strut.setLeading(0);

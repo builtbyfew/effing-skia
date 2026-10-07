@@ -1,6 +1,7 @@
 #include "text.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iterator>
 #include <vector>
@@ -151,6 +152,14 @@ void Painted::export_to(effing_painted* out) const {
   std::copy_n(typefaces.begin(),
               std::min(typefaces.size(), std::size(out->typefaces)),
               out->typefaces);
+}
+
+float effective_font_size(float size) {
+  // FontCacheKey::PrecisionMultiplier() is the unsigned 100, which float
+  // arithmetic converts to 100.f.
+  constexpr float kPrecision = 100.f;
+  const float effective = std::floor(size * kPrecision) / kPrecision;
+  return std::isfinite(effective) && effective > 0 ? effective : size;
 }
 
 void make_unhinted(skia::textlayout::TextStyle* text_style,

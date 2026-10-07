@@ -41,6 +41,14 @@ namespace effing {
 // mirrors `TextRendering` in src/sk.rs.
 constexpr int kTextRenderingGeometricPrecision = 3;
 
+// The font size Chrome lays text out at, for a CSS or canvas font size of
+// `size` px: Blink's FontDescription::EffectiveFontSize, the size floored to
+// 1/100px (FontCacheKey's precision multiplier) in float arithmetic, as Blink
+// computes it, so 17.3 (17.2999992 as a float) is 17.29. Metrics and advances
+// then are those of the font at that size. A size that floors to 0 or that
+// overflows stays as it is.
+float effective_font_size(float size);
+
 // Makes a paragraph of `text_style` shape and draw unhinted, so glyph outlines
 // and advances don't depend on the device scale. `strut_style` is the
 // paragraph's strut, which must be disabled: it carries the marker that keeps
