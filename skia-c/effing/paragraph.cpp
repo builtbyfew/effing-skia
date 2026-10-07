@@ -1514,13 +1514,18 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       piece.max_lines = soft_lines;
       piece.soft_lines = soft_lines;
     }
-    // The last layout's piece of the same text, already shaped.
-    for (auto& old : previous) {
-      if (old.paragraph && old.start == piece.start && old.end == piece.end &&
-          old.kind == kind && old.max_lines == piece.max_lines &&
-          old.soft_lines == piece.soft_lines && old.suffixed == false) {
-        piece.paragraph = std::move(old.paragraph);
-        piece.placed = std::move(old.placed);
+    // The last layout's piece of the same text, already shaped. Pieces are
+    // in text order, so those that start where this one does are found by
+    // bisection rather than a walk over all of them.
+    for (auto old = std::lower_bound(
+             previous.begin(), previous.end(), piece.start,
+             [](const Piece& old, size_t start) { return old.start < start; });
+         old != previous.end() && old->start == piece.start; ++old) {
+      if (old->paragraph && old->end == piece.end && old->kind == kind &&
+          old->max_lines == piece.max_lines &&
+          old->soft_lines == piece.soft_lines && old->suffixed == false) {
+        piece.paragraph = std::move(old->paragraph);
+        piece.placed = std::move(old->placed);
         break;
       }
     }
