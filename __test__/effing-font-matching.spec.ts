@@ -123,7 +123,10 @@ function makeFace(family: string, face: Face): Buffer {
   if (face.style === 'oblique') selection |= 512
   selection |= face.weight >= 700 ? 32 : face.style === 'normal' ? 64 : 0
   os2.writeUInt16BE(selection, 62)
-  tables.get('head')!.writeUInt16BE((face.weight >= 700 ? 1 : 0) | (face.style === 'normal' ? 0 : 2), 44)
+  const head = tables.get('head')!
+  // checkSumAdjustment, which fontOf works out anew.
+  head.writeUInt32BE(0, 8)
+  head.writeUInt16BE((face.weight >= 700 ? 1 : 0) | (face.style === 'normal' ? 0 : 2), 44)
   const hhea = tables.get('hhea')!
   const advance = advanceOf(face)
   hhea.writeUInt16BE(advance, 10)
