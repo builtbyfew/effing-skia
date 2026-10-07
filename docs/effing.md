@@ -24,7 +24,7 @@ upstream file has at most a few marked hook lines.
 | ---------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer}.{hpp,cpp}`     | `skia-c/skia_c.cpp` (include + four `text_rendering` checks)                                                                                                                          |
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer}.rs`   | `src/sk.rs` (`mod effing`)                                                                                                                                                            |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()` sigma)           |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)   |
 | Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                      | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`) |
 | Build                  |                                                                              | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                           |
 | JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                      | `js-binding.js` (exports; hand-maintained, like `index.d.ts`)                                                                                                                         |
@@ -588,6 +588,15 @@ standard deviation the canvas spec does define as half its value and which is
 left as it is. `drop-shadow(0 0 4px)` draws its shadow as `blur(4px)` does,
 the pixels Chrome's canvas draws for it.
 
+A filter list is read as Chrome's canvas reads it. A transparent
+`drop-shadow()` is skipped, and the rest of the list applies; upstream
+dropped the whole list for it and for `drop-shadow(0 0 0)`, which is kept:
+its shadow, unblurred and unshifted, shows where the content is translucent.
+A negative amount or blur length (`opacity(-1)`, `blur(-1px)`,
+`drop-shadow(0 0 -2px red)`) or a non-finite one makes the value invalid, so
+`ctx.filter` keeps its previous value and a group's filter is none; upstream
+clamped amounts and dropped the whole list for a negative blur.
+
 ## Releasing
 
 Versions are upstream's version with an `-effing.N` suffix, so the lineage
@@ -648,6 +657,13 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   before, and `drop-shadow(6px 8px 12px black)` now draws what Chrome draws
   for it, not what Chrome draws for `drop-shadow(6px 8px 6px black)`. To keep
   the old look, halve the blur length. `shadowBlur` is unchanged.
+- A filter list with a transparent `drop-shadow()` or `drop-shadow(0 0 0)`
+  in it applies the rest of the list, as in Chrome, where it used to apply
+  none of it: `drop-shadow(0 0 transparent) grayscale(1)` now draws in gray.
+  A negative or non-finite amount or blur length (`opacity(-1)`,
+  `blur(-1px)`) is invalid, as in Chrome: the assignment to `ctx.filter` is
+  ignored and a group's filter is none, where amounts used to be clamped
+  (`opacity(-1)` drew nothing) and a negative blur dropped the whole list.
 - A draw under `ctx.filter`, and the shadow of one or of a drawn image, goes
   through a layer the size of what it draws rather than of the canvas. Five
   lines of text under `blur(12px)` on a 1080x1080 canvas went from about

@@ -8,7 +8,7 @@ use nom::{
   bytes::complete::{tag, take_till, take_until},
   character::complete::char,
   combinator::map_res,
-  error::Error,
+  error::{Error, ErrorKind},
   number::complete::float,
 };
 use rgb::RGBA;
@@ -100,6 +100,17 @@ fn pixel_in_tuple(input: &str) -> IResult<&str, f32> {
   map_res(take_until(")"), pixel).parse(input)
 }
 
+// effing: a negative or non-finite amount or length is invalid, as in Chrome,
+// which then keeps the previous `ctx.filter`. Read as a value, it used to clamp
+// or, for a length, fail to build and take the whole filter list with it.
+fn reject_invalid(input: &str, value: f32) -> Result<(), Err<Error<&str>>> {
+  if value.is_finite() && value >= 0.0 {
+    Ok(())
+  } else {
+    Err(Err::Error(Error::new(input, ErrorKind::Verify)))
+  }
+}
+
 fn number_percentage(input: &str) -> IResult<&str, f32> {
   let (input, num) = float(input.trim())?;
   if let Ok((input, _)) = tag::<&str, &str, Error<&str>>("%")(input.trim()) {
@@ -112,6 +123,9 @@ fn number_percentage(input: &str) -> IResult<&str, f32> {
 fn hue_rotate_parser(input: &str) -> IResult<&str, CssFilter> {
   let (rotated_output, _) = tag("hue-rotate(")(input)?;
   let (rotated_output, angle) = float(rotated_output.trim())?;
+  if !angle.is_finite() {
+    return Err(Err::Error(Error::new(rotated_output, ErrorKind::Verify))); // effing
+  }
   let output = rotated_output.trim();
   let (output, filter) = if let Ok((output, _)) = tag::<&str, &str, Error<&str>>("deg")(output) {
     (output, CssFilter::HueRotate(angle))
@@ -133,6 +147,7 @@ macro_rules! percentage_parser {
     fn $filter_name(input: &str) -> IResult<&str, CssFilter> {
       let (input, _) = tag($filter_rule)(input)?;
       let (input, value) = number_percentage(input)?;
+      reject_invalid(input, value)?; // effing
       let (input, _) = char(')')(input.trim())?;
       Ok((input.trim(), CssFilter::$filter_value(value)))
     }
@@ -189,6 +204,7 @@ fn blur_parser(input: &str) -> IResult<&str, CssFilter> {
   let (blurred_input, _) = tag("blur(")(input)?;
 
   let (blurred_input, pixel) = pixel_in_tuple(blurred_input)?;
+  reject_invalid(blurred_input, pixel)?; // effing
   let (finished_input, _) = char(')')(blurred_input)?;
   Ok((finished_input.trim(), CssFilter::Blur(pixel)))
 }
@@ -206,6 +222,7 @@ fn drop_shadow_parser(input: &str) -> IResult<&str, CssFilter> {
     .parse(offset_y_output)
     .unwrap_or_else(|_: Err<Error<&str>>| (offset_y_output, 0.0f32));
   let blur_radius_output = blur_radius_output.trim();
+  reject_invalid(blur_radius_output, blur_radius)?; // effing
   let is_rgb_fn = blur_radius_output.starts_with("rgb(") || blur_radius_output.starts_with("rgba(");
   let (shadow_color_output, shadow_color_str) =
     take_until(if is_rgb_fn { "))" } else { ")" })(blur_radius_output)?;
@@ -301,7 +318,10 @@ pub fn css_filter(input: &str) -> IResult<&str, Vec<CssFilter>> {
 pub(crate) fn css_filters_to_image_filter(filters: Vec<CssFilter>) -> Option<ImageFilter> {
   let mut chain: Option<ImageFilter> = None;
   for f in filters {
-    // A filter that fails to build takes the whole list with it.
+    // effing: a step that builds no filter is skipped, as an identity step,
+    // rather than taking the whole list with it. The parsers keep out the
+    // values Skia rejects (a negative sigma, a non-finite matrix, where
+    // `SkImageFilters::ColorFilter` hands back its input, null at the start).
     let next = match f {
       CssFilter::Blur(blur) => ImageFilter::make_blur(blur, blur, chain.as_ref()),
       CssFilter::Brightness(brightness) => {
@@ -334,11 +354,11 @@ pub(crate) fn css_filters_to_image_filter(filters: Vec<CssFilter>) -> Option<Ima
         // effing: the blur length is the standard deviation (Filter Effects 1,
         // `drop-shadow()`), as in `blur()` and Chrome. `shadowBlur` halves it.
         let sigma = blur_radius;
+        // effing: a transparent shadow draws nothing, so it is skipped; it used
+        // to drop the whole list, as `drop-shadow(0 0 0)` did. An unblurred,
+        // unshifted shadow still shows where the content is translucent.
         if shadow_color.a == 0 {
-          return None;
-        }
-        if blur_radius == 0f32 && offset_x == 0f32 && offset_y == 0f32 {
-          return None;
+          continue;
         }
         ImageFilter::make_drop_shadow(
           offset_x,
@@ -449,7 +469,9 @@ pub(crate) fn css_filters_to_image_filter(filters: Vec<CssFilter>) -> Option<Ima
         )
       }
     };
-    chain = Some(next?);
+    if next.is_some() {
+      chain = next; // effing: `Some(next?)`, see above
+    }
   }
   chain
 }
@@ -646,4 +668,50 @@ fn parse_number_or_percentage() {
   assert_eq!(number_percentage("20%"), Ok(("", 0.2f32)));
   assert_eq!(number_percentage("-20%"), Ok(("", -0.2f32)));
   assert_eq!(number_percentage("-0.1"), Ok(("", -0.1f32)));
+}
+
+#[test]
+fn negative_and_non_finite_values_are_left_unread() {
+  // effing: as in Chrome, which then keeps the previous filter.
+  for input in [
+    "blur(-1px)",
+    "drop-shadow(0 0 -2px red)",
+    "brightness(-1)",
+    "contrast(-50%)",
+    "grayscale(-1)",
+    "invert(-1)",
+    "opacity(-1)",
+    "saturate(-1)",
+    "sepia(-1)",
+    "opacity(inf)",
+    "opacity(NaN)",
+    "hue-rotate(infdeg)",
+  ] {
+    let (rest, filters) = css_filter(input).unwrap();
+    assert!(filters.is_empty(), "`{input}` should not parse to a filter");
+    assert_eq!(rest, input, "`{input}` should be left unread");
+  }
+  // A negative offset or angle is fine.
+  for input in ["drop-shadow(-2px -3px 1px red)", "hue-rotate(-90deg)"] {
+    assert_eq!(css_filter(input).unwrap().0, "", "`{input}` should be read");
+  }
+}
+
+#[test]
+fn transparent_drop_shadow_is_skipped_not_the_whole_list() {
+  // effing: it used to return `None` for the whole list.
+  let transparent = CssFilter::DropShadow(0.0, 0.0, 0.0, RGBA::new(255, 0, 0, 0));
+  assert!(
+    css_filters_to_image_filter(vec![CssFilter::DropShadow(
+      0.0,
+      0.0,
+      0.0,
+      RGBA::new(255, 0, 0, 0)
+    )])
+    .is_none()
+  );
+  let filter = css_filters_to_image_filter(vec![transparent, CssFilter::Blur(2.0)]).unwrap();
+  assert!(filter.needs_device_space_layer());
+  let unshifted = CssFilter::DropShadow(0.0, 0.0, 0.0, RGBA::new(255, 0, 0, 255));
+  assert!(css_filters_to_image_filter(vec![unshifted, CssFilter::Grayscale(1.0)]).is_some());
 }
