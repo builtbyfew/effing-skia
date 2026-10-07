@@ -102,7 +102,7 @@ struct effing_paragraph {
   // The words of wrapping text, what lies between two line-break
   // opportunities, by offset in the Skia text of `paragraphs.front()` (UTF-8,
   // U+FFFC for each placeholder), with their width without trailing
-  // whitespace. Measured on the first layout.
+  // whitespace at the start of a line. Measured on the first layout.
   struct Word {
     size_t start;
     size_t end;
@@ -122,6 +122,9 @@ struct effing_paragraph {
   // Where that text has no opportunity beside a placeholder, sorted: where
   // SkParagraph may end a line it shouldn't (misplaced_break).
   std::vector<size_t> glued;
+  // Where a line of that text may start at a glyph kerned against the space
+  // before it, sorted (kerned_line_start).
+  std::vector<size_t> kerned;
   // The runs of spaces and tabs that start a line of that Skia text, at its
   // start or after a hard break, [first, second), where whitespace isn't
   // kept: white-space: normal collapses them away. Not those that end it.
@@ -845,6 +848,31 @@ Misplaced misplaced_break(const effing_paragraph* p,
   return {};
 }
 
+// SkParagraph lays a line out as the paragraph's text was shaped, which
+// Chrome shapes anew from where a line starts, where the break is not safe
+// for HarfBuzz: a line that starts at a letter kerned against the space it
+// wraps at (measure_words) keeps a half of that kerning that Chrome drops.
+// Finds the first line of `paragraph`, built from the whole paragraph's Skia
+// text at `offset` on, but its first, that starts so: where the text should
+// break for that line to start a piece of its own, built from its own text,
+// and how many lines the text before it takes, as misplaced_break has it
+// (`at` is 0 if no line starts so).
+Misplaced kerned_line_start(const effing_paragraph* p,
+                            Paragraph* paragraph,
+                            size_t offset) {
+  auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  int index = 0;
+  for (const TextLine& line : impl->lines()) {
+    const size_t start = line.text().start;
+    if (index > 0 && std::binary_search(p->kerned.begin(), p->kerned.end(),
+                                        offset + start)) {
+      return {start, index};
+    }
+    index++;
+  }
+  return {};
+}
+
 // Whether a paragraph or piece of `kind` is justified by SkParagraph.
 bool justified(const effing_paragraph* p, PieceKind kind) {
   return p->paragraph_style.getTextAlign() == TextAlign::kJustify &&
@@ -1073,6 +1101,52 @@ void measure_words(effing_paragraph* p) {
       }
     }
   }
+  // HarfBuzz splits a pair kerning from the font's legacy `kern` table
+  // between the two glyphs: half on the first's advance, half on the
+  // second's advance and offset. Where a space and the letter after it are
+  // such a pair, a line that starts at the letter keeps a half that Chrome
+  // drops, as it shapes the line's text anew from there. In visual order,
+  // that offset is on the letter in LTR and on the space in RTL. Each such
+  // letter with what a word that starts there is wider for it at a line's
+  // start, its half of the kerning, sorted.
+  std::vector<std::pair<size_t, float>> kerned;
+  const auto space = [&](size_t i) {
+    return i < text.size() && (text[i] == ' ' || text[i] == '\t');
+  };
+  for (const Run& run : whole->runs()) {
+    if (run.isPlaceholder()) {
+      continue;
+    }
+    const SkSpan<const SkPoint> offsets = run.offsets();
+    for (size_t g = 0; g < run.size() && g < offsets.size(); g++) {
+      if (offsets[g].fX == 0) {
+        continue;
+      }
+      const size_t at = run.globalClusterIndex(g);
+      const size_t start = run.leftToRight() ? at : at + 1;
+      if (start > 0 && start < text.size() && space(start - 1) &&
+          !space(start)) {
+        kerned.emplace_back(start, -offsets[g].fX);
+      }
+    }
+  }
+  std::sort(kerned.begin(), kerned.end());
+  p->kerned.clear();
+  for (const auto& [at, half] : kerned) {
+    if (p->kerned.empty() || p->kerned.back() != at) {
+      p->kerned.push_back(at);
+    }
+  }
+  // A word is measured as it is shaped in the paragraph, as Chrome's
+  // min-content is, but a word that starts a line is shaped anew, and is too
+  // wide for one with its half of the kerning.
+  const auto unkerned = [&](size_t start, float width) {
+    const auto it = std::lower_bound(kerned.begin(), kerned.end(), start,
+                                     [](const std::pair<size_t, float>& k,
+                                        size_t at) { return k.first < at; });
+    return it != kerned.end() && it->first == start ? width + it->second
+                                                    : width;
+  };
   const auto breaks = [&](size_t i) {
     if (!p->opportunities.empty()) {
       return static_cast<bool>(p->opportunities[i]);
@@ -1102,7 +1176,8 @@ void measure_words(effing_paragraph* p) {
     }
     p->graphemes.back().width += cluster.width();
     if (range.start > start && breaks(range.start)) {
-      p->words.push_back({start, range.start, content_end, trimmed});
+      p->words.push_back(
+          {start, range.start, content_end, unkerned(start, trimmed)});
       p->widest_word = std::max(p->widest_word, trimmed);
       start = range.start;
       content_end = start;
@@ -1116,7 +1191,8 @@ void measure_words(effing_paragraph* p) {
     }
   }
   if (text.size() > start) {
-    p->words.push_back({start, text.size(), content_end, trimmed});
+    p->words.push_back(
+        {start, text.size(), content_end, unkerned(start, trimmed)});
     p->widest_word = std::max(p->widest_word, trimmed);
   }
 }
@@ -1473,13 +1549,18 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       piece.max_lines = soft_lines;
       piece.soft_lines = soft_lines;
     }
-    // The last layout's piece of the same text, already shaped.
-    for (auto& old : previous) {
-      if (old.paragraph && old.start == piece.start && old.end == piece.end &&
-          old.kind == kind && old.max_lines == piece.max_lines &&
-          old.soft_lines == piece.soft_lines && old.suffixed == false) {
-        piece.paragraph = std::move(old.paragraph);
-        piece.placed = std::move(old.placed);
+    // The last layout's piece of the same text, already shaped. Pieces are
+    // in text order, so those that start where this one does are found by
+    // bisection rather than a walk over all of them.
+    for (auto old = std::lower_bound(
+             previous.begin(), previous.end(), piece.start,
+             [](const Piece& old, size_t start) { return old.start < start; });
+         old != previous.end() && old->start == piece.start; ++old) {
+      if (old->paragraph && old->end == piece.end && old->kind == kind &&
+          old->max_lines == piece.max_lines &&
+          old->soft_lines == piece.soft_lines && old->suffixed == false) {
+        piece.paragraph = std::move(old->paragraph);
+        piece.placed = std::move(old->placed);
         break;
       }
     }
@@ -1632,11 +1713,13 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
   // Adds the pieces of [start, end). Spaces that start a line, which CSS
   // collapses away, are left out of every piece, and a piece ends at the
   // hard break before them. With placeholders, where SkParagraph may end a
-  // line where it shouldn't (misplaced_break), the text is laid out a window
-  // at a time first: a piece ends where such a line should, or else before
-  // the window's last line, which the text after the window may change, and
-  // the next starts there. The windows keep the work in proportion to the
-  // text.
+  // line where it shouldn't (misplaced_break), and with letters kerned
+  // against the space before them, where a line may start with that kerning
+  // (kerned_line_start), the text is laid out a window at a time first: a
+  // piece ends where such a line should, or before such a line, or else
+  // before the window's last line, which the text after the window may
+  // change, and the next starts there. The windows keep the work in
+  // proportion to the text.
   const auto add = [&](size_t start, size_t end, PieceKind kind) {
     auto run = std::lower_bound(p->collapsed.begin(), p->collapsed.end(), start,
                                 [](const std::pair<size_t, size_t>& run,
@@ -1654,19 +1737,32 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       int soft_lines = 0;
       Probe probe;
       // Only text with a placeholder beside no opportunity can have a line
-      // end where it shouldn't.
+      // end where it shouldn't, and only text with a kerned letter after a
+      // space can have a line start with that kerning.
       const auto glued =
           std::lower_bound(p->glued.begin(), p->glued.end(), start + 1);
-      if (glued != p->glued.end() && *glued < stop &&
-          kind != PieceKind::kUnbounded) {
+      const bool misplaceable = glued != p->glued.end() && *glued < stop;
+      const auto kerned =
+          std::lower_bound(p->kerned.begin(), p->kerned.end(), start + 1);
+      const bool kernable = kerned != p->kerned.end() && *kerned < stop;
+      if ((misplaceable || kernable) && kind != PieceKind::kUnbounded) {
         const size_t window = window_end(start, stop);
         probe.end = window;
         probe.max_lines = limited ? lines_left + (p->ellipsized ? 1 : 0) : 0;
         probe.paragraph = build_piece(p, start, window, probe.max_lines, kind,
                                       SkString(), &probe.placed);
         layout_paragraph(probe.paragraph.get(), w, false);
-        const Misplaced misplaced =
-            misplaced_break(p, probe.paragraph.get(), kind, start);
+        Misplaced misplaced =
+            misplaceable
+                ? misplaced_break(p, probe.paragraph.get(), kind, start)
+                : Misplaced{};
+        const Misplaced kerned_start =
+            kernable ? kerned_line_start(p, probe.paragraph.get(), start)
+                     : Misplaced{};
+        if (kerned_start.at > 0 &&
+            (misplaced.at == 0 || kerned_start.lines < misplaced.lines)) {
+          misplaced = kerned_start;
+        }
         const auto probed =
             static_cast<ParagraphImpl*>(probe.paragraph.get())->lines();
         if (misplaced.at > 0) {
@@ -2105,8 +2201,13 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
       whole && p->ellipsized && p->paragraphs.front()->didExceedMaxLines();
   // So is text with spaces that start a line, which CSS collapses away.
   const bool collapsed = whole && !p->collapsed.empty();
-  split_around_long_words(p, w,
-                          any_emptied || misplaced || clamped || collapsed);
+  // And text with a line that starts at a letter kerned against the space
+  // before it, which Chrome shapes without that kerning.
+  const bool kerned =
+      whole && w < kUnbounded && !p->kerned.empty() &&
+      kerned_line_start(p, p->paragraphs.front().get(), 0).at > 0;
+  split_around_long_words(
+      p, w, any_emptied || misplaced || clamped || collapsed || kerned);
   if (p->nowrap && any_emptied) {
     truncate_nowrap_lines(p, w, emptied);
   }
