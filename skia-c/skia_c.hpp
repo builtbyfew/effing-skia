@@ -65,6 +65,8 @@
 
 #include <stdint.h>
 
+#include "effing/fonts.hpp"  // effing
+
 using namespace skia::textlayout;
 
 typedef struct skiac_surface skiac_surface;
@@ -149,6 +151,9 @@ struct RegisteredFont {
   sk_sp<SkData> data;  // For buffer-registered fonts (null for path-registered)
   std::string path;  // For path-registered fonts (empty for buffer-registered)
   std::vector<std::string> aliases;  // All aliases for this font
+  // effing: loaded as a system font, which registered faces of its family
+  // shadow under its original name (aliases[0]). See docs/effing.md.
+  bool system = false;
 };
 
 class TypefaceFontProviderCustom : public TypefaceFontProvider {
@@ -160,6 +165,13 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
 
   // Get font manager for rebuild
   sk_sp<SkFontMgr> getFontMgr() const { return font_mgr; }
+
+  // effing: a family registered under a name shadows the system's family of
+  // that name. See docs/effing.md.
+  sk_sp<SkFontStyleSet> onMatchFamily(const char familyName[]) const override {
+    return system_faces.shadow(familyName,
+                               TypefaceFontProvider::onMatchFamily(familyName));
+  }
 
   // Get registered fonts for rebuild
   const std::map<uint32_t, RegisteredFont>& getRegisteredFonts() const {
@@ -301,7 +313,8 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
                               sk_sp<SkData> data,
                               const std::string& path,
                               sk_sp<SkTypeface> typeface,
-                              const std::vector<std::string>& aliases) {
+                              const std::vector<std::string>& aliases,
+                              bool system = false) {  // effing
     if (!typeface) {
       return;
     }
@@ -310,6 +323,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     font_info.data = data;
     font_info.path = path;
     font_info.aliases = aliases;
+    font_info.system = system;  // effing
     registered_fonts[id] = std::move(font_info);
 
     // Update secondary index
@@ -327,6 +341,10 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     // name)
     for (const auto& name : aliases) {
       this->registerTypeface(typeface, SkString(name.c_str()));
+    }
+    // effing: a system font stays one under its original name.
+    if (system && !aliases.empty()) {
+      system_faces.add(SkString(aliases[0].c_str()), *typeface);
     }
   }
 
@@ -350,8 +368,10 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
    * @param typeface The typeface created from the font file
    * @return The font ID (content hash), or 0 on failure
    */
-  uint32_t registerTypefaceFromPathWithTracking(const std::string& path,
-                                                sk_sp<SkTypeface> typeface) {
+  uint32_t registerTypefaceFromPathWithTracking(
+      const std::string& path,
+      sk_sp<SkTypeface> typeface,
+      bool system = false) {  // effing
     if (!typeface) {
       return 0;
     }
@@ -367,6 +387,10 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
         if (font_it != registered_fonts.end() &&
             !font_it->second.path.empty() && font_it->second.path == path) {
           // Found matching path via index - true duplicate
+          // effing: registered now, if it was a system font.
+          if (!system) {
+            promoteSystemFont(font_it->second, std::move(typeface));
+          }
           return existing_id;
         }
       }
@@ -390,11 +414,15 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     RegisteredFont font_info;
     font_info.path = path;
     font_info.aliases.push_back(originalName);
+    font_info.system = system;  // effing
     registered_fonts[id] = std::move(font_info);
 
     // Update secondary index
     content_hash_index[content_hash].insert(id);
 
+    if (system) {  // effing
+      system_faces.add(familyName, *typeface);
+    }
     this->registerTypeface(std::move(typeface));
     return id;
   }
@@ -428,6 +456,9 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
               aliases.end()) {
             aliases.push_back(aliasStr);
             this->registerTypeface(typeface, alias);
+          } else if (aliasStr == originalName) {
+            // effing: registered now, if it was a system font.
+            promoteSystemFont(font_it->second, std::move(typeface));
           }
           return existing_id;
         }
@@ -520,6 +551,16 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   }
 
  private:
+  // effing: a system font registered again by the user becomes a registered
+  // face under its original name, so that it shadows the rest of the
+  // system's family as a font registered afresh would.
+  void promoteSystemFont(RegisteredFont& font, sk_sp<SkTypeface> typeface) {
+    if (font.system) {
+      font.system = false;
+      this->registerTypeface(std::move(typeface));
+    }
+  }
+
   sk_sp<SkFontMgr> font_mgr;
   std::map<uint32_t, RegisteredFont> registered_fonts;
   // Secondary index: content hash -> set of registered IDs with that hash
@@ -527,6 +568,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   // chain. Complexity is O(k) where k is the number of hash collisions
   // (typically 1-2).
   std::map<uint32_t, std::set<uint32_t>> content_hash_index;
+  effing::SystemFaces system_faces;  // effing
 };
 
 struct skiac_svg_surface {
@@ -598,7 +640,8 @@ struct skiac_font_collection {
 
       if (typeface) {
         new_assets->registerTypefaceWithId(id, font_info.data, font_info.path,
-                                           typeface, font_info.aliases);
+                                           typeface, font_info.aliases,
+                                           font_info.system);  // effing
       }
     }
 
