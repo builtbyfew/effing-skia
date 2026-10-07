@@ -21,16 +21,16 @@ Fork code is kept out of upstream files so that upstream merges stay trivial.
 Each layer has an `effing` directory with one file per feature, and each
 upstream file has at most a few marked hook lines.
 
-| Layer                  | Fork code                                                                        | Upstream hooks                                                                                                                                                                                                                                             |
-| ---------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer,fonts}.{hpp,cpp}`   | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily`, `shadowable_faces` and system flag, the `setAlias` replay) |
-| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs` | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                 |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`     | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                        |
-| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                          | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`)                                                                                                                                                                                     |
-| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                          | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                      |
-| Build                  |                                                                                  | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                |
-| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                          | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                        |
-| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                |
+| Layer                  | Fork code                                                                        | Upstream hooks                                                                                                                                                                                                                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer,fonts}.{hpp,cpp}`   | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
+| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs` | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`     | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
+| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                          | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`)                                                                                                                                                                                                                                    |
+| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                          | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
+| Build                  |                                                                                  | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                          | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                                                                       |
+| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                                                               |
 
 C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
 napi bindings are functions that take the context as their first argument
@@ -845,6 +845,70 @@ registered faces.
   from the system font directory's font manager, whichever fonts are
   registered.
 
+## Font matching
+
+A family's face for a style is the one CSS font matching picks
+([CSS Fonts 4 §5.2](https://drafts.csswg.org/css-fonts-4/#font-style-matching))
+as Chrome implements it, wherever a family is resolved: `ctx.font` for `fillText`,
+`strokeText` and `measureText`, a `Paragraph`, each family of a
+`font-family` list, SVG text, and the default style `setAlias` takes, for
+registered and system families alike (`__test__/effing-font-matching.spec.ts`),
+among the faces the fork loads: `loadSystemFonts()` loads only the first face
+of a font collection (`.ttc`), so a system family such as Helvetica Neue,
+Avenir Next or Didot has only that face to match among (#51).
+Of a family's faces it narrows down by one property after the other, each
+checked in CSS's order:
+
+1. font-stretch: the desired width, then, at or below normal, narrower
+   widths nearest first and then wider ones nearest first; above normal,
+   wider widths first, then narrower ones.
+2. font-style: `italic` and `oblique` take slanted faces, italic or
+   oblique, then upright ones; `normal` takes upright faces, then slanted
+   ones. An italic face and an oblique one are the same slope, as in Chrome,
+   where `italic` is `oblique 14deg`, the angle `oblique` has without one,
+   and the weight decides between them: of a 700 oblique and a 400 italic
+   face, italic at 700 takes the oblique one. CSS Fonts 4 would check italic
+   faces before oblique ones for italic, and the other way round otherwise.
+3. font-weight: the desired weight, then, from 400 to 500, heavier weights
+   up to 500 nearest first, then lighter ones nearest first, then those
+   above 500 nearest first (so 400 takes 500 before 300, and 500 takes 400
+   before 600); below 400, lighter weights nearest first, then heavier ones;
+   above 500, heavier weights nearest first, then lighter ones.
+
+A style the face lacks is then synthesized, as before: SkParagraph
+emboldens a face 200 or more lighter than a requested 600 or heavier, and
+slants a face that isn't italic for italic. Bold italic in a family of a
+regular, a bold and an italic face is the italic face emboldened, as in
+Chrome. In Liberation Sans of those three faces at 20px, bold italic in a
+200px box lays out lines 178.97, 172.29, 158.96, 186.77 and 42.25 wide
+(Chrome's 178.98, 172.30, 158.97, 186.78 and 42.25), where it took the bold
+face, slanted: 194.45, 185.62, 170.05, 143.34 and 107.77, broken elsewhere.
+
+Upstream matches with Skia's `SkFontStyleSet::matchStyleCSS3`, which scores
+the three properties in one number, eight bits apart, while a weight scores
+up to 1000, so the weight spills into the style. For 700 italic it scored
+the bold 1·256 + 1000 = 1256 and the italic 3·256 + 400 = 1168, and took
+the bold. For the same reason it took an italic over a bold for a normal
+style in a family with no regular face, and an upright bold over an oblique
+face for an italic. Above normal width its stretch score also ranked a
+wider face over one of the desired width. The fork's font provider and the
+system font directory's font manager hand out their families as style sets
+whose `matchStyle` is `effing::match_css` (`effing::with_css_matching`).
+
+- Of equally good faces the first registered wins, as before, where Chrome
+  takes the last `@font-face` rule.
+- A face is oblique where its OS/2 table says so (`fsSelection` bit 9),
+  which few fonts do. SkParagraph slants any face that isn't italic for
+  italic, an oblique one too, and none for oblique, where Chrome slants an
+  upright face for either and a slanted one for neither.
+- `ctx.font` and SVG's `font-weight` take weights in hundreds only, as
+  before; a `Paragraph` takes any weight.
+- A variable font is one face, of its default instance's style; its axes
+  don't follow the requested weight or width.
+- Fallback for characters no family of the list has is unchanged.
+- Lottie text keeps Skia's matching: `skiac_skottie_animation_make` gives
+  Skottie a font manager of its own, which isn't wrapped.
+
 ## Releasing
 
 Versions are upstream's version with an `-effing.N` suffix, so the lineage
@@ -899,6 +963,24 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- A family's face for a style is the one CSS font matching picks: of the
+  faces nearest in font-stretch, those nearest in font-style, and of those
+  the one nearest in font-weight (see font matching). Bold italic in a
+  family with regular, bold and italic faces but no bold italic face is now
+  the italic face emboldened, as in Chrome, where it was the bold face
+  slanted: in Liberation Sans at 20px, a 200px paragraph of
+  `@effing/canvas`'s "bold italic with no such face" fixture lays out lines
+  178.97, 172.29, 158.96, 186.77 and 42.25 wide, Chrome's widths, where they
+  were 194.45, 185.62, 170.05, 143.34 and 107.77 and broke elsewhere. That
+  fixture's known difference should go. A normal style in a family with a
+  bold and an italic face but no regular is now the bold, also for the
+  face `setAlias` takes, an italic in a family of an oblique face and an
+  upright bold the oblique face, italic and oblique faces the same slope,
+  as in Chrome, so that the weight decides between them (italic at 700 in
+  a family of a 400 italic and a 700 oblique face is the oblique one), and
+  a width above normal the face of that
+  width where a wider one was there too. Text set in a style a family has
+  no face for can lay out differently.
 - `drop-shadow()` in `ctx.filter` and in a group's filters blurs with its
   blur length as the standard deviation, as `blur()` does and as in Chrome,
   where it used to blur with half of it: drop shadows are twice as blurry as
