@@ -15,6 +15,7 @@
 
 #include "include/core/SkFontMetrics.h"
 #include "include/core/SkTypeface.h"
+#include "justify.hpp"
 #include "modules/skunicode/include/SkUnicode_icu.h"
 #include "text.hpp"
 #include "word_break.hpp"
@@ -1077,27 +1078,30 @@ bool justified(const effing_paragraph* p, PieceKind kind) {
 }
 
 // Lays `paragraph` out at `width`, justified if `justify`, and says whether
-// SkParagraph gave up on its ellipsis (ellipsis_failed). SkParagraph would
-// never return from justifying a line it emptied that way when the line has
-// runs past its first: TextLine::justify walks each run's clusters in the
-// line, and for those runs that range ends before it starts, so the walk
-// wraps around the address space. Line breaking and the ellipsis don't
-// depend on the alignment, so the paragraph is first laid out start-aligned,
-// and justified only when no line was emptied; the caller lays such a line
-// out anew.
+// SkParagraph gave up on its ellipsis (ellipsis_failed). SkParagraph only
+// breaks the lines: it lays them out start-aligned, and effing justifies them
+// (justify_lines), at Chrome's justification opportunities. SkParagraph's own
+// TextLine::justify spreads a line at its spaces and ideographs, where Chrome
+// spreads one at its no-break spaces and kana too, and gives every gap
+// between words the same width, spaces and all, where Chrome adds the same
+// to each space. It would also never return from justifying a line it
+// emptied for its ellipsis when the line has runs past its first: it walks
+// each run's clusters in the line, and for those runs that range ends before
+// it starts, so the walk wraps around the address space. Line breaking and
+// the ellipsis don't depend on the alignment, and a line emptied that way
+// is left unjustified; the caller lays it out anew.
 //
-// Justifying also changes the lines in place: it moves each cluster by a
-// shift it keeps in the cluster's run, and widens the line to the width.
-// SkParagraph never undoes either for lines it keeps: formatted again at the
-// same width, a line already as wide as that is left as it is
-// (TextLine::format), its shifts gone, so it paints unjustified; and at a new
-// width it breaks the lines before it clears the shifts
-// (ParagraphImpl::layout calls breakShapedTextIntoLines before
-// resetShifts), so its line breaker measures the spaces it trims off a line
-// with the old shifts in, and the lines' widths drift from a fresh
-// paragraph's (#12). So a justified paragraph has its lines broken anew,
-// with no shifts, every time: laid out as a fresh one is, but not shaped
-// again.
+// Justifying changes the lines in place: it moves each cluster by a shift it
+// keeps in the cluster's run, and widens the line to the width. SkParagraph
+// never undoes either for lines it keeps: formatted again at the same width,
+// a line already as wide as that is left as it is (TextLine::format), its
+// shifts gone, so it paints unjustified; and at a new width it breaks the
+// lines before it clears the shifts (ParagraphImpl::layout calls
+// breakShapedTextIntoLines before resetShifts), so its line breaker measures
+// the spaces it trims off a line with the old shifts in, and the lines'
+// widths drift from a fresh paragraph's (#12). So a justified paragraph has
+// its lines broken anew, with no shifts, every time: laid out as a fresh one
+// is, but not shaped again.
 bool layout_paragraph(Paragraph* paragraph, float width, bool justify) {
   auto* impl = static_cast<ParagraphImpl*>(paragraph);
   if (justify) {
@@ -1105,23 +1109,15 @@ bool layout_paragraph(Paragraph* paragraph, float width, bool justify) {
       impl->setState(InternalState::kShaped);
     }
     impl->resetShifts();
+    impl->updateTextAlign(TextAlign::kLeft);
   }
-  if (!justify || !impl->paragraphStyle().ellipsized()) {
-    if (justify) {
-      impl->updateTextAlign(TextAlign::kJustify);
-    }
-    paragraph->layout(width);
-    return ellipsis_failed(paragraph);
-  }
-  impl->updateTextAlign(TextAlign::kLeft);
   paragraph->layout(width);
   if (ellipsis_failed(paragraph)) {
     return true;
   }
-  // Keeps the lines, which start-aligning left as they were, and formats
-  // them anew.
-  impl->updateTextAlign(TextAlign::kJustify);
-  paragraph->layout(width);
+  if (justify) {
+    effing::justify_lines(paragraph, width);
+  }
   return false;
 }
 
