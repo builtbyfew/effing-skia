@@ -4,10 +4,11 @@
 The main entry is a drop-in for upstream: same classes, same context, same
 types. Effing's additions live in a separate entry, `@effing/skia/extensions`,
 so that swapping the backend later only touches the code that imports it.
-Two behaviours are changed: text rendering under
-`textRendering = 'geometricPrecision'`, only behind that opt-in, and the blur
-of `drop-shadow()` in a CSS filter, which follows the spec and Chrome (see
-filtered draws).
+Some behaviours are changed: text rendering under
+`textRendering = 'geometricPrecision'`, only behind that opt-in; registered
+fonts taking precedence over system fonts of the same family (see registered
+fonts over system fonts); and CSS filters, `drop-shadow()`'s blur among them,
+read and drawn as in Chrome (see filtered draws).
 
 ```ts
 import { createCanvas } from '@effing/skia' // upstream's API, unchanged
