@@ -92,6 +92,7 @@ test.serial('a registered family shadows the system family of the same name, in 
 })
 
 test.serial('a registered family shadows a system family loaded after it', (t) => {
+  t.truthy(GlobalFonts.registerFromPath(LATO, 'FP Lato'))
   t.truthy(GlobalFonts.registerFromPath(LATO, 'Cascadia Code'))
   t.is(loadSystemFontsFromDir(systemDir({ 'Cascadia.woff2': join(fonts, 'Cascadia.woff2') })), 1)
   const regular = STYLES[0]
