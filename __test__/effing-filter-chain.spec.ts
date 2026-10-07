@@ -163,3 +163,47 @@ test('function names and units are case-insensitive', (t) => {
   t.deepEqual(pixels('Drop-Shadow(4PX 4Px 2pX RED)'), pixels('drop-shadow(4px 4px 2px red)'))
   t.deepEqual(pixels('HUE-ROTATE(90DEG)'), pixels('hue-rotate(90deg)'))
 })
+
+for (const [valid, same] of [
+  ['blur(4e1px)', 'blur(40px)'],
+  ['blur(1E1px) grayscale(1)', 'blur(10px) grayscale(1)'],
+  ['opacity(5e-1)', 'opacity(0.5)'],
+  ['hue-rotate(9e1deg)', 'hue-rotate(90deg)'],
+  ['drop-shadow(4e0px 4px red)', 'drop-shadow(4px 4px red)'],
+  ['hue-rotate()', 'hue-rotate(0deg)'],
+  ['blur(4px', 'blur(4px)'],
+  ['grayscale(1) opacity(0.5', 'grayscale(1) opacity(0.5)'],
+  ['drop-shadow(4px 4px rgb(0, 0, 255)', 'drop-shadow(4px 4px rgb(0, 0, 255))'],
+  ['blur(1px)\tgrayscale(1)\n', 'blur(1px) grayscale(1)'],
+  ['\fblur(1px)\r\ngrayscale(1)', 'blur(1px) grayscale(1)'],
+]) {
+  test(`${JSON.stringify(valid)} is read as ${same}`, (t) => {
+    t.true(accepted(valid))
+    t.deepEqual(pixels(valid), pixels(same))
+  })
+}
+
+for (const invalid of [
+  'blur(4.px)',
+  'opacity(1.)',
+  'blur(4px grayscale(1)',
+  // Only CSS whitespace separates functions, not U+00A0 or U+2003.
+  'drop-shadow(4px 4px red) blur(1px)',
+  'blur(1px) grayscale(1)',
+  'blur(1px) ',
+  ' blur(1px)',
+  'blur( 1px)',
+]) {
+  test(`${JSON.stringify(invalid)} is rejected`, (t) => {
+    t.false(accepted(invalid))
+  })
+}
+
+test('none padded with U+00A0 is rejected', (t) => {
+  const ctx = createCanvas(SIZE, SIZE).getContext('2d')
+  ctx.filter = 'sepia(1)'
+  ctx.filter = ' none'
+  t.is(ctx.filter, 'sepia(1)')
+  ctx.filter = ' none\n'
+  t.is(ctx.filter, ' none\n')
+})

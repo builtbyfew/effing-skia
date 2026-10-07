@@ -614,25 +614,37 @@ does. A transparent `drop-shadow()` is skipped, and the rest of the list
 applies; upstream dropped the whole list for it and for `drop-shadow(0 0 0)`,
 which is kept: its shadow, unblurred and unshifted, shows where the content
 is translucent. `drop-shadow()` takes its colour before or after the
-lengths, in `rgb()`, `hsl()`, `hwb()`, hex, a name or `transparent`, and
-function names and units are case-insensitive. What Chrome rejects makes the
+lengths, in `rgb()`, `hsl()`, `hwb()`, hex, a name or `transparent`.
+Function names and units are case-insensitive, numbers take an exponent
+(`blur(4e1px)`), `hue-rotate()` is `hue-rotate(0)`, and the end of the value
+closes a function left open (`blur(4px`). What Chrome rejects makes the
 value invalid, so `ctx.filter` keeps its previous value and a group's filter
 is none: a negative amount or blur length (`opacity(-1)`, `blur(-1px)`,
 `drop-shadow(0 0 -2px red)`), a unitless angle other than 0
-(`hue-rotate(90)`), and a `drop-shadow()` with a colour it cannot read, a
-fourth length or anything else in it. Upstream clamped amounts, read
-`hue-rotate(90)` as `hue-rotate(0)`, dropped the whole list for a negative
-blur, and drew a shadow it could not read in black.
+(`hue-rotate(90)`), a number ending in a dot (`blur(4.px)`), anything but
+CSS whitespace (space, tab, line feed, carriage return, form feed) between
+or around functions, such as U+00A0, and a `drop-shadow()` with a colour it
+cannot read, a fourth length or anything else in it. Upstream clamped
+amounts, read `hue-rotate(90)` as `hue-rotate(0)`, dropped the whole list
+for a negative blur, drew a shadow it could not read in black, rejected
+exponents outside `drop-shadow()` and took any Unicode space.
 
 Where it still differs from Chrome:
 
 - A value that overflows f32 (`opacity(1e40)`, `blur(1e38in)`) is invalid;
   Chrome clamps it.
+- `drop-shadow(1e30px 0 red)` draws the content without its shadow, where
+  Chrome draws nothing.
 - `drop-shadow()` rejects `lab()`, `lch()`, `oklab()`, `oklch()` and
-  `color()` colours, which the rest of the context doesn't take either.
-- `em` and `rem` are 16px, not relative to the context's font.
+  `color()` colours, which the rest of the context doesn't take either, and
+  `hsl()` with unitless saturation and lightness (`hsl(120 100 25)`).
+- `em` and `rem` are 16px, not relative to the context's font, and the other
+  font- and viewport-relative units (`ex`, `ch`, `vw`, `vh`, `vmin`, ...)
+  are rejected, as is `calc()`.
 - Comments (`blur(/* */ 4px)`) are not read, except inside `drop-shadow()`.
-- A space before `%` (`opacity(50 %)`) is accepted.
+- Outside `drop-shadow()`, whitespace between a number and its unit or `%`
+  is accepted (`blur(4 px)`, `opacity(50 %)`, `hue-rotate(90 deg)`), as
+  upstream's tests require.
 
 ## Registered fonts over system fonts
 
@@ -777,8 +789,11 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   overflows f32 (`opacity(1e40)`) is invalid too, where Chrome clamps it.
 - Filter values Chrome accepts that were rejected now apply:
   `drop-shadow(red 4px 4px)` with the colour first, `hsl()`, `hsla()` and
-  `hwb()` shadow colours, and upper-case function names and units
-  (`BLUR(4PX)`).
+  `hwb()` shadow colours, upper-case function names and units
+  (`BLUR(4PX)`), exponents (`blur(4e1px)`), `hue-rotate()`, and a function
+  the end of the value leaves open (`blur(4px`). Filter values with U+00A0
+  or another non-CSS space between functions, or a number ending in a dot
+  (`blur(4.px)`), are now invalid, as in Chrome.
 - A `Paragraph` places its baselines by Chrome's half-leading: from the
   ascent and descent rounded to whole pixels, the half of the leading above
   the text floored to whole pixels. They used to split the leading of the
