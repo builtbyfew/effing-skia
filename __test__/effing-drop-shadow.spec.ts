@@ -80,8 +80,9 @@ for (const [dx, dy, r, color] of CASES) {
       const expected = pixels(blurredShape(dx, dy, r, color, setup))
       const actual = pixels(dropShadow(dx, dy, r, color, setup))
       // Both go through the same Gaussian; the layers they draw into start in
-      // different places, which can move the rounding by a level or two.
-      t.true(maxDifference(actual, expected) <= 2, `max difference ${maxDifference(actual, expected)}`)
+      // different places, which moves the rounding by up to 4 levels under a
+      // rotation (docs/effing.md, filtered draws; 3 on x64).
+      t.true(maxDifference(actual, expected) <= 4, `max difference ${maxDifference(actual, expected)}`)
       // With r / 2 the shadow is visibly tighter.
       const halved = pixels(dropShadow(dx, dy, r / 2, color, setup))
       t.true(maxDifference(halved, expected) > 8)
