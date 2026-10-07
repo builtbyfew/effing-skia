@@ -617,7 +617,8 @@ which is kept: its shadow, unblurred and unshifted, shows where the content
 is translucent. `drop-shadow()` takes its colour before or after the
 lengths, in `rgb()`, `hsl()`, `hwb()`, hex, a name or `transparent`.
 Function names and units are case-insensitive, numbers take an exponent
-(`blur(4e1px)`), `hue-rotate()` is `hue-rotate(0)`, and the end of the value
+(`blur(4e1px)`), an omitted argument takes its default (`blur()` is
+`blur(0)`, `grayscale()` is `grayscale(1)`), and the end of the value
 closes a function left open (`blur(4px`). What Chrome rejects makes the
 value invalid, so `ctx.filter` keeps its previous value and a group's filter
 is none: a negative amount or blur length (`opacity(-1)`, `blur(-1px)`,
@@ -791,7 +792,8 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 - Filter values Chrome accepts that were rejected now apply:
   `drop-shadow(red 4px 4px)` with the colour first, `hsl()`, `hsla()` and
   `hwb()` shadow colours, upper-case function names and units
-  (`BLUR(4PX)`), exponents (`blur(4e1px)`), `hue-rotate()`, and a function
+  (`BLUR(4PX)`), exponents (`blur(4e1px)`), omitted arguments (`blur()`,
+  `grayscale()`), and a function
   the end of the value leaves open (`blur(4px`). Filter values with U+00A0
   or another non-CSS space between functions, or a number ending in a dot
   (`blur(4.px)`), are now invalid, as in Chrome.

@@ -108,9 +108,7 @@ fn pixel<'a>(input: &'a str) -> Result<f32, ParseFilterError<'a>> {
   // effing: units are case-insensitive, as in CSS, and the table is shared
   // with `drop-shadow()`'s lengths.
   match unit.css_trim().to_ascii_lowercase().as_str() {
-    "%" => {
-      size_px = size * 16.0 / 100.0;
-    }
+    // effing: no `%`, which `blur()`, the only taker, rejects, as Chrome does
     "" => {
       if size_px != 0f32 {
         return Err(ParseFilterError::UnitParseError("[No unit assigned]"));
@@ -220,6 +218,10 @@ macro_rules! percentage_parser {
   ($filter_name:ident, $filter_rule:expr, $filter_value:ident) => {
     fn $filter_name(input: &str) -> IResult<&str, CssFilter> {
       let (input, _) = tag($filter_rule)(input)?;
+      // effing: no amount is 1, the default of every one of these functions.
+      if let Ok((rest, ())) = close_paren(input) {
+        return Ok((rest.css_trim(), CssFilter::$filter_value(1.0)));
+      }
       let (input, value) = number_percentage(input)?;
       reject_invalid(input, value)?; // effing
       let (input, _) = close_paren(input)?; // effing
@@ -276,6 +278,10 @@ percentage_parser!(sepia_parser, "sepia(", Sepia);
 
 fn blur_parser(input: &str) -> IResult<&str, CssFilter> {
   let (blurred_input, _) = tag("blur(")(input)?;
+  // effing: no length is 0.
+  if let Ok((rest, ())) = close_paren(blurred_input) {
+    return Ok((rest.css_trim(), CssFilter::Blur(0.0)));
+  }
 
   let (blurred_input, pixel) = pixel_in_tuple(blurred_input)?;
   reject_invalid(blurred_input, pixel)?; // effing
@@ -908,4 +914,34 @@ fn only_css_whitespace_separates_filters() {
     Ok(("\u{a0}grayscale(1)", vec![CssFilter::Blur(1.0)]))
   );
   assert_eq!("\u{a0}none\u{2003}".css_trim(), "\u{a0}none\u{2003}");
+}
+
+#[test]
+fn omitted_arguments_take_their_defaults() {
+  // effing: as in Filter Effects 1 and Chrome.
+  assert_eq!(css_filter("blur()"), Ok(("", vec![CssFilter::Blur(0.0)])));
+  assert_eq!(css_filter("blur( )"), Ok(("", vec![CssFilter::Blur(0.0)])));
+  assert_eq!(css_filter("blur("), Ok(("", vec![CssFilter::Blur(0.0)])));
+  assert_eq!(
+    css_filter("grayscale() sepia() invert() opacity() brightness() contrast() saturate("),
+    Ok((
+      "",
+      vec![
+        CssFilter::Grayscale(1.0),
+        CssFilter::Sepia(1.0),
+        CssFilter::Invert(1.0),
+        CssFilter::Opacity(1.0),
+        CssFilter::Brightness(1.0),
+        CssFilter::Contrast(1.0),
+        CssFilter::Saturate(1.0),
+      ]
+    ))
+  );
+  for input in ["blur(10%)", "blur(0%)"] {
+    assert_eq!(
+      css_filter(input).unwrap().0,
+      input,
+      "`{input}` should be left unread"
+    );
+  }
 }

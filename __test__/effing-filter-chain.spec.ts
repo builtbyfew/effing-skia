@@ -207,3 +207,30 @@ test('none padded with U+00A0 is rejected', (t) => {
   ctx.filter = ' none\n'
   t.is(ctx.filter, ' none\n')
 })
+
+// An omitted argument takes the function's default, as in Chrome.
+for (const [empty, same] of [
+  ['blur()', 'blur(0px)'],
+  ['blur( )', 'blur(0px)'],
+  ['blur(', 'blur(0px)'],
+  ['grayscale(', 'grayscale(1)'],
+  ['grayscale()', 'grayscale(1)'],
+  ['sepia()', 'sepia(1)'],
+  ['invert()', 'invert(1)'],
+  ['opacity()', 'opacity(1)'],
+  ['brightness()', 'brightness(1)'],
+  ['contrast()', 'contrast(1)'],
+  ['saturate()', 'saturate(1)'],
+  ['sepia( ) blur(2px)', 'sepia(1) blur(2px)'],
+]) {
+  test(`${empty} is read as ${same}`, (t) => {
+    t.true(accepted(empty))
+    t.deepEqual(pixels(empty), pixels(same))
+  })
+}
+
+for (const invalid of ['blur(10%)', 'blur(0%)']) {
+  test(`${invalid} is rejected, a blur takes no percentage`, (t) => {
+    t.false(accepted(invalid))
+  })
+}
