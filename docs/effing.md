@@ -4,8 +4,10 @@
 The main entry is a drop-in for upstream: same classes, same context, same
 types. Effing's additions live in a separate entry, `@effing/skia/extensions`,
 so that swapping the backend later only touches the code that imports it.
-One behaviour is changed, and only behind an opt-in: text rendering under
-`textRendering = 'geometricPrecision'`.
+Two behaviours are changed: text rendering under
+`textRendering = 'geometricPrecision'`, only behind that opt-in, and the blur
+of `drop-shadow()` in a CSS filter, which follows the spec and Chrome (see
+filtered draws).
 
 ```ts
 import { createCanvas } from '@effing/skia' // upstream's API, unchanged
@@ -22,7 +24,7 @@ upstream file has at most a few marked hook lines.
 | ---------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer}.{hpp,cpp}`     | `skia-c/skia_c.cpp` (include + four `text_rendering` checks)                                                                                                                          |
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer}.rs`   | `src/sk.rs` (`mod effing`)                                                                                                                                                            |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`)                                                    |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()` sigma)           |
 | Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                      | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`) |
 | Build                  |                                                                              | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                           |
 | JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                      | `js-binding.js` (exports; hand-maintained, like `index.d.ts`)                                                                                                                         |
@@ -578,6 +580,14 @@ filter that affects transparent black), under a singular transform, and for
 content that covers the clip, such as a background, which a bounded layer
 would not make faster.
 
+The blur length of `drop-shadow(dx dy blur color)`, in `ctx.filter` and in a
+group's `filter` or `backdropFilter`, is the Gaussian's standard deviation,
+as the Filter Effects spec defines it and as `blur()` takes it
+(`src/filter.rs`). Upstream halves it, the rule for `shadowBlur`, whose
+standard deviation the canvas spec does define as half its value and which is
+left as it is. `drop-shadow(0 0 4px)` draws its shadow as `blur(4px)` does,
+the pixels Chrome's canvas draws for it.
+
 ## Releasing
 
 Versions are upstream's version with an `-effing.N` suffix, so the lineage
@@ -632,6 +642,12 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- `drop-shadow()` in `ctx.filter` and in a group's filters blurs with its
+  blur length as the standard deviation, as `blur()` does and as in Chrome,
+  where it used to blur with half of it: drop shadows are twice as blurry as
+  before, and `drop-shadow(6px 8px 12px black)` now draws what Chrome draws
+  for it, not what Chrome draws for `drop-shadow(6px 8px 6px black)`. To keep
+  the old look, halve the blur length. `shadowBlur` is unchanged.
 - A draw under `ctx.filter`, and the shadow of one or of a drawn image, goes
   through a layer the size of what it draws rather than of the canvas. Five
   lines of text under `blur(12px)` on a 1080x1080 canvas went from about

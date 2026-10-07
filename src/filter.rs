@@ -331,7 +331,9 @@ pub(crate) fn css_filters_to_image_filter(filters: Vec<CssFilter>) -> Option<Ima
         ImageFilter::from_argb(None, ramp, ramp, ramp, chain.as_ref())
       }
       CssFilter::DropShadow(offset_x, offset_y, blur_radius, shadow_color) => {
-        let sigma = blur_radius / 2.0;
+        // effing: the blur length is the standard deviation (Filter Effects 1,
+        // `drop-shadow()`), as in `blur()` and Chrome. `shadowBlur` halves it.
+        let sigma = blur_radius;
         if shadow_color.a == 0 {
           return None;
         }
