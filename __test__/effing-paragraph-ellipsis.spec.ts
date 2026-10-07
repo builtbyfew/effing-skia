@@ -32,6 +32,7 @@ test.before((t) => {
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'Harmattan-Regular.ttf'), 'WB Harmattan'))
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'SourceHanSerifCN-Bold.ttf'), 'WB Source Han'))
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'NotoSansDevanagari-Regular.ttf'), 'WB Devanagari'))
+  t.truthy(GlobalFonts.registerFromPath(join(fonts, 'LiberationSans-Regular.woff'), 'WB Liberation'))
 })
 
 // A line as [startIndex, endIndex, width, left].
@@ -631,13 +632,19 @@ test('the clamped line keeps the bidi levels its text has in the paragraph', (t)
 })
 
 // The runs of columns `paragraph`'s line `k` inks, as inkPerLine counts
-// them, runs at most 2px apart merged.
-function inkRuns(paragraph: Paragraph, layout: ParagraphLayout, k: number, width = 300): Array<[number, number]> {
+// them, runs at most `gap` px apart merged.
+function inkRuns(
+  paragraph: Paragraph,
+  layout: ParagraphLayout,
+  k: number,
+  width = 300,
+  gap = 2,
+): Array<[number, number]> {
   const runs: Array<[number, number]> = []
   for (const [x, inked] of inkedColumns(paragraph, layout, width)[k].entries()) {
     if (!inked) continue
     const last = runs[runs.length - 1]
-    if (last && x - last[1] <= 2) last[1] = x + 1
+    if (last && x - last[1] <= gap) last[1] = x + 1
     else runs.push([x, x + 1])
   }
   return runs
@@ -831,5 +838,91 @@ test('a clamped line is letter-spaced as in the paragraph', (t) => {
       whole.placeholders.slice(0, 2).map((box) => box && [round(box.x), box.line]),
       `${letterSpacing}`,
     )
+  }
+})
+
+test('a justified clamped line that breaks at a soft hyphen is justified with its hyphen, then cut', (t) => {
+  // Chrome 154 (`hyphens: manual`, Liberation Sans, whose hyphen is "-")
+  // justifies the clamped line with the hyphen it ends with, then cuts it
+  // from the end, the hyphen first: "aa bb super­cali-" over 150px is
+  // "aa bb superc…", the words where justifying put them. Without the hyphen
+  // in the justified line, its gaps would be wider. Lines as [startIndex,
+  // endIndex, width, left], and the runs of columns the clamped line inks,
+  // as Chrome inks them, runs less than 6px apart (within a word, or the
+  // ellipsis and what it follows) merged.
+  const text = 'aa bb super\u00ADcali\u00ADfragilistic dd ee ff'
+  const arabic = 'بتث aa super\u00ADcali\u00ADfragilistic dd ee ff'
+  const style: ParagraphStyle = {
+    fontFamily: 'WB Liberation',
+    fontSize: 20,
+    lineHeight: 40,
+    textAlign: 'justify',
+    ellipsis: '…',
+  }
+  const cases: Array<[string, ParagraphStyle, number, Line[], Array<[number, number]>]> = [
+    [
+      text,
+      { maxLines: 1 },
+      150,
+      [[0, 13, 143.33, 0]],
+      [
+        [0, 22],
+        [33, 53],
+        [64, 141],
+      ],
+    ],
+    [
+      text,
+      { maxLines: 1 },
+      125,
+      [[0, 9, 120.56, 0]],
+      [
+        [0, 22],
+        [35, 56],
+        [69, 118],
+      ],
+    ],
+    // Two lines: the first ends at a soft hyphen, and is justified with the
+    // hyphen as any line before the clamped line is; the second is cut.
+    [
+      text,
+      { maxLines: 2 },
+      120,
+      [
+        [0, 12, 120, 0],
+        [12, 27, 117.8, 0],
+      ],
+      [[0, 115]],
+    ],
+    // With letter spacing, after an RTL word.
+    [
+      arabic,
+      { maxLines: 1, fontFamily: 'WB Liberation, WB Harmattan', letterSpacing: 1.5 },
+      150,
+      [[0, 10, 142.56, 0]],
+      [
+        [0, 29],
+        [45, 69],
+        [86, 140],
+      ],
+    ],
+    [
+      arabic,
+      { maxLines: 1, fontFamily: 'WB Liberation, WB Harmattan' },
+      150,
+      [[0, 14, 143.33, 0]],
+      [
+        [0, 29],
+        [36, 58],
+        [64, 141],
+      ],
+    ],
+  ]
+  for (const [parts, extra, width, expected, ink] of cases) {
+    const paragraph = new Paragraph(parts, { ...style, ...extra })
+    const name = JSON.stringify({ parts, extra, width })
+    const layout = paragraph.layout(width)
+    t.deepEqual(lines(layout), expected, name)
+    nearRuns(t, inkRuns(paragraph, layout, expected.length - 1, 300, 5), ink, name)
   }
 })

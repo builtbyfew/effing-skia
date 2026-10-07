@@ -238,7 +238,11 @@ top:
   clusters come off in logical order, so which part of a run in the other
   direction stays is as above; spaces of that other direction don't end
   what is kept, as the ellipsis wouldn't follow them on screen, and what is
-  kept ends at a grapheme cluster's end. The ellipsis is measured in the
+  kept ends at a grapheme cluster's end. A line that breaks at a soft
+  hyphen is justified with its hyphen, which is then the first thing cut:
+  `'aa bb super\u00ADcali\u00ADfragilistic dd'` in Liberation Sans over
+  150px is "aa bb superc…", the words where justifying "aa bb supercali-"
+  put them, as in Chrome. The ellipsis is measured in the
   font SkParagraph shapes it in: that of the last cluster kept, or else the
   first of `fontFamily` that has it. A clamped line with no gap to widen, or
   that ends at a hard break, is start-aligned with its ellipsis, as in
