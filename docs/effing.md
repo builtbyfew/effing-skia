@@ -18,15 +18,16 @@ Fork code is kept out of upstream files so that upstream merges stay trivial.
 Each layer has an `effing` directory with one file per feature, and each
 upstream file has at most a few marked hook lines.
 
-| Layer                  | Fork code                                                                    | Upstream hooks                                                                                                                                                                        |
-| ---------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer}.{hpp,cpp}`     | `skia-c/skia_c.cpp` (include + four `text_rendering` checks)                                                                                                                          |
-| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer}.rs`   | `src/sk.rs` (`mod effing`)                                                                                                                                                            |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`)                                                    |
-| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                      | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`) |
-| Build                  |                                                                              | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                           |
-| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                      | `js-binding.js` (exports; hand-maintained, like `index.d.ts`)                                                                                                                         |
-| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                            | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                           |
+| Layer                  | Fork code                                                                        | Upstream hooks                                                                                                                                                                                                                                             |
+| ---------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer,fonts}.{hpp,cpp}`   | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily`, `shadowable_faces` and system flag, the `setAlias` replay) |
+| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs` | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                 |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`     | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`)                                                                                                                         |
+| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                          | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`)                                                                                                                                                                                     |
+| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                          | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                      |
+| Build                  |                                                                                  | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                          | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                        |
+| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                |
 
 C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
 napi bindings are functions that take the context as their first argument
@@ -100,17 +101,37 @@ A `Paragraph` is a single-style paragraph laid out natively by SkParagraph
 (line breaking, shaping, bidi, font fallback), with effing's CSS line model on
 top:
 
-- Every line box is exactly `lineHeight` tall (`normal`, when it is omitted,
-  is the primary font's hhea ascender + descender), and the baseline sits in
-  the box by CSS half-leading. Fallback fonts never grow a line. A
-  `lineHeight` of 0 collapses the line boxes, as CSS `line-height: 0` does:
-  the paragraph is 0px tall and every line's baseline sits at
-  `(ascent - descent) / 2`, the glyphs overflowing above and below.
+- Every line box is exactly `lineHeight` tall, and the baseline sits in the
+  box by CSS half-leading as Chrome computes it. `normal`, when it is
+  omitted, is Chrome's `line-height: normal` (on macOS, where CoreText
+  reads hhea): the primary font's hhea ascent, descent and line gap each
+  rounded to whole pixels and summed, with the baseline the rounded ascent
+  plus half the rounded gap, floored, below the line's top. Fallback fonts never
+  grow a line. A `lineHeight` of 0 collapses the line boxes, as CSS
+  `line-height: 0` does: the paragraph is 0px tall and the glyphs of every
+  line overflow it above and below.
+- The half-leading is Chrome's (Blink's `CalculateLeadingSpace`): the
+  ascent and descent are rounded to whole pixels, the leading is the line
+  height less their sum, and the half above the text is floored to whole
+  pixels, the odd pixel and any fraction going below, also when the
+  leading is negative. So a line's baseline sits
+  `round(ascent) + floor((lineHeight - round(ascent) - round(descent)) / 2)`
+  below its top, always a whole pixel. `lineHeight` itself is rounded to
+  the 1/64px Chrome lays out in (`ParagraphLayout.lineHeight` reports it
+  so: 33.3 is 33.296875), so the lines of a fractional line height stack
+  as Chrome's do. For Liberation Sans at 20px (ascent 18.1, descent 4.24)
+  that's 22 in a 30px line, 22 in a 30.5px one (the next line's at 52.5),
+  and 7 for a line height of 0, where the half-leading of the unrounded
+  metrics put it at 21.93 and 6.93, as measured in Chrome 154.
+  `__test__/effing-paragraph-half-leading.spec.ts` checks the baselines
+  Chrome gives five of the fonts in `__test__/fonts` at 9 sizes and 13 line
+  heights (585 cases, including 0, smaller than the text, and fractional),
+  the 1/64px rounding, and `normal` for all 17 fonts there and two with a
+  line gap set (152 cases).
 - The layout reports the primary font's hhea `ascent`, `descent` and
   `lineGap` in px at the font size, for the caller's own line boxes.
-  `lineGap` is 0 for a negative gap, as Chrome takes it, and is left out of
-  `normal`; Chrome's `line-height: normal` (on macOS, where CoreText reads
-  hhea) is `round(ascent) + round(descent) + round(lineGap)`. They come from
+  `lineGap` is 0 for a negative gap, as Chrome takes it; `normal` is
+  `round(ascent) + round(descent) + round(lineGap)`. They come from
   the hhea table even when the font sets `USE_TYPO_METRICS`, where FreeType's
   `SkFontMetrics` would give the OS/2 typo values (Iosevka Slab: a hhea gap
   of 68 units, a typo gap of 0). They are the primary font's, the first of
@@ -395,9 +416,9 @@ Skia places a placeholder along its line; effing places it vertically by its
 its top (defaulting to its `height`: the bottom edge, as for an image), on
 the line's baseline; `middle` puts its middle half the primary font's
 x-height above the baseline; `top`/`bottom` align it with the line box; and
-`text-top`/`text-bottom` with the primary font's hhea ascent/descent. These
-match Chrome's inline-block placement (`__test__/effing-paragraph-placeholders.spec.ts`),
-except that Chrome rounds the ascent and descent to whole pixels. A CSS
+`text-top`/`text-bottom` with the primary font's hhea ascent/descent,
+rounded to whole pixels as Chrome rounds them. These match Chrome's
+inline-block placement (`__test__/effing-paragraph-placeholders.spec.ts`). A CSS
 `vertical-align: <length>` is a `baselineOffset` of the box's height plus
 that length. Letter spacing is not added to a placeholder, as Chrome doesn't
 add it to an inline-block.
@@ -600,6 +621,77 @@ filter that affects transparent black), under a singular transform, and for
 content that covers the clip, such as a background, which a bounded layer
 would not make faster.
 
+## Registered fonts over system fonts
+
+A family registered with `GlobalFonts` (`register`, `registerFromPath`,
+`loadFontsFromDir`, `setAlias`) takes precedence over the system's family of
+the same name, as an `@font-face` family does over a locally installed one in
+a browser (`__test__/effing-font-precedence.spec.ts`). That holds wherever a
+family name is resolved: `ctx.font` for `fillText`, `strokeText` and
+`measureText`, a `Paragraph`, each family of a `font-family` list, and SVG
+text. The system's fonts are the ones `index.js` loads at startup:
+`GlobalFonts.loadSystemFonts()` (the system font directory) and the user's
+font directories (`~/Library/Fonts`, `~/.fonts`, ...), which it loads with
+`loadSystemFontsFromDir` from `js-binding.js` instead of `loadFontsFromDir`.
+
+Upstream puts the system's fonts and the registered ones in one
+`TypefaceFontProvider`, the font manager SkParagraph's `FontCollection` asks
+first. A face registered under a family name the system has joined the
+system's faces in one style set, after them, and
+`SkFontStyleSet::matchStyleCSS3` keeps the first of equally good matches, so
+the system's face won every style the system had. In `node:22-bookworm` with
+`fonts-liberation`, the Liberation Sans 1.x woff `@effing/canvas` bundles,
+registered as "Liberation Sans", laid out the "A" of `'A A'` broken after it
+12.236px wide, the system TTF's kerning, rather than its own 12.788px; under
+an alias of its own it was 12.788px. The fork marks the faces that join a
+family without shadowing it (`effing::ShadowableFaces`, with the names in
+`RegisteredFont::shadowable_names`, which the rebuild that
+`GlobalFonts.remove` does replays), and the provider's family lookup (`onMatchFamily`, which
+every lookup above goes through) leaves them out of a family that has
+registered faces.
+
+- A registered family replaces the system's family of that name whole, not
+  style by style, as `@font-face` does: CSS font matching takes the faces of
+  a family defined by `@font-face` rules from those rules alone. A style it
+  lacks is synthesized from its own faces (SkParagraph emboldens a face
+  200 or more lighter than a requested 600 or heavier, and slants an upright
+  face for italic), as a browser synthesizes it, rather than taken from the
+  system's family: Liberation Sans registered in regular alone draws bold
+  text as an emboldened regular even where the system has Liberation Sans
+  Bold. Taking the system's bold would mix two versions of a font in one
+  text and make the result depend on the machine's fonts, which registering
+  a font is meant to rule out.
+- The order of registering and loading the system's fonts doesn't matter.
+- Among the registered faces of a family, the first registered of equally
+  good matches still wins, where a browser takes the last `@font-face` rule.
+- A font registered under an alias is a registered face of the alias's
+  family only. Under its own family name, where `GlobalFonts` adds it too,
+  it joins the family as a system font does, without shadowing it:
+  registering Inter Bold as "Heading" on a machine with Inter installed
+  leaves "Inter" the installed family, the registered bold among its faces.
+  A font registered again under its own family name, a system font from its
+  path or a font first registered under an alias, is a registered face there
+  from then on, and shadows the rest of the family.
+- `setAlias(family, alias)` names the face `family` resolves to in the
+  default style when it is called, as upstream's does: a registered face of
+  `alias`, which shadows a system family of that name, also when the face
+  is already one of that family's shadowable faces: `setAlias('Heading',
+'Inter')` after registering Inter Bold as "Heading" makes "Inter" that
+  bold. It keeps that face
+  when `family` later resolves to another, as when a font is registered
+  under `family`, and also after the rebuild `GlobalFonts.remove` does,
+  where upstream matched `family` anew. The mapping goes when the fonts of
+  `family` are removed, as before.
+- Family names match case-sensitively, as upstream's always have: a font
+  registered as "liberation sans" doesn't shadow "Liberation Sans".
+- `GlobalFonts.families` lists the styles a family resolves to: for a family
+  with registered faces, those faces alone.
+- `GlobalFonts.loadFontsFromDir` registers the fonts it loads, as before, so
+  they shadow the system's fonts.
+- Fallback for characters no family of the list has is unchanged: it comes
+  from the system font directory's font manager, whichever fonts are
+  registered.
+
 ## Releasing
 
 Versions are upstream's version with an `-effing.N` suffix, so the lineage
@@ -654,6 +746,28 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- A `Paragraph` places its baselines by Chrome's half-leading: from the
+  ascent and descent rounded to whole pixels, the half of the leading above
+  the text floored to whole pixels. They used to split the leading of the
+  unrounded metrics evenly, which put them off Chrome's by up to 1.28px in
+  the cases measured (Noto Sans Devanagari at 16px in an 18.75px line:
+  13.28 for Chrome's 12). The baseline now always sits a whole number of
+  pixels below its line's top. `lineHeight` is rounded to 1/64px, Chrome's
+  layout unit, and `ParagraphLayout.lineHeight` and `height` report it so
+  (33.3 is 33.296875). `text-top` and `text-bottom` placeholders align with
+  the rounded ascent and descent, as in Chrome.
+- An omitted (or null) `lineHeight` is now Chrome's `line-height: normal`,
+  `round(ascent) + round(descent) + round(lineGap)`: whole pixels, and with
+  the line gap, where it used to be the unrounded `ascent + descent`
+  without it. Iosevka Slab at 20px has 25px lines with the baseline at 20,
+  as in Chrome, where it had 23.64px lines with the baseline at 19.54.
+- `@effing/canvas` works out the paragraph's baseline itself, as
+  `(lineHeight + ascent - descent) / 2`, to shift a `normal` line box to
+  Chrome's. It should take `lines[i].baseline` instead (or this rule, for
+  an empty paragraph): the `normal` line height it passes then gets
+  Chrome's baseline with no shift. Its text-box-trim, which goes from the
+  baseline and the unrounded ascent, and its mock paragraph, which mirrors
+  the old formula, need the same change.
 - A draw under `ctx.filter`, and the shadow of one or of a drawn image, goes
   through a layer the size of what it draws rather than of the canvas. Five
   lines of text under `blur(12px)` on a 1080x1080 canvas went from about
@@ -663,6 +777,23 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   drawn with `imageSmoothingEnabled = false` at a fractional scale and
   position, can pick the neighbouring source row or column where two are
   equally near (see filtered draws).
+- A family registered with `GlobalFonts` (`register`, `registerFromPath`,
+  `loadFontsFromDir`, `setAlias`) now replaces the system's family of the
+  same name whole, in every style, as `@font-face` does in a browser. Styles
+  you don't register are synthesized from the ones you do (bold from a
+  regular, italic by slanting), not taken from the installed font: register
+  every style you use. `GlobalFonts.families` lists only the registered
+  styles of such a family. A font registered under an alias shadows only the
+  alias's family; under its own family name it joins the installed family
+  without replacing it. Fonts from `loadFontsFromDir` count as registered;
+  only `loadSystemFonts()` and the user font directories loaded at startup
+  are system fonts. Family names match case-sensitively, as before. In
+  `node:22-bookworm` with `fonts-liberation`, the Liberation Sans woff
+  `@effing/canvas` bundles, registered as "Liberation Sans", lays out the
+  "A" of `'A A'` broken after it 12.788px wide, its own width, where it took
+  the system TTF's 12.236px.
+- `setAlias` keeps the face it took after a `GlobalFonts.remove`, which used
+  to match the aliased family anew.
 - Under `textAlign: 'justify'`, a line `maxLines` clamps with an `ellipsis`
   is justified, then cut, as Chrome does: what is left of it keeps its
   justified place, with the ellipsis after it ("aa bb …" over 85px, where

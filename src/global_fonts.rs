@@ -5,6 +5,8 @@ use std::sync::{LazyLock, LockResult, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use crate::sk::*;
 
+mod effing;
+
 #[cfg(target_os = "windows")]
 const FONT_PATH: &str = "C:/Windows/Fonts";
 #[cfg(target_os = "macos")]
@@ -116,7 +118,8 @@ pub mod global_fonts {
   #[napi]
   pub fn load_system_fonts() -> Result<u32> {
     FONT_DIR
-      .get_or_init(move || super::load_fonts_from_dir(FONT_PATH))
+      // effing: as system fonts, which registered fonts shadow.
+      .get_or_init(move || super::load_fonts_from_dir(FONT_PATH, true))
       .as_ref()
       .map(|s| *s)
       .map_err(|e| Error::new(e.status, e.reason.clone()))
@@ -124,7 +127,7 @@ pub mod global_fonts {
 
   #[napi]
   pub fn load_fonts_from_dir(dir: String) -> Result<u32> {
-    super::load_fonts_from_dir(dir.as_str())
+    super::load_fonts_from_dir(dir.as_str(), false) // effing: registered fonts
   }
 
   #[napi]
@@ -217,13 +220,15 @@ pub mod global_fonts {
   }
 }
 
-fn load_fonts_from_dir<P: AsRef<path::Path>>(dir: P) -> napi::Result<u32> {
+// effing: `system` loads the fonts as system fonts, which registered fonts
+// shadow (docs/effing.md).
+fn load_fonts_from_dir<P: AsRef<path::Path>>(dir: P, system: bool) -> napi::Result<u32> {
   let mut count = 0u32;
   if let Ok(dir) = read_dir(dir) {
     for f in dir.flatten() {
       if let Ok(meta) = f.metadata() {
         if meta.is_dir() {
-          load_fonts_from_dir(f.path())?;
+          load_fonts_from_dir(f.path(), system)?;
         } else {
           let p = f.path();
           // The font file extensions are case-insensitive.
@@ -237,10 +242,12 @@ fn load_fonts_from_dir<P: AsRef<path::Path>>(dir: P) -> napi::Result<u32> {
             | Some("woff") => {
               if let Some(p) = p.into_os_string().to_str() {
                 let font_collection = get_font().map_err(into_napi_error)?;
-                if font_collection
-                  .register_from_path::<String>(p, None)
-                  .is_some()
-                {
+                let registered = if system {
+                  font_collection.register_system_font(p) // effing
+                } else {
+                  font_collection.register_from_path::<String>(p, None)
+                };
+                if registered.is_some() {
                   // Bump while the collection lock is still held and after
                   // EACH registration: the guard drops between files, so a
                   // reader on another thread can resolve a family mid-load.

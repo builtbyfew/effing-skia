@@ -57,9 +57,8 @@ test('a placeholder takes its width in the line and one index', (t) => {
 // </span>cd</div>`, with getBoundingClientRect() on the span and on a
 // zero-size inline-block marking the baseline: the box's top relative to the
 // baseline (or to the line box's top for `top` and `bottom`), and its left.
-// Chrome rounds the font's ascent and descent to whole pixels (20 and 4 for
-// 19.54 and 4.1), which moves `text-top` and `text-bottom` by up to 0.46px;
-// the paragraph keeps them exact.
+// `text-top` and `text-bottom` go from the font's ascent and descent rounded
+// to whole pixels, as Chrome rounds them (20 and 4 for 19.54 and 4.1).
 const CHROME_BOXES: Array<{
   verticalAlign: NonNullable<ParagraphPlaceholder['verticalAlign']>
   width: number
@@ -88,8 +87,7 @@ test('verticalAlign places the box as Chrome does', (t) => {
     const line = layout.lines[0]
     const lineTop = 0
     const from = verticalAlign === 'top' || verticalAlign === 'bottom' ? lineTop : line.baseline
-    const epsilon = verticalAlign.startsWith('text-') ? 0.5 : 0.01
-    near(t, placeholder.y - from, top, epsilon)
+    near(t, placeholder.y - from, top)
     near(t, placeholder.x, 20)
     t.is(placeholder.height, height, verticalAlign)
   }
@@ -101,9 +99,9 @@ test('verticalAlign follows the paragraph metrics exactly', (t) => {
     return { layout, y: layout.placeholders[0]!.y, baseline: layout.lines[0].baseline }
   }
   const { layout, y, baseline } = at(box({ verticalAlign: 'text-top' }))
-  near(t, y, baseline - layout.ascent)
+  near(t, y, baseline - Math.round(layout.ascent))
   const bottom = at(box({ verticalAlign: 'text-bottom' }))
-  near(t, bottom.y, bottom.baseline + layout.descent - 20)
+  near(t, bottom.y, bottom.baseline + Math.round(layout.descent) - 20)
   // baselineOffset puts the box's own baseline on the line's: `vertical-align:
   // 5px` on an image is a baselineOffset of its height plus 5.
   const raised = at(box({ baselineOffset: 25 }))

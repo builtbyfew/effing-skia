@@ -35,7 +35,13 @@ export interface ParagraphStyle {
   fontWeight?: number
   fontStyle?: 'normal' | 'italic' | 'oblique'
   letterSpacing?: number
-  /** Line box height in px, where 0 collapses the line boxes; omitted or null for `normal` (hhea ascent + descent). */
+  /**
+   * Line box height in px, rounded to 1/64px as Chrome lays it out, where 0
+   * collapses the line boxes; omitted or null for Chrome's `normal`,
+   * `round(ascent) + round(descent) + round(lineGap)`. The baseline sits
+   * Chrome's half-leading below each line's top:
+   * `round(ascent) + floor((lineHeight - round(ascent) - round(descent)) / 2)`.
+   */
   lineHeight?: number | null
   /** `start` and `end` follow `direction`. Defaults to `left`. */
   textAlign?: 'left' | 'right' | 'center' | 'justify' | 'start' | 'end'
@@ -82,7 +88,8 @@ export interface ParagraphPlaceholder {
    * own baseline (`baselineOffset` below its top) on the text's; `middle` puts
    * its middle half the font's x-height above the baseline; `top` and
    * `bottom` align it with the line box; `text-top` and `text-bottom` with
-   * the font's ascent and descent. Defaults to `baseline`.
+   * the font's ascent and descent, rounded to whole pixels as in Chrome.
+   * Defaults to `baseline`.
    */
   verticalAlign?: 'baseline' | 'middle' | 'top' | 'bottom' | 'text-top' | 'text-bottom' | null
   /** For `baseline`: from the box's top down to its own baseline. Defaults to `height`, its bottom edge, as for an image. Null means the default. */
@@ -147,15 +154,15 @@ export interface ParagraphLayout {
    */
   maxIntrinsicWidth: number
   didExceedMaxLines: boolean
-  /** Every line box is exactly this tall. */
+  /** Every line box is exactly this tall: `lineHeight` in 1/64px. */
   lineHeight: number
   /** The primary font's hhea ascender and descender in px. */
   ascent: number
   descent: number
   /**
    * The primary font's hhea line gap in px at this size, clamped to ≥ 0 (a
-   * negative gap is 0, as in Chrome). Not part of `lineHeight`; Chrome's
-   * `line-height: normal` is `round(ascent) + round(descent) + round(lineGap)`.
+   * negative gap is 0, as in Chrome). Part of `normal`, Chrome's
+   * `line-height: normal`: `round(ascent) + round(descent) + round(lineGap)`.
    * Like `ascent` and `descent`, it is the primary font's whatever the text,
    * so an empty paragraph or one of placeholders only reports it too.
    */

@@ -16,8 +16,8 @@ struct effing_paragraph_style {
   // An SkFontStyle::Slant.
   int slant;
   float letter_spacing;
-  // Line box height in px, 0 included; negative means `normal` (hhea
-  // ascender + descender).
+  // Line box height in px, 0 included; negative means `normal`, as Chrome's:
+  // round(ascent) + round(descent) + round(lineGap) of the hhea metrics.
   float line_height;
   // A skia::textlayout::TextAlign; start and end follow `direction`.
   int align;
