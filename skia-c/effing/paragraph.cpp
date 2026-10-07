@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "include/core/SkFontMetrics.h"
@@ -56,6 +57,12 @@ struct effing_paragraph {
   // Where `text` has the U+2063 that stands for each lone CR (hide_lone_crs),
   // by UTF-8 offset, in order.
   std::vector<size_t> lone_crs;
+  // The hyphen a line that breaks at a soft hyphen (U+00AD) ends with, as
+  // CSS hyphens: manual has it (soft_hyphen_end): U+2010 if the primary font
+  // has it, else "-", as Chrome picks it. Empty when no line can break at a
+  // soft hyphen. Its width once measured (hyphen_width), or negative.
+  std::string hyphen;
+  float hyphen_width = -1;
   // Each placeholder, in order, with the paragraph it went into (SIZE_MAX if
   // its line was dropped) and its UTF-16 index in that paragraph's text.
   struct Placeholder {
@@ -162,6 +169,9 @@ struct effing_paragraph {
     // When its text ends at a soft break, the number of lines it lays out
     // in, which a sentinel after it keeps from being the last; 0 otherwise.
     int soft_lines;
+    // Whether its text ends at a soft hyphen where its last line breaks, with
+    // the hyphen after it.
+    bool hyphen;
   };
   std::vector<Piece> pieces;
   bool pieces_exceeded_max_lines = false;
@@ -372,6 +382,28 @@ size_t without_hard_break(const char* text,
   return end;
 }
 
+// Where the text of a line that ends at `at` in `text` (UTF-8) ends, when the
+// line breaks at a soft hyphen (U+00AD) and so ends with a hyphen, as CSS
+// hyphens: manual has it: right after the soft hyphen, the spaces and tabs
+// between it and `at` hanging. 0 when the line doesn't end so, or ends the
+// text or at a hard break, where Chrome draws no hyphen.
+size_t soft_hyphen_end(const char* text, size_t len, size_t at) {
+  size_t end = at;
+  while (end > 0 && (text[end - 1] == ' ' || text[end - 1] == '\t')) {
+    end--;
+  }
+  size_t next = at;
+  while (next < len && (text[next] == ' ' || text[next] == '\t')) {
+    next++;
+  }
+  const bool soft_hyphen =
+      end >= 2 && text[end - 2] == '\xC2' && text[end - 1] == '\xAD';
+  return soft_hyphen && next < len &&
+                 hard_break_at(text, len, next, nullptr, 0) == 0
+             ? end
+             : 0;
+}
+
 // Adds text[start, end) to `builder` with the placeholders in it: those from
 // `*next` on whose offset is at most `end`, each where its offset puts it.
 // Advances `*next` past them, and reports each one's index in `placeholders`
@@ -531,6 +563,10 @@ struct PieceOf {
 // placeholder, punctuation, digits) would take the paragraph's direction
 // rather than that of the text around them. Its suffix (an ellipsis) and
 // sentinel take the paragraph's own level.
+// With `hyphen`, p->hyphen follows the text, before the sentinel and the
+// suffix, shaped on its own and without letter spacing, as Chrome shapes the
+// hyphen it draws where a line breaks at a soft hyphen: it doesn't kern with
+// the letter before it. It takes the bidi level of the text before it.
 std::unique_ptr<Paragraph> build(const effing_paragraph* p,
                                  size_t start,
                                  size_t end,
@@ -541,7 +577,8 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
                                  const SkString& suffix,
                                  std::vector<std::pair<size_t, size_t>>* placed,
                                  bool ellipsis = true,
-                                 const PieceOf* piece = nullptr) {
+                                 const PieceOf* piece = nullptr,
+                                 bool hyphen = false) {
   ParagraphStyle style = p->paragraph_style;
   if (max_lines > 0) {
     style.setMaxLines(max_lines);
@@ -586,12 +623,21 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
         bidi.emplace_back(a - from, b - from, region.level);
       }
     }
-    const size_t extra = (sentinel ? 3 : 0) + suffix.size();
     const SkUnicode::BidiLevel base = p->rtl ? 1 : 0;
+    size_t at = to - from;
+    if (hyphen) {
+      at += p->hyphen.size();
+      if (!bidi.empty()) {
+        bidi.back().end = at;
+      } else {
+        bidi.emplace_back(0, at, base);
+      }
+    }
+    const size_t extra = (sentinel ? 3 : 0) + suffix.size();
     if (extra > 0 && !bidi.empty() && bidi.back().level == base) {
       bidi.back().end += extra;
     } else if (extra > 0) {
-      bidi.emplace_back(to - from, to - from + extra, base);
+      bidi.emplace_back(at, at + extra, base);
     }
   }
   // Paragraphs whose line breaks or bidi levels differ must not share Skia's
@@ -628,6 +674,18 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
         placed->emplace_back(placeholder, index);
       },
       p->lone_crs, &cr_style);
+  if (hyphen) {
+    // A text style of its own, which ends the shaping run before it: one with
+    // a line height, which SkParagraph's shaper splits runs at but otherwise
+    // ignores without a height override. (A language, as the lone CRs' style
+    // has, would shape it in that language too.)
+    TextStyle hyphen_style = style.getTextStyle();
+    hyphen_style.setLetterSpacing(0);
+    hyphen_style.setHeight(0);
+    builder.pushStyle(hyphen_style);
+    builder.addText(p->hyphen.data(), p->hyphen.size());
+    builder.pop();
+  }
   if (sentinel) {
     builder.addPlaceholder(PlaceholderStyle(kUnbounded, 1,
                                             PlaceholderAlignment::kBaseline,
@@ -660,7 +718,7 @@ std::pair<size_t, size_t> to_text(const effing_paragraph* p, size_t skia) {
 }
 
 // Builds a piece of the whole paragraph's Skia text [start, end), followed
-// by a sentinel if `sentinel`.
+// by the hyphen if `hyphen` and a sentinel if `sentinel`.
 std::unique_ptr<Paragraph> build_piece(
     const effing_paragraph* p,
     size_t start,
@@ -669,13 +727,14 @@ std::unique_ptr<Paragraph> build_piece(
     PieceKind kind,
     const SkString& suffix,
     std::vector<std::pair<size_t, size_t>>* placed,
-    bool sentinel = false) {
+    bool sentinel = false,
+    bool hyphen = false) {
   const auto [text_start, first] = to_text(p, start);
   const auto [text_end, last] = to_text(p, end);
   const PieceOf piece{start, sentinel};
   // Only the line given an ellipsis as `suffix` may truncate with Skia's.
   return build(p, text_start, text_end, first, last, max_lines, kind, suffix,
-               placed, !suffix.isEmpty(), &piece);
+               placed, !suffix.isEmpty(), &piece, hyphen);
 }
 
 // Whether SkParagraph gave up on the ellipsis of the last line it laid out.
@@ -752,15 +811,20 @@ std::vector<bool> opportunities(const effing_paragraph* p,
 // opportunity: its text is then a word too wide for the line, which the
 // caller lays out as one), and how many lines the text before that takes.
 // `paragraph` was built as a piece of `kind`, from the whole paragraph's
-// Skia text at `offset` on.
+// Skia text at `offset` on. Only its lines from `first_line` on count, and
+// only those make up `lines`.
 struct Misplaced {
   size_t at = 0;
   int lines = 0;
+  // Whether that text is one line too wide for the width, which is laid out
+  // on its own at the unbounded width (hyphen_break).
+  bool overflows = false;
 };
 Misplaced misplaced_break(const effing_paragraph* p,
                           Paragraph* paragraph,
                           PieceKind kind,
-                          size_t offset) {
+                          size_t offset,
+                          int first_line = 0) {
   auto* impl = static_cast<ParagraphImpl*>(paragraph);
   // Only a placeholder that breaks lines as an emoji, beside no opportunity,
   // makes one (measure_words found them); Skia adds a placeholder of its own
@@ -775,8 +839,8 @@ Misplaced misplaced_break(const effing_paragraph* p,
     index++;
     const size_t at = line.textWithNewlines().end;
     const size_t start = line.text().start;
-    if (line.endsWithHardLineBreak() || line.ellipsis() != nullptr ||
-        at >= size || at <= start) {
+    if (index < first_line || line.endsWithHardLineBreak() ||
+        line.ellipsis() != nullptr || at >= size || at <= start) {
       continue;
     }
     const ClusterRange clusters = line.clusters();
@@ -803,9 +867,122 @@ Misplaced misplaced_break(const effing_paragraph* p,
     }
     for (size_t c = at - 1; c > start; c--) {
       if (at_opportunity(c)) {
-        return {c, index + 1};
+        return {c, index + 1 - first_line};
       }
     }
+  }
+  return {};
+}
+
+// The width of p->hyphen, as build() adds it, measured once.
+float hyphen_width(effing_paragraph* p) {
+  if (p->hyphen_width < 0) {
+    std::vector<std::pair<size_t, size_t>> placed;
+    auto hyphen = build(p, 0, 0, 0, 0, 0, PieceKind::kUnbounded, SkString(),
+                        &placed, false, nullptr, true);
+    hyphen->layout(kUnbounded);
+    p->hyphen_width = hyphen->getLongestLine();
+  }
+  return p->hyphen_width;
+}
+
+// Whether a line of `paragraph` breaks at a soft hyphen (soft_hyphen_end).
+bool breaks_at_soft_hyphen(Paragraph* paragraph) {
+  auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  const SkSpan<const char> text = impl->text();
+  for (const TextLine& line : impl->lines()) {
+    if (line.ellipsis() == nullptr && !line.endsWithHardLineBreak() &&
+        soft_hyphen_end(text.data(), text.size(), line.textWithNewlines().end) >
+            0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// SkParagraph breaks lines without the hyphen that a line breaking at a soft
+// hyphen ends with, which Chrome fits in the line too, shaping the line's
+// text anew with the hyphen after it. Finds the first line of `paragraph`
+// that SkParagraph breaks at a soft hyphen, its last line included where the
+// text after it in `whole` makes that a break: `paragraph` is built as a
+// piece of `kind` from the whole paragraph's Skia text `whole` at `offset` on
+// and laid out at `w`, from its line `first_line` on. Says where the text
+// should break instead, as misplaced_break does (`at` is 0 if no line breaks
+// so):
+// - before that line, if it isn't `first_line`: it is then the first line of
+//   the next piece, built from its own text as the line will be;
+// - else at the last opportunity in it where its text fits, shaped on its
+//   own with the hyphen after it where that is a soft hyphen too;
+// - else, when none fits, at its first opportunity, where the line overflows
+//   the width, as in Chrome.
+Misplaced hyphen_break(effing_paragraph* p,
+                       Paragraph* paragraph,
+                       PieceKind kind,
+                       SkSpan<const char> whole,
+                       size_t offset,
+                       float w,
+                       int first_line) {
+  auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  // Where a line that ends at `c` in the piece's text ends with a hyphen,
+  // there, or 0.
+  const auto hyphen_end = [&](size_t c) {
+    const size_t end = soft_hyphen_end(whole.data(), whole.size(), offset + c);
+    return end > offset ? end - offset : 0;
+  };
+  int index = -1;
+  for (const TextLine& line : impl->lines()) {
+    index++;
+    const size_t at = line.textWithNewlines().end;
+    if (index < first_line || line.ellipsis() != nullptr ||
+        hyphen_end(at) == 0) {
+      continue;
+    }
+    const size_t start = line.text().start;
+    if (index > first_line) {
+      return {start, index - first_line};
+    }
+    const bool own =
+        kind == PieceKind::kBreakFirstWord || p->opportunities.empty();
+    const std::vector<bool> opportunity =
+        own ? opportunities(p, paragraph, kind, offset) : std::vector<bool>();
+    // The width of the line up to `c`, without the spaces that hang there:
+    // as SkParagraph measured it, or shaped on its own with the hyphen after
+    // it where it breaks at a soft hyphen.
+    const auto width = [&](size_t c) {
+      if (const size_t end = hyphen_end(c)) {
+        std::vector<std::pair<size_t, size_t>> placed;
+        auto hyphenated = build_piece(p, offset + start, offset + end, 0,
+                                      PieceKind::kUnbounded, SkString(),
+                                      &placed, false, true);
+        hyphenated->layout(kUnbounded);
+        return hyphenated->getLongestLine();
+      }
+      float up_to = 0;
+      float content = 0;
+      const ClusterRange clusters = line.clustersWithSpaces();
+      for (size_t k = clusters.start; k < clusters.end; k++) {
+        const Cluster& cluster = impl->cluster(k);
+        if (cluster.textRange().end > c) {
+          break;
+        }
+        up_to += cluster.width();
+        if (!cluster.isWhitespaceBreak()) {
+          content = up_to;
+        }
+      }
+      return content;
+    };
+    size_t first = at;
+    for (size_t c = at; c > start; c--) {
+      if (c != at && !(own ? opportunity[c] : p->opportunities[offset + c])) {
+        continue;
+      }
+      if (!too_wide(width(c), w)) {
+        return {c, 1};
+      }
+      first = c;
+    }
+    return {first, 1, /*overflows=*/true};
   }
   return {};
 }
@@ -1048,6 +1225,17 @@ void measure_words(effing_paragraph* p) {
   p->words.clear();
   p->graphemes.clear();
   p->widest_word = 0;
+  // A word that a line can break after at a soft hyphen is that wide with
+  // the hyphen, as Chrome's min-content has it.
+  const auto add_word = [&](size_t start, size_t end, size_t content_end,
+                            float width) {
+    if (!p->hyphen.empty() &&
+        soft_hyphen_end(text.data(), text.size(), end) > 0) {
+      width += hyphen_width(p);
+    }
+    p->words.push_back({start, end, content_end, width});
+    p->widest_word = std::max(p->widest_word, width);
+  };
   size_t start = 0;
   size_t content_end = 0;
   float width = 0;
@@ -1067,8 +1255,7 @@ void measure_words(effing_paragraph* p) {
     }
     p->graphemes.back().width += cluster.width();
     if (range.start > start && breaks(range.start)) {
-      p->words.push_back({start, range.start, content_end, trimmed});
-      p->widest_word = std::max(p->widest_word, trimmed);
+      add_word(start, range.start, content_end, trimmed);
       start = range.start;
       content_end = start;
       width = 0;
@@ -1081,8 +1268,7 @@ void measure_words(effing_paragraph* p) {
     }
   }
   if (text.size() > start) {
-    p->words.push_back({start, text.size(), content_end, trimmed});
-    p->widest_word = std::max(p->widest_word, trimmed);
+    add_word(start, text.size(), content_end, trimmed);
   }
 }
 
@@ -1278,15 +1464,17 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
     const size_t line_start =
         empty ? piece.end
               : p->utf8_offsets[piece.offset + lines[k].fStartIndex];
+    // Where the line's text ends, which a hyphen after it doesn't.
+    const auto text_end = [&](size_t index) {
+      return std::min(p->utf8_offsets[piece.offset + index], piece.end);
+    };
     // The spaces before the ellipsis stay where whitespace is kept, as in
     // Chrome; the hard break after them doesn't.
-    size_t line_end =
-        empty ? piece.end
-        : p->keep_trailing_whitespace
-            ? without_hard_break(
-                  text.data(), len, line_start,
-                  p->utf8_offsets[piece.offset + lines[k].fEndIndex])
-            : p->utf8_offsets[piece.offset + lines[k].fEndExcludingWhitespaces];
+    size_t line_end = empty ? piece.end
+                      : p->keep_trailing_whitespace
+                          ? without_hard_break(text.data(), len, line_start,
+                                               text_end(lines[k].fEndIndex))
+                          : text_end(lines[k].fEndExcludingWhitespaces);
     // Skia ends a line before a CRLF between its CR and LF.
     if (line_end > line_start && line_end < len && text[line_end] == '\n' &&
         text[line_end - 1] == '\r') {
@@ -1309,7 +1497,12 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       piece.override_hard_break = true;
       piece.empty_last_line = false;
       piece.line_end = SIZE_MAX;
+      piece.hyphen = false;
     }
+    // A line that breaks at a soft hyphen keeps its hyphen before the
+    // ellipsis, as in Chrome.
+    const bool hyphen = !empty && !p->hyphen.empty() &&
+                        soft_hyphen_end(text.data(), len, line_end) == line_end;
     Piece last{};
     last.start = line_start;
     last.end = line_end;
@@ -1318,9 +1511,10 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
     last.suffixed = true;
     last.offset = whole->getUTF16Index(line_start);
     last.line_end = whole->getUTF16Index(line_end);
-    last.paragraph =
-        build_piece(p, line_start, line_end, 1, last.kind,
-                    p->paragraph_style.getEllipsis(), &last.placed);
+    last.hyphen = hyphen;
+    last.paragraph = build_piece(p, line_start, line_end, 1, last.kind,
+                                 p->paragraph_style.getEllipsis(), &last.placed,
+                                 false, hyphen);
     if (layout_paragraph(last.paragraph.get(), w,
                          justified(p, PieceKind::kWrapped))) {
       // Not even the line's first grapheme cluster fits with the ellipsis
@@ -1328,6 +1522,7 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       // CSS keeps it, and the ellipsis after it, both overflowing the line:
       // lay that out unbounded.
       const size_t end = first_grapheme_end(whole, line_start, line_end);
+      last.hyphen = false;
       last.kind = PieceKind::kUnbounded;
       last.max_lines = 0;
       last.line_end = whole->getUTF16Index(end);
@@ -1366,17 +1561,20 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
 
   // Adds the piece [start, end); false when no lines are left for more.
   // With `soft_lines`, its text ends at a soft break, after that many lines.
+  // With `hyphen`, its text ends at a soft hyphen where its last line breaks,
+  // and the hyphen follows it.
   // A paragraph of [start, end) built and laid out to look for a line that
   // ends where it shouldn't, which add_one takes for its piece if it holds
   // the same text with the same limit.
   struct Probe {
     std::unique_ptr<Paragraph> paragraph;
     std::vector<std::pair<size_t, size_t>> placed;
+    size_t start = 0;
     size_t end = 0;
     int max_lines = 0;
   };
   const auto add_one = [&](size_t start, size_t end, PieceKind kind,
-                           int soft_lines, Probe* probe) {
+                           int soft_lines, Probe* probe, bool hyphen) {
     const bool unbounded = kind == PieceKind::kUnbounded;
     Piece piece{};
     piece.start = start;
@@ -1420,8 +1618,14 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
     piece.empty_last_line =
         end < len && !cut && soft_lines == 0 &&
         without_hard_break(text.data(), len, start, piece.end) != piece.end;
-    piece.line_end =
-        piece.empty_last_line ? whole->getUTF16Index(piece.end) : SIZE_MAX;
+    // The last line's text ends before the hyphen.
+    piece.hyphen = hyphen && !cut;
+    piece.line_end = piece.empty_last_line || piece.hyphen
+                         ? whole->getUTF16Index(piece.end)
+                         : SIZE_MAX;
+    // The size of its text in SkParagraph's, with the hyphen.
+    const size_t size =
+        piece.end - piece.start + (piece.hyphen ? p->hyphen.size() : 0);
     // Without an ellipsis, Skia drops the lines past those left, and knows
     // whether text remains; with one, the line the lines run out at is
     // rebuilt, so one more line tells.
@@ -1442,20 +1646,23 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
     for (auto& old : previous) {
       if (old.paragraph && old.start == piece.start && old.end == piece.end &&
           old.kind == kind && old.max_lines == piece.max_lines &&
-          old.soft_lines == piece.soft_lines && old.suffixed == false) {
+          old.soft_lines == piece.soft_lines && old.suffixed == false &&
+          old.hyphen == piece.hyphen) {
         piece.paragraph = std::move(old.paragraph);
         piece.placed = std::move(old.placed);
         break;
       }
     }
     if (!piece.paragraph && probe != nullptr && probe->paragraph && !sentinel &&
-        probe->end == piece.end && probe->max_lines == piece.max_lines) {
+        !piece.hyphen && probe->start == start && probe->end == piece.end &&
+        probe->max_lines == piece.max_lines) {
       piece.paragraph = std::move(probe->paragraph);
       piece.placed = std::move(probe->placed);
     }
     if (!piece.paragraph) {
-      piece.paragraph = build_piece(p, start, piece.end, piece.max_lines, kind,
-                                    SkString(), &piece.placed, sentinel);
+      piece.paragraph =
+          build_piece(p, start, piece.end, piece.max_lines, kind, SkString(),
+                      &piece.placed, sentinel, piece.hyphen);
     }
     layout_paragraph(piece.paragraph.get(), unbounded ? kUnbounded : w,
                      justified(p, kind));
@@ -1466,13 +1673,14 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       const auto lines =
           static_cast<ParagraphImpl*>(piece.paragraph.get())->lines();
       if (static_cast<int>(lines.size()) != soft_lines ||
-          lines.back().textWithNewlines().end != piece.end - piece.start) {
+          lines.back().textWithNewlines().end != size) {
         sentinel = false;
         piece.soft_lines = 0;
         piece.max_lines = max_lines;
         piece.placed.clear();
-        piece.paragraph = build_piece(p, start, piece.end, piece.max_lines,
-                                      kind, SkString(), &piece.placed);
+        piece.paragraph =
+            build_piece(p, start, piece.end, piece.max_lines, kind, SkString(),
+                        &piece.placed, false, piece.hyphen);
         layout_paragraph(piece.paragraph.get(), w, justified(p, kind));
       }
     } else if (justified(p, kind) && !cut && end < len && piece.end == end &&
@@ -1481,13 +1689,14 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       // say: its last line is justified too, with a sentinel after it.
       const int lines = static_cast<int>(piece.paragraph->lineNumber());
       std::vector<std::pair<size_t, size_t>> placed;
-      auto justified_piece = build_piece(p, start, piece.end, lines, kind,
-                                         SkString(), &placed, true);
+      auto justified_piece =
+          build_piece(p, start, piece.end, lines, kind, SkString(), &placed,
+                      true, piece.hyphen);
       layout_paragraph(justified_piece.get(), w, true);
       const auto laid =
           static_cast<ParagraphImpl*>(justified_piece.get())->lines();
       if (lines > 0 && static_cast<int>(laid.size()) == lines &&
-          laid.back().textWithNewlines().end == piece.end - piece.start) {
+          laid.back().textWithNewlines().end == size) {
         sentinel = true;
         piece.paragraph = std::move(justified_piece);
         piece.placed = std::move(placed);
@@ -1540,8 +1749,9 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
         Piece& last = p->pieces.back();
         last.placed.clear();
         last.max_lines = lines_left;
-        last.paragraph = build_piece(p, start, last.end, lines_left, kind,
-                                     SkString(), &last.placed);
+        last.paragraph =
+            build_piece(p, start, last.end, lines_left, kind, SkString(),
+                        &last.placed, false, last.hyphen);
         layout_paragraph(last.paragraph.get(), unbounded ? kUnbounded : w,
                          justified(p, kind));
       }
@@ -1559,8 +1769,9 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       Piece& last = p->pieces.back();
       last.placed.clear();
       last.max_lines = lines_left;
-      last.paragraph = build_piece(p, start, last.end, lines_left, kind,
-                                   SkString(), &last.placed);
+      last.paragraph =
+          build_piece(p, start, last.end, lines_left, kind, SkString(),
+                      &last.placed, false, last.hyphen);
       layout_paragraph(last.paragraph.get(), unbounded ? kUnbounded : w,
                        justified(p, kind));
       last.override_hard_break = false;
@@ -1597,15 +1808,20 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
   // Adds the pieces of [start, end). Spaces that start a line, which CSS
   // collapses away, are left out of every piece, and a piece ends at the
   // hard break before them. With placeholders, where SkParagraph may end a
-  // line where it shouldn't (misplaced_break), the text is laid out a window
-  // at a time first: a piece ends where such a line should, or else before
-  // the window's last line, which the text after the window may change, and
-  // the next starts there. The windows keep the work in proportion to the
-  // text.
+  // line where it shouldn't (misplaced_break), and with soft hyphens, where
+  // it breaks lines without the hyphen (hyphen_break), the text is laid out
+  // a window at a time first: a piece ends where such a line should, or
+  // else before the window's last line, which the text after the window may
+  // change, and the next starts there. The windows keep the work in
+  // proportion to the text, and so does going on with a window's lines after
+  // a piece that ends where one of them does. A piece that ends where a line
+  // breaks at a soft hyphen ends with the hyphen, without the spaces after
+  // it, which hang.
   const auto add = [&](size_t start, size_t end, PieceKind kind) {
     auto run = std::lower_bound(p->collapsed.begin(), p->collapsed.end(), start,
                                 [](const std::pair<size_t, size_t>& run,
                                    size_t at) { return run.second <= at; });
+    Probe probe;
     while (start < end) {
       for (; run != p->collapsed.end() && run->first <= start; ++run) {
         start = std::max(start, std::min(run->second, end));
@@ -1617,35 +1833,76 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
           run != p->collapsed.end() ? std::min(run->first, end) : end;
       size_t to = stop;
       int soft_lines = 0;
-      Probe probe;
+      PieceKind piece_kind = kind;
       // Only text with a placeholder beside no opportunity can have a line
-      // end where it shouldn't.
+      // end where it shouldn't, and only text with a soft hyphen can have a
+      // line break at one.
       const auto glued =
           std::lower_bound(p->glued.begin(), p->glued.end(), start + 1);
-      if (glued != p->glued.end() && *glued < stop &&
-          kind != PieceKind::kUnbounded) {
-        const size_t window = window_end(start, stop);
-        probe.end = window;
-        probe.max_lines = limited ? lines_left + (p->ellipsized ? 1 : 0) : 0;
-        probe.paragraph = build_piece(p, start, window, probe.max_lines, kind,
-                                      SkString(), &probe.placed);
-        layout_paragraph(probe.paragraph.get(), w, false);
-        const Misplaced misplaced =
-            misplaced_break(p, probe.paragraph.get(), kind, start);
+      const bool misplaceable = glued != p->glued.end() && *glued < stop;
+      const size_t soft_hyphen =
+          p->hyphen.empty()
+              ? std::string_view::npos
+              : std::string_view(text.data(), stop).find("\xC2\xAD", start);
+      const bool hyphenable = soft_hyphen != std::string_view::npos;
+      if ((misplaceable || hyphenable) && kind != PieceKind::kUnbounded) {
+        // The last probe's line that starts at `start`, unless that is the
+        // last line of a window, which the text after the window may change.
+        int first_line = -1;
+        if (probe.paragraph && probe.start < start && start < probe.end &&
+            probe.end <= stop) {
+          const auto& lines =
+              static_cast<ParagraphImpl*>(probe.paragraph.get())->lines();
+          for (size_t i = 1; i < lines.size(); i++) {
+            if (probe.start + lines[i].text().start == start) {
+              if (i + 1 < lines.size() || probe.end == stop) {
+                first_line = static_cast<int>(i);
+              }
+              break;
+            }
+          }
+        }
+        if (first_line < 0) {
+          first_line = 0;
+          probe.start = start;
+          probe.end = window_end(start, stop);
+          probe.max_lines = limited ? lines_left + (p->ellipsized ? 1 : 0) : 0;
+          probe.placed.clear();
+          probe.paragraph = build_piece(p, start, probe.end, probe.max_lines,
+                                        kind, SkString(), &probe.placed);
+          layout_paragraph(probe.paragraph.get(), w, false);
+        }
+        const size_t window = probe.end;
+        Misplaced misplaced =
+            misplaceable ? misplaced_break(p, probe.paragraph.get(), kind,
+                                           probe.start, first_line)
+                         : Misplaced{};
+        const Misplaced hyphenated =
+            hyphenable ? hyphen_break(p, probe.paragraph.get(), kind, text,
+                                      probe.start, w, first_line)
+                       : Misplaced{};
+        if (hyphenated.at > 0 &&
+            (misplaced.at == 0 || hyphenated.lines < misplaced.lines)) {
+          misplaced = hyphenated;
+        }
         const auto probed =
             static_cast<ParagraphImpl*>(probe.paragraph.get())->lines();
-        if (misplaced.at > 0) {
-          to = start + misplaced.at;
+        const int left = static_cast<int>(probed.size()) - first_line;
+        if (misplaced.overflows) {
+          to = probe.start + misplaced.at;
+          piece_kind = PieceKind::kUnbounded;
+        } else if (misplaced.at > 0) {
+          to = probe.start + misplaced.at;
           soft_lines = misplaced.lines;
-        } else if (window < stop && probed.size() >= 2 &&
+        } else if (window < stop && left >= 2 &&
                    !probe.paragraph->didExceedMaxLines()) {
           // The empty line after a hard break that ends the window starts at
           // the break itself (its text is the break): the piece then takes
           // the window, break and all, and ends at that hard break.
-          const size_t last = start + probed.back().text().start;
+          const size_t last = probe.start + probed.back().text().start;
           to = hard_break_at(text.data(), len, last, nullptr, 0) > 0 ? window
                                                                      : last;
-          soft_lines = static_cast<int>(probed.size()) - 1;
+          soft_lines = left - 1;
         }
         // A line before a hard break ends the piece as any hard break does.
         if (to < stop &&
@@ -1653,7 +1910,11 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
           soft_lines = 0;
         }
       }
-      if (!add_one(start, to, kind, soft_lines, &probe)) {
+      const size_t hyphen_end =
+          p->hyphen.empty() ? 0 : soft_hyphen_end(text.data(), len, to);
+      const bool hyphen = hyphen_end > start;
+      if (!add_one(start, hyphen ? hyphen_end : to, piece_kind, soft_lines,
+                   &probe, hyphen)) {
         return false;
       }
       start = to;
@@ -1933,6 +2194,11 @@ effing_paragraph* effing_paragraph_create(
   if (!out->lone_crs.empty()) {
     compute_bidi(out);
   }
+  // Only wrapping text breaks lines at a soft hyphen.
+  if (!out->nowrap && out->text.find("\xC2\xAD") != std::string::npos) {
+    out->hyphen =
+        primary && primary->unicharToGlyph(0x2010) != 0 ? "\xE2\x80\x90" : "-";
+  }
   out->paragraph_style = paragraph_style;
   out->strut_families = families;
   out->font_collection = font_collection;
@@ -2064,8 +2330,12 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
       whole && p->ellipsized && p->paragraphs.front()->didExceedMaxLines();
   // So is text with spaces that start a line, which CSS collapses away.
   const bool collapsed = whole && !p->collapsed.empty();
-  split_around_long_words(p, w,
-                          any_emptied || misplaced || clamped || collapsed);
+  // And text with a line that breaks at a soft hyphen, which ends with a
+  // hyphen that SkParagraph neither draws nor makes room for.
+  const bool hyphenated = whole && w < kUnbounded && !p->hyphen.empty() &&
+                          breaks_at_soft_hyphen(p->paragraphs.front().get());
+  split_around_long_words(
+      p, w, any_emptied || misplaced || clamped || collapsed || hyphenated);
   if (p->nowrap && any_emptied) {
     truncate_nowrap_lines(p, w, emptied);
   }

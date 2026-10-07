@@ -264,6 +264,39 @@ top:
   `geometricPrecision`; the two agree pixel for pixel.
 - `letterSpacing` follows each character, as in Chrome, except the ones
   Chrome adds none after (below).
+- A line that breaks at a soft hyphen (U+00AD) ends with a hyphen, as CSS
+  `hyphens: manual`, the default, has it (below).
+
+#### Soft hyphens
+
+A soft hyphen draws nothing, unless a line breaks at it: the line then ends
+with a hyphen, measured and drawn, as Chrome draws it
+(`__test__/effing-paragraph-soft-hyphen.spec.ts`). It is U+2010 where the
+primary font has that, and "-" otherwise, shaped on its own: it doesn't kern
+with the letter before it and takes no `letterSpacing`. The line's text, its
+`endIndex`, ends after the soft hyphen, and its `width` takes in the hyphen,
+which it is aligned and justified with. A line breaks at a soft hyphen when
+its text and the hyphen fit, at the last opportunity before it otherwise,
+and overflows with the hyphen when it has none. Spaces between the soft
+hyphen and where the line breaks hang after the hyphen, as in Chrome, but a
+soft hyphen before a hard break or at the end of the text gets none. A line
+clamped by `maxLines` keeps its hyphen before the `ellipsis`
+("cali‐…"). `minIntrinsicWidth` takes the hyphen in after a word that ends
+at a soft hyphen, as Chrome's min-content does. There is no `hyphens:
+none`, where Chrome doesn't break at soft hyphens at all: a caller after
+that drops them from the text.
+
+SkParagraph would break lines at soft hyphens without the hyphen. So text
+that has a line break at one is laid out in pieces (below): a line that
+breaks at a soft hyphen is a piece of its own, its text with the hyphen
+after it, in a text style of its own. Each such line is shaped twice, once
+to see whether it fits, as Chrome reshapes a line it hyphenates, which can
+be wider than its text measured in the paragraph: kerning between the last
+letter and the one after the soft hyphen is gone. A paragraph of 1000 words
+with a soft hyphen between every two syllables (193 lines) takes about 10ms
+to lay out first instead of 2ms, and 6.5ms instead of 0.2ms to lay out
+again at another width; 100 such words, 2.2ms and 0.3ms instead of 1.6ms
+and 0.02ms.
 
 #### Letter spacing
 
@@ -632,6 +665,17 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- A `Paragraph` line that breaks at a soft hyphen (U+00AD) ends with a
+  hyphen, as Chrome draws it under `hyphens: manual`: U+2010, or "-" where
+  the primary font has none, measured, drawn, aligned and justified with the
+  line. Such a line used to end with nothing, a hyphen's width short of
+  Chrome's (Liberation Sans 20px at 130px: `'super\u00ADcali\u00ADfragilistic'`
+  was 80.04px and 77.79px, now 86.72px, with the hyphen, and 77.79px), and
+  lines broke at soft hyphens where only their text fitted. A line clamped
+  by `maxLines` keeps its hyphen before the `ellipsis`, and
+  `minIntrinsicWidth` takes it in after a word that ends at a soft hyphen.
+  Text with such a line is laid out in pieces, more slowly (see soft
+  hyphens).
 - A draw under `ctx.filter`, and the shadow of one or of a drawn image, goes
   through a layer the size of what it draws rather than of the canvas. Five
   lines of text under `blur(12px)` on a 1080x1080 canvas went from about
