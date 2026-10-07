@@ -33,7 +33,8 @@ pub struct ParagraphStyle {
   pub font_style: Option<String>,
   pub letter_spacing: Option<f64>,
   /// Line box height in px, where 0 collapses the line boxes; omitted or null
-  /// for `normal` (hhea ascent + descent).
+  /// for Chrome's `normal`, the hhea ascent, descent and line gap each rounded
+  /// to whole pixels.
   pub line_height: Option<Either<f64, Null>>,
   /// `left`, `right`, `center`, `justify`, or `start` / `end`, which follow
   /// `direction`.

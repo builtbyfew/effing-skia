@@ -2,6 +2,7 @@
 //! See `docs/effing.md`.
 
 pub mod filter_layer;
+pub mod fonts;
 pub mod group;
 pub mod paragraph;
 pub mod text;

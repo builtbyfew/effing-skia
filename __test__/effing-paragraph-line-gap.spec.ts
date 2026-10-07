@@ -78,10 +78,17 @@ test('a negative line gap is 0, as in Chrome', (t) => {
   near(t, layout.descent, (426 / 2000) * 20)
 })
 
-test('lineGap does not change normal line boxes', (t) => {
-  // `lineHeight` normal stays ascent + descent; the caller adds the gap.
-  const layout = new Paragraph('abc', { fontFamily: 'LG Lato Gap 200', fontSize: 20 }).layout(100)
-  near(t, layout.lineHeight, layout.ascent + layout.descent)
+test('normal line boxes include the line gap, as in Chrome', (t) => {
+  // As measured in Chrome above: with a gap of +200, 26px lines with the
+  // baseline at 21; with -200, as with none, 24px lines with it at 20.
+  const gap = new Paragraph('abc', { fontFamily: 'LG Lato Gap 200', fontSize: 20 }).layout(100)
+  t.is(gap.lineHeight, 26)
+  t.is(gap.lines[0].baseline, 21)
+  for (const fontFamily of ['LG Lato', 'LG Lato Gap -200']) {
+    const layout = new Paragraph('abc', { fontFamily, fontSize: 20 }).layout(100)
+    t.is(layout.lineHeight, 24, fontFamily)
+    t.is(layout.lines[0].baseline, 20, fontFamily)
+  }
 })
 
 test('an empty paragraph and one of placeholders only report the primary font gap', (t) => {
