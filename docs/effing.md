@@ -293,9 +293,9 @@ after it, in a text style of its own. Each such line is shaped twice, once
 to see whether it fits, as Chrome reshapes a line it hyphenates, which can
 be wider than its text measured in the paragraph: kerning between the last
 letter and the one after the soft hyphen is gone. A paragraph of 1000 words
-with a soft hyphen between every two syllables (193 lines) takes about 10ms
-to lay out first instead of 2ms, and 6.5ms instead of 0.2ms to lay out
-again at another width; 100 such words, 2.2ms and 0.3ms instead of 1.6ms
+with a soft hyphen between every two syllables (193 lines) takes about 9ms
+to lay out first instead of 2.3ms, and 5ms instead of 0.2ms to lay out
+again at another width; 100 such words, 2.1ms and 0.2ms instead of 1.6ms
 and 0.02ms.
 
 #### Letter spacing

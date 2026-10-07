@@ -941,10 +941,23 @@ Misplaced hyphen_break(effing_paragraph* p,
     if (index > first_line) {
       return {start, index - first_line};
     }
-    const bool own =
-        kind == PieceKind::kBreakFirstWord || p->opportunities.empty();
+    // SkParagraph's own opportunities, which have one on either side of
+    // every placeholder, are the text's unless a placeholder breaks lines
+    // as an emoji (misplaced_break).
+    const bool emoji = !p->opportunities.empty();
     const std::vector<bool> opportunity =
-        own ? opportunities(p, paragraph, kind, offset) : std::vector<bool>();
+        emoji && kind == PieceKind::kBreakFirstWord
+            ? opportunities(p, paragraph, kind, offset)
+            : std::vector<bool>();
+    const auto at_opportunity = [&](size_t c) {
+      if (!opportunity.empty()) {
+        return static_cast<bool>(opportunity[c]);
+      }
+      if (emoji) {
+        return static_cast<bool>(p->opportunities[offset + c]);
+      }
+      return impl->codeUnitHasProperty(c, SkUnicode::kSoftLineBreakBefore);
+    };
     // The width of the line up to `c`, without the spaces that hang there:
     // as SkParagraph measured it, or shaped on its own with the hyphen after
     // it where it breaks at a soft hyphen.
@@ -974,7 +987,7 @@ Misplaced hyphen_break(effing_paragraph* p,
     };
     size_t first = at;
     for (size_t c = at; c > start; c--) {
-      if (c != at && !(own ? opportunity[c] : p->opportunities[offset + c])) {
+      if (c != at && !at_opportunity(c)) {
         continue;
       }
       if (!too_wide(width(c), w)) {
