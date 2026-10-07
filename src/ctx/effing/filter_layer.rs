@@ -15,8 +15,12 @@
 //! The pixels are those of the unbounded layer, up to rounding: where a
 //! layer starts moves the rounding of what is drawn into it and of the
 //! filter, by a level or so in a few pixels, mostly under a scale, rotation
-//! or skew. The layer still covers the clip where bounds could change more
-//! or would save next to nothing:
+//! or skew. An image drawn with `imageSmoothingEnabled = false` at a
+//! fractional scale and position can also pick the other of two equally near
+//! source pixels, a whole row or column apart; both are valid, and a group's
+//! content-sized buffer picks the same way (`docs/effing.md`, filtered
+//! draws). The layer still covers the clip where bounds could change more or
+//! would save next to nothing:
 //!
 //! - for a blend mode or a filter that changes what is behind the layer
 //!   where it is transparent (`clear`, `modulate`, or a filter that affects
@@ -47,8 +51,11 @@ impl Context {
   where
     F: Fn(&mut Canvas, &Paint) -> Result<(), SkError>,
   {
-    // The layer opens at the device identity, which no rotation or skew
-    // resamples, so only the blend mode and the filter can stop it fitting.
+    // The layer opens at the device identity, so no rotation or skew of the
+    // draw resamples it, and only the blend mode and the filter can stop it
+    // fitting. Strictly the layer's matrix is `ctm * ctm^-1`, a float epsilon
+    // off the identity under a rotation or skew, but that is the matrix the
+    // unbounded layer opens under too, so checking at the identity is right.
     if !layer_paint.group_fits_content(&Matrix::identity()) {
       return None;
     }
@@ -59,7 +66,16 @@ impl Context {
     // What `f` drew before an error is drawn all the same, as on the
     // unbounded layer.
     let result = f(&mut content, paint);
-    if let Some(picture) = recorder.finish_recording_as_picture() {
+    // SkPictureRecorder::finishRecordingAsPicture always returns a picture,
+    // an empty one when nothing was drawn, so this can't drop the draw.
+    // Running `f` again instead would charge what it draws to the recording
+    // twice.
+    let picture = recorder.finish_recording_as_picture();
+    debug_assert!(
+      picture.is_some(),
+      "finishRecordingAsPicture returns a picture"
+    );
+    if let Some(picture) = picture {
       canvas.draw_filter_layer(&picture, layer_paint);
     }
     Some(result)

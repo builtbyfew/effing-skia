@@ -69,6 +69,10 @@ void effing_canvas_draw_filter_layer(skiac_canvas* c_canvas,
   // bound, would save next to nothing, and gets the unbounded layer: where a
   // layer starts moves the rounding of what is drawn into it, by a level
   // here and there, so a bounded one is not always the same to the bit.
+  // On the isolation arm `canvas` is composited_pass's recording, at the
+  // inverse of the draw's matrix and clipped to the pass's cull rect rather
+  // than the device clip, so this compares against that instead. It only
+  // chooses between two layers that both draw the content right.
   SkRect device;
   canvas->getTotalMatrix().mapRect(&device, bounds);
   const bool covers_clip =

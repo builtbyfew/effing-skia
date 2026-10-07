@@ -16,9 +16,10 @@ extern "C" {
 void effing_filter_layer_begin_content(skiac_picture_recorder* recorder);
 
 // Draws `content`, recorded as above, through a layer composited with
-// `paint`, sized to what `content` draws, or covering the clip when that
-// covers the clip anyway. `paint` must leave what is behind the layer alone
-// where the layer is transparent, which effing_group_fits_content checks.
+// `paint`, sized to what `content` draws. Content that covers the canvas's
+// clip gets an unbounded layer instead. `paint` must leave what is behind the
+// layer alone where the layer is transparent, which effing_group_fits_content
+// checks.
 void effing_canvas_draw_filter_layer(skiac_canvas* canvas,
                                      skiac_paint* paint,
                                      skiac_picture* content);

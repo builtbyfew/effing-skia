@@ -563,6 +563,15 @@ so a blur keeps taking in what is drawn past the clip or the canvas edge.
 The pixels are those of the canvas-sized layer, up to rounding: where the
 layer starts moves the rounding of what is drawn into it and of the filter,
 by up to 4 levels in a few pixels, mostly under a scale, rotation or skew.
+One case moves whole rows or columns: an image drawn with
+`imageSmoothingEnabled = false` and scaled to a fractional position, where a
+pixel center can fall exactly between two source pixels and either is the
+nearest. A different start can pick the other one, so a filtered
+`drawImage(img, 20.5, 10.5, 110, 80)` of a 64x48 image can show a few rows
+or columns of the neighbouring source pixels, off by up to about 100 levels.
+Both are valid nearest picks, and a group's content-sized buffer picks the
+same way.
+
 The layer covers the clip as before for a blend mode or a filter that
 changes what is behind it where it is transparent (`clear`, `modulate`, a
 filter that affects transparent black), under a singular transform, and for
@@ -624,12 +633,14 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 ### Unreleased
 
 - A draw under `ctx.filter`, and the shadow of one or of a drawn image, goes
-  through a layer the size of what it draws rather than of the canvas.
-  Five lines of text under `blur(12px)` on a 1080x1080 canvas went from
-  about 132 ms to 32 ms, and 200 small blurred squares from about 4 s to
-  11 ms. Results are the same pixels up to rounding, which can move a few
-  pixels by a level or so, mostly under a scale, rotation or skew (see
-  filtered draws).
+  through a layer the size of what it draws rather than of the canvas. Five
+  lines of text under `blur(12px)` on a 1080x1080 canvas went from about
+  132 ms to 32 ms, and 200 small blurred squares from about 4 s to 11 ms.
+  Results are the same pixels up to rounding, which can move a few pixels by
+  a level or so, mostly under a scale, rotation or skew, and, for an image
+  drawn with `imageSmoothingEnabled = false` at a fractional scale and
+  position, can pick the neighbouring source row or column where two are
+  equally near (see filtered draws).
 
 ### 1.0.10-effing.5
 
