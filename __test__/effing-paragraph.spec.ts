@@ -31,8 +31,9 @@ function baselineInBox(layout: { lineHeight: number; ascent: number; descent: nu
 test('layout wraps at the width and stacks line boxes', (t) => {
   const layout = new Paragraph(TEXT, STYLE).layout(200)
   t.true(layout.lines.length > 1)
-  near(t, layout.lineHeight, layout.ascent + layout.descent)
-  near(t, layout.height, layout.lines.length * layout.lineHeight)
+  // `normal`, as in Chrome: round(19.54) + round(4.1) + round(1.36) = 25.
+  t.is(layout.lineHeight, 25)
+  t.is(layout.height, layout.lines.length * 25)
   for (const [i, line] of layout.lines.entries()) {
     t.true(line.width <= 200, `line ${i} is ${line.width} wide`)
     t.is(line.left, 0)
@@ -74,10 +75,12 @@ test('lineHeight 0 collapses every line box', (t) => {
   for (const line of layout.lines) {
     t.is(line.baseline, 8)
   }
-  // Omitted or null is `normal`.
+  // Omitted or null is `normal`: in Chrome, 25px lines with the baseline at
+  // 20 (`__test__/effing-paragraph-half-leading.spec.ts`).
   for (const lineHeight of [undefined, null]) {
     const normal = new Paragraph(TEXT, { ...STYLE, lineHeight }).layout(200)
-    near(t, normal.lineHeight, normal.ascent + normal.descent)
+    t.is(normal.lineHeight, 25)
+    t.is(normal.lines[0].baseline, 20)
   }
   const ctx = createCanvas(200, 40).getContext('2d')
   const paragraph = new Paragraph(TEXT, { ...STYLE, lineHeight: 0 })

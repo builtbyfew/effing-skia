@@ -37,8 +37,9 @@ export interface ParagraphStyle {
   letterSpacing?: number
   /**
    * Line box height in px, rounded to 1/64px as Chrome lays it out, where 0
-   * collapses the line boxes; omitted or null for `normal` (hhea ascent +
-   * descent). The baseline sits Chrome's half-leading below each line's top:
+   * collapses the line boxes; omitted or null for Chrome's `normal`,
+   * `round(ascent) + round(descent) + round(lineGap)`. The baseline sits
+   * Chrome's half-leading below each line's top:
    * `round(ascent) + floor((lineHeight - round(ascent) - round(descent)) / 2)`.
    */
   lineHeight?: number | null
@@ -160,8 +161,8 @@ export interface ParagraphLayout {
   descent: number
   /**
    * The primary font's hhea line gap in px at this size, clamped to ≥ 0 (a
-   * negative gap is 0, as in Chrome). Not part of `lineHeight`; Chrome's
-   * `line-height: normal` is `round(ascent) + round(descent) + round(lineGap)`.
+   * negative gap is 0, as in Chrome). Part of `normal`, Chrome's
+   * `line-height: normal`: `round(ascent) + round(descent) + round(lineGap)`.
    * Like `ascent` and `descent`, it is the primary font's whatever the text,
    * so an empty paragraph or one of placeholders only reports it too.
    */

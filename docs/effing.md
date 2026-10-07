@@ -100,9 +100,12 @@ A `Paragraph` is a single-style paragraph laid out natively by SkParagraph
 (line breaking, shaping, bidi, font fallback), with effing's CSS line model on
 top:
 
-- Every line box is exactly `lineHeight` tall (`normal`, when it is omitted,
-  is the primary font's hhea ascender + descender), and the baseline sits in
-  the box by CSS half-leading as Chrome computes it. Fallback fonts never
+- Every line box is exactly `lineHeight` tall, and the baseline sits in the
+  box by CSS half-leading as Chrome computes it. `normal`, when it is
+  omitted, is Chrome's `line-height: normal` (on macOS, where CoreText
+  reads hhea): the primary font's hhea ascent, descent and line gap each
+  rounded to whole pixels and summed, with the baseline the rounded ascent
+  plus half the rounded gap, floored, below the line's top. Fallback fonts never
   grow a line. A `lineHeight` of 0 collapses the line boxes, as CSS
   `line-height: 0` does: the paragraph is 0px tall and the glyphs of every
   line overflow it above and below.
@@ -118,14 +121,16 @@ top:
   as Chrome's do. For Liberation Sans at 20px (ascent 18.1, descent 4.24)
   that's 22 in a 30px line, 22 in a 30.5px one (the next line's at 52.5),
   and 7 for a line height of 0, where the half-leading of the unrounded
-  metrics put it at 21.93 and 6.93
-  (`__test__/effing-paragraph-half-leading.spec.ts`, 1053 cases measured
-  in Chrome over nine fonts).
+  metrics put it at 21.93 and 6.93, as measured in Chrome 154.
+  `__test__/effing-paragraph-half-leading.spec.ts` checks the baselines
+  Chrome gives five of the fonts in `__test__/fonts` at 9 sizes and 13 line
+  heights (585 cases, including 0, smaller than the text, and fractional),
+  the 1/64px rounding, and `normal` for all 17 fonts there and two with a
+  line gap set (152 cases).
 - The layout reports the primary font's hhea `ascent`, `descent` and
   `lineGap` in px at the font size, for the caller's own line boxes.
-  `lineGap` is 0 for a negative gap, as Chrome takes it, and is left out of
-  `normal`; Chrome's `line-height: normal` (on macOS, where CoreText reads
-  hhea) is `round(ascent) + round(descent) + round(lineGap)`. They come from
+  `lineGap` is 0 for a negative gap, as Chrome takes it; `normal` is
+  `round(ascent) + round(descent) + round(lineGap)`. They come from
   the hhea table even when the font sets `USE_TYPO_METRICS`, where FreeType's
   `SkFontMetrics` would give the OS/2 typo values (Iosevka Slab: a hhea gap
   of 68 units, a typo gap of 0). They are the primary font's, the first of
@@ -650,18 +655,25 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 - A `Paragraph` places its baselines by Chrome's half-leading: from the
   ascent and descent rounded to whole pixels, the half of the leading above
   the text floored to whole pixels. They used to split the leading of the
-  unrounded metrics evenly, which put them off Chrome's by up to 1.28px
-  in the cases measured (Noto Sans Devanagari at 16px in an 18.75px line:
-  13.28 for Chrome's 12; Liberation Sans at 20px in a 30px line: 21.93,
-  now 22 as in Chrome, and at a line height of 0, 6.93, now 7). The baseline now always sits a whole
-  number of pixels below its line's top. `lineHeight` is rounded to 1/64px,
-  Chrome's layout unit, and `ParagraphLayout.lineHeight` and `height`
-  report it so (33.3 is 33.296875). `text-top` and `text-bottom`
-  placeholders align with the rounded ascent and descent, as in Chrome.
-  `@effing/canvas` computes the paragraph's baseline itself to shift a
-  `normal` line box to Chrome's; it should take it from the lines (or
-  this rule) instead, after which the shift is 0.
-
+  unrounded metrics evenly, which put them off Chrome's by up to 1.28px in
+  the cases measured (Noto Sans Devanagari at 16px in an 18.75px line:
+  13.28 for Chrome's 12). The baseline now always sits a whole number of
+  pixels below its line's top. `lineHeight` is rounded to 1/64px, Chrome's
+  layout unit, and `ParagraphLayout.lineHeight` and `height` report it so
+  (33.3 is 33.296875). `text-top` and `text-bottom` placeholders align with
+  the rounded ascent and descent, as in Chrome.
+- An omitted (or null) `lineHeight` is now Chrome's `line-height: normal`,
+  `round(ascent) + round(descent) + round(lineGap)`: whole pixels, and with
+  the line gap, where it used to be the unrounded `ascent + descent`
+  without it. Iosevka Slab at 20px has 25px lines with the baseline at 20,
+  as in Chrome, where it had 23.64px lines with the baseline at 19.54.
+- `@effing/canvas` works out the paragraph's baseline itself, as
+  `(lineHeight + ascent - descent) / 2`, to shift a `normal` line box to
+  Chrome's. It should take `lines[i].baseline` instead (or this rule, for
+  an empty paragraph): the `normal` line height it passes then gets
+  Chrome's baseline with no shift. Its text-box-trim, which goes from the
+  baseline and the unrounded ascent, and its mock paragraph, which mirrors
+  the old formula, need the same change.
 - A draw under `ctx.filter`, and the shadow of one or of a drawn image, goes
   through a layer the size of what it draws rather than of the canvas. Five
   lines of text under `blur(12px)` on a 1080x1080 canvas went from about

@@ -247,7 +247,10 @@ float round_metric(float px) {
 float baseline_in_line_box(float line_height,
                            float content_ascent,
                            float content_descent) {
-  const double leading = std::round(static_cast<double>(line_height) * 64) -
+  // In LayoutUnits: line_height is a whole number of them (to_layout_units),
+  // so the leading is too, and halving it truncates as Blink's integer
+  // division does.
+  const double leading = static_cast<double>(line_height) * 64 -
                          (content_ascent + content_descent) * 64.0;
   const double above = std::floor(std::trunc(leading / 2) / 64);
   return content_ascent + static_cast<float>(above);
@@ -1894,8 +1897,12 @@ effing_paragraph* effing_paragraph_create(
   }
   out->content_ascent = round_metric(out->ascent);
   out->content_descent = round_metric(out->descent);
-  out->line_height = to_layout_units(
-      s->line_height >= 0 ? s->line_height : out->ascent + out->descent);
+  // `normal` is Chrome's line spacing (SimpleFontData::PlatformInit): the
+  // ascent, descent and line gap each rounded to whole pixels.
+  out->line_height = s->line_height >= 0
+                         ? to_layout_units(s->line_height)
+                         : out->content_ascent + out->content_descent +
+                               round_metric(out->line_gap);
   out->x_height = placeholder_count > 0 ? x_height(primary, s->font_size) : 0;
 
   TextStyle text_style;

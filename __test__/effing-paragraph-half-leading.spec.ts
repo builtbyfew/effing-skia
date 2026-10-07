@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -157,5 +158,307 @@ test('text-top and text-bottom placeholders align with the rounded ascent and de
     const baseline = layout.lines[0].baseline
     near(t, layout.placeholders[0]!.y, baseline - Math.round(layout.ascent))
     near(t, layout.placeholders[1]!.y + 3, baseline + Math.round(layout.descent))
+  }
+})
+
+// A copy of a TrueType font with its hhea lineGap set to `lineGap`.
+function withLineGap(font: Buffer, lineGap: number): Buffer {
+  const copy = Buffer.from(font)
+  const tables = copy.readUInt16BE(4)
+  for (let i = 0; i < tables; i++) {
+    const record = 12 + 16 * i
+    if (copy.toString('latin1', record, record + 4) === 'hhea') {
+      copy.writeInt16BE(lineGap, copy.readUInt32BE(record + 8) + 8)
+      return copy
+    }
+  }
+  throw new Error('no hhea table')
+}
+
+const NORMAL_SIZES = [7, 11, 13, 16, 20, 23, 33, 37]
+
+// `line-height: normal` at each of NORMAL_SIZES: [line height, baseline],
+// measured in Chrome 154 (headless, macOS) from `<div style="font: <size>px
+// <font>"><i></i><br><i></i></div>` with the <i>s zero-size inline-blocks
+// (no text, so no fallback font grows the lines): the div is two line heights
+// tall and the <i>s' tops are the baselines. Lato+200 and Lato+333 are Lato
+// with its hhea line gap set to 200 and 333 units.
+const CHROME_NORMAL: Array<[string, Array<[number, number]>]> = [
+  [
+    'COLR-v1.ttf',
+    [
+      [8, 6],
+      [13, 10],
+      [15, 12],
+      [19, 15],
+      [24, 19],
+      [27, 21],
+      [39, 31],
+      [43, 34],
+    ],
+  ],
+  [
+    'Cascadia.woff2',
+    [
+      [9, 7],
+      [14, 11],
+      [16, 13],
+      [19, 15],
+      [24, 19],
+      [27, 22],
+      [40, 32],
+      [45, 36],
+    ],
+  ],
+  [
+    'HYXiXingKaiW.ttf',
+    [
+      [7, 6],
+      [11, 9],
+      [13, 10],
+      [16, 13],
+      [20, 16],
+      [23, 18],
+      [33, 26],
+      [37, 30],
+    ],
+  ],
+  [
+    'Harmattan-Regular.ttf',
+    [
+      [12, 7],
+      [19, 12],
+      [22, 14],
+      [27, 17],
+      [34, 21],
+      [39, 24],
+      [56, 35],
+      [63, 39],
+    ],
+  ],
+  [
+    'Inconsolata-VariableFont_wdth,wght.woff2',
+    [
+      [7, 6],
+      [11, 9],
+      [13, 11],
+      [17, 14],
+      [21, 17],
+      [24, 20],
+      [34, 28],
+      [39, 32],
+    ],
+  ],
+  [
+    'Lato-Regular.ttf',
+    [
+      [8, 7],
+      [13, 11],
+      [16, 13],
+      [19, 16],
+      [24, 20],
+      [28, 23],
+      [40, 33],
+      [45, 37],
+    ],
+  ],
+  [
+    'NotoSansDevanagari-Regular.ttf',
+    [
+      [9, 6],
+      [14, 10],
+      [17, 12],
+      [21, 14],
+      [26, 18],
+      [30, 21],
+      [43, 30],
+      [48, 33],
+    ],
+  ],
+  [
+    'NotoSansMongolian-Regular.ttf',
+    [
+      [12, 10],
+      [19, 16],
+      [23, 19],
+      [28, 23],
+      [35, 29],
+      [41, 34],
+      [58, 48],
+      [65, 54],
+    ],
+  ],
+  [
+    'NotoSansNKo-Regular.ttf',
+    [
+      [9, 7],
+      [15, 12],
+      [18, 14],
+      [22, 17],
+      [27, 21],
+      [32, 25],
+      [45, 35],
+      [51, 40],
+    ],
+  ],
+  [
+    'Oswald.ttf',
+    [
+      [10, 8],
+      [16, 13],
+      [20, 16],
+      [24, 19],
+      [30, 24],
+      [34, 27],
+      [49, 39],
+      [55, 44],
+    ],
+  ],
+  [
+    'RobotoMono-VariableFont_wght.ttf',
+    [
+      [9, 7],
+      [15, 12],
+      [18, 14],
+      [21, 17],
+      [26, 21],
+      [30, 24],
+      [44, 35],
+      [49, 39],
+    ],
+  ],
+  [
+    'ScienceGothic-VariableFont.ttf',
+    [
+      [11, 8],
+      [16, 12],
+      [19, 14],
+      [23, 17],
+      [30, 22],
+      [34, 25],
+      [49, 36],
+      [54, 40],
+    ],
+  ],
+  [
+    'SourceHanSerifCN-Bold.ttf',
+    [
+      [10, 8],
+      [16, 13],
+      [19, 15],
+      [23, 18],
+      [29, 23],
+      [33, 26],
+      [47, 38],
+      [54, 43],
+    ],
+  ],
+  [
+    'SourceSerifPro-Regular.ttf',
+    [
+      [8, 6],
+      [14, 10],
+      [16, 12],
+      [20, 15],
+      [25, 18],
+      [29, 21],
+      [41, 30],
+      [46, 34],
+    ],
+  ],
+  [
+    'Virgil.woff2',
+    [
+      [9, 6],
+      [14, 10],
+      [17, 12],
+      [20, 14],
+      [25, 18],
+      [29, 20],
+      [41, 29],
+      [47, 33],
+    ],
+  ],
+  [
+    'iosevka-slab-regular.ttf',
+    [
+      [8, 7],
+      [14, 11],
+      [17, 13],
+      [20, 16],
+      [25, 20],
+      [29, 23],
+      [41, 33],
+      [47, 37],
+    ],
+  ],
+  [
+    'osrs-font-compact.otf',
+    [
+      [5, 4],
+      [8, 7],
+      [10, 8],
+      [12, 10],
+      [16, 13],
+      [17, 14],
+      [25, 21],
+      [28, 23],
+    ],
+  ],
+  [
+    'Lato+200',
+    [
+      [9, 7],
+      [14, 11],
+      [17, 13],
+      [21, 17],
+      [26, 21],
+      [30, 24],
+      [43, 34],
+      [49, 39],
+    ],
+  ],
+  [
+    'Lato+333',
+    [
+      [9, 7],
+      [15, 12],
+      [18, 14],
+      [22, 17],
+      [27, 21],
+      [32, 25],
+      [45, 35],
+      [51, 40],
+    ],
+  ],
+]
+
+test('normal is Chrome line-height: normal', (t) => {
+  const lato = readFileSync(join(__dirname, 'fonts', 'Lato-Regular.ttf'))
+  for (const [n, [file, boxes]] of CHROME_NORMAL.entries()) {
+    // Not the file name, which can have a comma.
+    const fontFamily = `HL Normal ${n}`
+    const gap = /^Lato\+(\d+)$/.exec(file)
+    t.truthy(
+      gap
+        ? GlobalFonts.register(withLineGap(lato, Number(gap[1])), fontFamily)
+        : GlobalFonts.registerFromPath(join(__dirname, 'fonts', file), fontFamily),
+      file,
+    )
+    for (const [i, fontSize] of NORMAL_SIZES.entries()) {
+      const [lineHeight, baseline] = boxes[i]
+      const at = `${file} ${fontSize}px`
+      for (const omitted of [undefined, null]) {
+        const layout = new Paragraph('a\nb', { fontFamily, fontSize, lineHeight: omitted }).layout(400)
+        t.is(layout.lineHeight, lineHeight, at)
+        t.is(layout.height, 2 * lineHeight, at)
+        t.is(layout.lines[0].baseline, baseline, at)
+        t.is(layout.lines[1].baseline, lineHeight + baseline, at)
+        // Chrome's line spacing, and its half-leading of the line gap.
+        const [a, d, g] = [layout.ascent, layout.descent, layout.lineGap].map(Math.round)
+        t.is(lineHeight, a + d + g, at)
+        t.is(baseline, a + Math.floor(g / 2), at)
+      }
+    }
   }
 })
