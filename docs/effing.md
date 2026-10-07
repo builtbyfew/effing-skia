@@ -210,11 +210,14 @@ top:
   - An ellipsis cuts a run in the other direction than the paragraph's in
     reading order, on purpose (#38): grapheme clusters come off the end of
     the line's text, in logical order, until the ellipsis fits, so the run
-    keeps its logical start, as Chrome does with `dir="rtl"`. Chrome's LTR
-    paragraphs cut the line on screen, at the ellipsis, and keep the run's
-    visual left, its logical end: `'ab بتثبتث بتث'` clamped to one line at
-    70px shows "ab بتثبت…" here, and the end of that word in Chrome. The
-    same holds for `noWrap` lines with an ellipsis.
+    keeps its logical start. Chrome 154 keeps such a run's logical end, the
+    part farthest from the ellipsis, in either direction:
+    `'ab بتثبتث بتث'` clamped to one line at 70px shows "ab بتثبت…" here,
+    and the end of that word in Chrome, and `'aa bbbb c dddd eeee f gg'` in
+    an RTL paragraph, justified at 85px, "…aa bb" here and "…bbbb" in
+    Chrome. For text entirely in an RTL script, the fork's result is what
+    Chrome shows once the base direction is RTL (effing#198). The same
+    holds for `noWrap` lines with an ellipsis.
   - A line of nothing but spaces keeps none of them: it is the ellipsis
     alone, at the line's start, where Chrome keeps the spaces before it.
     Wrapped text has such lines only with `keepTrailingWhitespace`, or from
@@ -222,6 +225,13 @@ top:
   - `text-overflow` clips the line, ellipsis included, to the box; the fork
     clips nothing, so a `noWrap` line's kept cluster and ellipsis show past
     the width, as a clamped line's do in Chrome.
+  - SkParagraph shapes the ellipsis in the font of the last cluster kept,
+    where that has "…" (Harmattan after an Arabic word), and only otherwise
+    in the first of `fontFamily` that has it; Chrome takes the first of
+    `fontFamily` that has it (Liberation Sans, say). In a clamped line of
+    mixed fonts the two ellipses can differ in width (at 20px, 12.63px in
+    Harmattan and 20px in Liberation Sans), the words staying where they
+    are.
 - Under `justify`, a clamped line that ends at a soft break is justified
   as a line that isn't the paragraph's last, then cut, as Chrome does it
   (`__test__/effing-paragraph-ellipsis.spec.ts`): grapheme clusters come off
@@ -231,10 +241,9 @@ top:
   at 65px, and the line can end short of the width (`'aa b cc d eee'` at
   95px is "aa b cc…", 93.33px wide). SkParagraph would truncate the line
   first and justify what is left, or, as for the clamped line's own piece,
-  not at all: the line
-  is laid out justified, with a sentinel after it, and SkParagraph's
-  `TextLine::createEllipsis` then cuts that line, made to stop where the
-  clusters' justified advance and the ellipsis's fit. As elsewhere, the
+  not at all: the line is laid out justified, with a sentinel after it, and
+  SkParagraph's `TextLine::createEllipsis` then cuts that line, made to stop
+  where the clusters' justified advance and the ellipsis's fit. As elsewhere, the
   clusters come off in logical order, so which part of a run in the other
   direction stays is as above; spaces of that other direction don't end
   what is kept, as the ellipsis wouldn't follow them on screen, and what is
@@ -242,9 +251,9 @@ top:
   hyphen is justified with its hyphen, which is then the first thing cut:
   `'aa bb super\u00ADcali\u00ADfragilistic dd'` in Liberation Sans over
   150px is "aa bb superc…", the words where justifying "aa bb supercali-"
-  put them, as in Chrome. The ellipsis is measured in the
-  font SkParagraph shapes it in: that of the last cluster kept, or else the
-  first of `fontFamily` that has it. A clamped line with no gap to widen, or
+  put them, as in Chrome. The ellipsis is measured in the font SkParagraph
+  shapes it in: that of the last cluster kept, or else the first of
+  `fontFamily` that has it. A clamped line with no gap to widen, or
   that ends at a hard break, is start-aligned with its ellipsis, as in
   Chrome. Where this differs from Chrome: what is kept fits with the
   ellipsis when SkParagraph's line breaker would take it to, up to 0.25px
