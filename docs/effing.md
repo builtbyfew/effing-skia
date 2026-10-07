@@ -802,20 +802,27 @@ registered faces.
 ## Font matching
 
 A family's face for a style is the one CSS font matching picks
-([CSS Fonts 4 §5.2](https://drafts.csswg.org/css-fonts-4/#font-style-matching)),
-as in Chrome, wherever a family is resolved: `ctx.font` for `fillText`,
+([CSS Fonts 4 §5.2](https://drafts.csswg.org/css-fonts-4/#font-style-matching))
+as Chrome implements it, wherever a family is resolved: `ctx.font` for `fillText`,
 `strokeText` and `measureText`, a `Paragraph`, each family of a
 `font-family` list, SVG text, and the default style `setAlias` takes, for
-registered and system families alike (`__test__/effing-font-matching.spec.ts`).
+registered and system families alike (`__test__/effing-font-matching.spec.ts`),
+among the faces the fork loads: `loadSystemFonts()` loads only the first face
+of a font collection (`.ttc`), so a system family such as Helvetica Neue,
+Avenir Next or Didot has only that face to match among (#51).
 Of a family's faces it narrows down by one property after the other, each
 checked in CSS's order:
 
 1. font-stretch: the desired width, then, at or below normal, narrower
    widths nearest first and then wider ones nearest first; above normal,
    wider widths first, then narrower ones.
-2. font-style: `italic` takes italic faces, then oblique, then normal ones;
-   `oblique` takes oblique, then italic, then normal; `normal` takes normal,
-   then oblique, then italic.
+2. font-style: `italic` and `oblique` take slanted faces, italic or
+   oblique, then upright ones; `normal` takes upright faces, then slanted
+   ones. An italic face and an oblique one are the same slope, as in Chrome,
+   where `italic` is `oblique 14deg`, the angle `oblique` has without one,
+   and the weight decides between them: of a 700 oblique and a 400 italic
+   face, italic at 700 takes the oblique one. CSS Fonts 4 would check italic
+   faces before oblique ones for italic, and the other way round otherwise.
 3. font-weight: the desired weight, then, from 400 to 500, heavier weights
    up to 500 nearest first, then lighter ones nearest first, then those
    above 500 nearest first (so 400 takes 500 before 300, and 500 takes 400
@@ -844,17 +851,17 @@ whose `matchStyle` is `effing::match_css` (`effing::with_css_matching`).
 
 - Of equally good faces the first registered wins, as before, where Chrome
   takes the last `@font-face` rule.
-- Chrome takes an italic face and an oblique one (`font-style: oblique`
-  without an angle, 14deg) for the same slope, so for italic it takes
-  whichever is the better weight, then the last rule; the fork prefers the
-  italic face, as CSS Fonts 4 does, and the oblique one for oblique. A face
-  is oblique where its OS/2 table says so (`fsSelection` bit 9), which few
-  fonts do.
+- A face is oblique where its OS/2 table says so (`fsSelection` bit 9),
+  which few fonts do. SkParagraph slants any face that isn't italic for
+  italic, an oblique one too, and none for oblique, where Chrome slants an
+  upright face for either and a slanted one for neither.
 - `ctx.font` and SVG's `font-weight` take weights in hundreds only, as
   before; a `Paragraph` takes any weight.
 - A variable font is one face, of its default instance's style; its axes
   don't follow the requested weight or width.
 - Fallback for characters no family of the list has is unchanged.
+- Lottie text keeps Skia's matching: `skiac_skottie_animation_make` gives
+  Skottie a font manager of its own, which isn't wrapped.
 
 ## Releasing
 
@@ -922,7 +929,10 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   fixture's known difference should go. A normal style in a family with a
   bold and an italic face but no regular is now the bold, also for the
   face `setAlias` takes, an italic in a family of an oblique face and an
-  upright bold the oblique face, and a width above normal the face of that
+  upright bold the oblique face, italic and oblique faces the same slope,
+  as in Chrome, so that the weight decides between them (italic at 700 in
+  a family of a 400 italic and a 700 oblique face is the oblique one), and
+  a width above normal the face of that
   width where a wider one was there too. Text set in a style a family has
   no face for can lay out differently.
 - `drop-shadow()` in `ctx.filter` and in a group's filters blurs with its

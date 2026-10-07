@@ -2,7 +2,6 @@
 
 #include "../skia_c.hpp"
 
-#include <algorithm>
 #include <memory>
 #include <tuple>
 
@@ -107,23 +106,15 @@ int stretch_rank(int desired, int width) {
   return narrower ? 10 + desired - width : width - desired;
 }
 
-// font-style: italic checks italic, oblique, then normal faces; oblique
-// checks oblique, italic, then normal; normal checks normal, oblique, then
-// italic.
+// font-style: italic and oblique check slanted faces, then upright ones;
+// normal checks upright faces, then slanted ones. An italic face and an
+// oblique one are the same slope, as in Chrome: Blink takes italic for
+// oblique 14deg (kItalicSlopeValue), the angle `oblique` has without one,
+// and ranks faces by their angle alone. CSS Fonts 4 would check italic faces
+// before oblique ones for italic, and the other way round otherwise.
 int style_rank(SkFontStyle::Slant desired, SkFontStyle::Slant slant) {
-  static_assert(SkFontStyle::kUpright_Slant == 0 &&
-                    SkFontStyle::kItalic_Slant == 1 &&
-                    SkFontStyle::kOblique_Slant == 2,
-                "SkFontStyle::Slant values not as required.");
-  static constexpr int kRank[3][3] = {
-      //               upright  italic  oblique  [face]
-      /* upright */ {0, 2, 1},
-      /* italic  */ {2, 0, 1},
-      /* oblique */ {2, 1, 0},
-      /* [desired] */
-  };
-  auto index = [](SkFontStyle::Slant s) { return std::clamp<int>(s, 0, 2); };
-  return kRank[index(desired)][index(slant)];
+  bool slanted = slant != SkFontStyle::kUpright_Slant;
+  return slanted == (desired != SkFontStyle::kUpright_Slant) ? 0 : 1;
 }
 
 // font-weight: from 400 to 500, heavier weights up to 500 nearest first,

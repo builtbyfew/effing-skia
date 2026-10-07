@@ -62,8 +62,9 @@ class ShadowableFaces {
 // The index of the face of `faces` that CSS font matching (CSS Fonts 4
 // §5.2) picks for `desired`, or -1 for none: of the faces nearest in
 // font-stretch, those nearest in font-style, and of those the one nearest in
-// font-weight, each in the order CSS checks them. The first of equally good
-// faces wins.
+// font-weight, each in the order CSS checks them, with italic and oblique
+// faces the same slope, as in Chrome. The first of equally good faces wins,
+// where Chrome takes the last @font-face rule.
 //
 // Skia's SkFontStyleSet::matchStyleCSS3 scores the three in one number with
 // eight bits apart, where a weight scores up to 1000, so the weight spills
@@ -74,7 +75,9 @@ int match_css(SkFontStyleSet& faces, const SkFontStyle& desired);
 sk_sp<SkFontStyleSet> with_css_matching(sk_sp<SkFontStyleSet> faces);
 
 // `fonts`, whose families match a style as with_css_matching's do. Everything
-// else it passes to `fonts`.
+// else it passes to `fonts`. The font collection's system font manager is
+// one; the font manager skiac_skottie_animation_make gives Skottie isn't, so
+// Lottie text keeps Skia's matching.
 sk_sp<SkFontMgr> with_css_matching(sk_sp<SkFontMgr> fonts);
 
 }  // namespace effing

@@ -35,7 +35,8 @@ function faceOf(name: string): Face {
 }
 
 const SLANTS = { normal: 0, italic: 1, oblique: 2 }
-const advanceOf = ({ weight, style, width }: Face) => 600 + weight + 25 * SLANTS[style] + 7 * (width - 5)
+// Weights here are tens, so a slanted face never has an upright one's width.
+const advanceOf = ({ weight, style, width }: Face) => 600 + weight + 13 * SLANTS[style] + 7 * (width - 5)
 
 // --- Faces made from Lato ---------------------------------------------------
 
@@ -230,6 +231,24 @@ const CASES: Record<string, { faces: string; chrome: Record<string, string> }> =
       oblique: '400o 400o 400o 400o 400o 400o 400o 400o 400o 400o 400o 400o',
     },
   },
+  // Italic and oblique faces are the same slope, as in Chrome: the weight
+  // decides between them.
+  SLANTED: {
+    faces: '700o 400i',
+    chrome: {
+      normal: '400i 400i 400i 400i 400i 400i 400i 700o 700o 700o 700o 700o',
+      italic: '400i 400i 400i 400i 400i 400i 400i 700o 700o 700o 700o 700o',
+      oblique: '400i 400i 400i 400i 400i 400i 400i 700o 700o 700o 700o 700o',
+    },
+  },
+  SLANTED_N: {
+    faces: '700i 400o 400n',
+    chrome: {
+      normal: '400n 400n 400n 400n 400n 400n 400n 400n 400n 400n 400n 400n',
+      italic: '400o 400o 400o 400o 400o 400o 400o 700i 700i 700i 700i 700i',
+      oblique: '400o 400o 400o 400o 400o 400o 400o 700i 700i 700i 700i 700i',
+    },
+  },
   // font-stretch comes first: a condensed bold, and an italic of normal width.
   STR: {
     faces: '700n@3 400i',
@@ -369,22 +388,19 @@ test('setAlias takes the face a normal style matches', (t) => {
   t.is(drawnBy('BI', paragraphWidth('FM BI alias', 'italic', 400)), '700n')
 })
 
-test('italic takes an italic face over an oblique one, and normal an oblique one over an italic', (t) => {
-  // CSS Fonts 4's order. Chrome takes italic and oblique (14deg) for the
-  // same slope, so of an italic and an oblique face it takes the better
-  // weight, then the last @font-face rule.
-  const drawn = (family: string, faces: string[], style: Slant, weight: number) => {
-    const width = paragraphWidth(family, style, weight)
-    return faces.find((face) => Math.abs((TEXT.length * advanceOf(faceOf(face)) * SIZE) / 2000 - width) < 0.01)
+test('every face of a family is a width of its own', (t) => {
+  for (const [name, { faces }] of Object.entries(CASES)) {
+    const advances = faces.split(' ').map((face) => advanceOf(faceOf(face)))
+    t.is(new Set(advances).size, advances.length, name)
   }
-  const mixed = ['700i', '400o', '400n', '400i']
-  for (const face of mixed) GlobalFonts.register(makeFace('FM IO', faceOf(face)))
-  t.is(drawn('FM IO', mixed, 'italic', 400), '400i')
-  t.is(drawn('FM IO', mixed, 'italic', 100), '400i')
-  t.is(drawn('FM IO', mixed, 'oblique', 700), '400o')
-  t.is(drawn('FM IO', mixed, 'normal', 700), '400n')
-  const slanted = ['400i', '400o']
-  for (const face of slanted) GlobalFonts.register(makeFace('FM IO slanted', faceOf(face)))
-  t.is(drawn('FM IO slanted', slanted, 'normal', 400), '400o')
-  t.is(drawn('FM IO slanted', slanted, 'italic', 400), '400i')
+})
+
+test('of an italic and an oblique face equally good, the first registered wins', (t) => {
+  // Chrome takes the last @font-face rule, 400o.
+  const faces = ['400i', '400o']
+  for (const face of faces) GlobalFonts.register(makeFace('FM IO', faceOf(face)))
+  for (const style of ['normal', 'italic', 'oblique'] as const) {
+    const width = paragraphWidth('FM IO', style, 400)
+    t.true(Math.abs((TEXT.length * advanceOf(faceOf('400i')) * SIZE) / 2000 - width) < 0.01, `${style}: ${width}`)
+  }
 })
