@@ -207,12 +207,14 @@ top:
     where Chrome hides it, and the fork clips nothing.
   - The cluster kept is the first in the text, which in a line of mixed
     directions need not be the one Chrome keeps, the first on screen.
-  - SkParagraph takes grapheme clusters off the end of the line's text, in
-    logical order, until the ellipsis fits. Chrome truncates the line on
-    screen, at the ellipsis, so where an LTR line ends in an RTL word the
-    two keep different parts of that word: `'ab بتثبتث بتث'` clamped to one
-    line at 70px shows "ab بتثبت…" here, and more of the word in Chrome,
-    its end (#38 asks which to keep).
+  - An ellipsis cuts a run in the other direction than the paragraph's in
+    reading order, on purpose (#38): grapheme clusters come off the end of
+    the line's text, in logical order, until the ellipsis fits, so the run
+    keeps its logical start, as Chrome does with `dir="rtl"`. Chrome's LTR
+    paragraphs cut the line on screen, at the ellipsis, and keep the run's
+    visual left, its logical end: `'ab بتثبتث بتث'` clamped to one line at
+    70px shows "ab بتثبت…" here, and the end of that word in Chrome. The
+    same holds for `noWrap` lines with an ellipsis.
   - A line of nothing but spaces keeps none of them: it is the ellipsis
     alone, at the line's start, where Chrome keeps the spaces before it.
     Wrapped text has such lines only with `keepTrailingWhitespace`, or from
