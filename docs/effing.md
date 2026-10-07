@@ -102,10 +102,25 @@ top:
 
 - Every line box is exactly `lineHeight` tall (`normal`, when it is omitted,
   is the primary font's hhea ascender + descender), and the baseline sits in
-  the box by CSS half-leading. Fallback fonts never grow a line. A
-  `lineHeight` of 0 collapses the line boxes, as CSS `line-height: 0` does:
-  the paragraph is 0px tall and every line's baseline sits at
-  `(ascent - descent) / 2`, the glyphs overflowing above and below.
+  the box by CSS half-leading as Chrome computes it. Fallback fonts never
+  grow a line. A `lineHeight` of 0 collapses the line boxes, as CSS
+  `line-height: 0` does: the paragraph is 0px tall and the glyphs of every
+  line overflow it above and below.
+- The half-leading is Chrome's (Blink's `CalculateLeadingSpace`): the
+  ascent and descent are rounded to whole pixels, the leading is the line
+  height less their sum, and the half above the text is floored to whole
+  pixels, the odd pixel and any fraction going below, also when the
+  leading is negative. So a line's baseline sits
+  `round(ascent) + floor((lineHeight - round(ascent) - round(descent)) / 2)`
+  below its top, always a whole pixel. `lineHeight` itself is rounded to
+  the 1/64px Chrome lays out in (`ParagraphLayout.lineHeight` reports it
+  so: 33.3 is 33.296875), so the lines of a fractional line height stack
+  as Chrome's do. For Liberation Sans at 20px (ascent 18.1, descent 4.24)
+  that's 22 in a 30px line, 22 in a 30.5px one (the next line's at 52.5),
+  and 7 for a line height of 0, where the half-leading of the unrounded
+  metrics put it at 21.93 and 6.93
+  (`__test__/effing-paragraph-half-leading.spec.ts`, 1053 cases measured
+  in Chrome over nine fonts).
 - The layout reports the primary font's hhea `ascent`, `descent` and
   `lineGap` in px at the font size, for the caller's own line boxes.
   `lineGap` is 0 for a negative gap, as Chrome takes it, and is left out of
@@ -373,9 +388,9 @@ Skia places a placeholder along its line; effing places it vertically by its
 its top (defaulting to its `height`: the bottom edge, as for an image), on
 the line's baseline; `middle` puts its middle half the primary font's
 x-height above the baseline; `top`/`bottom` align it with the line box; and
-`text-top`/`text-bottom` with the primary font's hhea ascent/descent. These
-match Chrome's inline-block placement (`__test__/effing-paragraph-placeholders.spec.ts`),
-except that Chrome rounds the ascent and descent to whole pixels. A CSS
+`text-top`/`text-bottom` with the primary font's hhea ascent/descent,
+rounded to whole pixels as Chrome rounds them. These match Chrome's
+inline-block placement (`__test__/effing-paragraph-placeholders.spec.ts`). A CSS
 `vertical-align: <length>` is a `baselineOffset` of the box's height plus
 that length. Letter spacing is not added to a placeholder, as Chrome doesn't
 add it to an inline-block.
@@ -631,6 +646,21 @@ the CI matrix.
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
+
+- A `Paragraph` places its baselines by Chrome's half-leading: from the
+  ascent and descent rounded to whole pixels, the half of the leading above
+  the text floored to whole pixels. They used to split the leading of the
+  unrounded metrics evenly, which put them off Chrome's by up to 1.28px
+  in the cases measured (Noto Sans Devanagari at 16px in an 18.75px line:
+  13.28 for Chrome's 12; Liberation Sans at 20px in a 30px line: 21.93,
+  now 22 as in Chrome, and at a line height of 0, 6.93, now 7). The baseline now always sits a whole
+  number of pixels below its line's top. `lineHeight` is rounded to 1/64px,
+  Chrome's layout unit, and `ParagraphLayout.lineHeight` and `height`
+  report it so (33.3 is 33.296875). `text-top` and `text-bottom`
+  placeholders align with the rounded ascent and descent, as in Chrome.
+  `@effing/canvas` computes the paragraph's baseline itself to shift a
+  `normal` line box to Chrome's; it should take it from the lines (or
+  this rule) instead, after which the shift is 0.
 
 - A draw under `ctx.filter`, and the shadow of one or of a drawn image, goes
   through a layer the size of what it draws rather than of the canvas. Five

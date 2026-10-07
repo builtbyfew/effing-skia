@@ -19,6 +19,15 @@ function near(t: import('ava').ExecutionContext, actual: number, expected: numbe
   t.true(Math.abs(actual - expected) <= epsilon, `${actual} is not within ${epsilon} of ${expected}`)
 }
 
+// Where Chrome's half-leading puts the baseline below a line's top: the ascent
+// and descent rounded, the half of the leading above them floored
+// (`__test__/effing-paragraph-half-leading.spec.ts`).
+function baselineInBox(layout: { lineHeight: number; ascent: number; descent: number }) {
+  const ascent = Math.round(layout.ascent)
+  const descent = Math.round(layout.descent)
+  return ascent + Math.floor((layout.lineHeight - ascent - descent) / 2)
+}
+
 test('layout wraps at the width and stacks line boxes', (t) => {
   const layout = new Paragraph(TEXT, STYLE).layout(200)
   t.true(layout.lines.length > 1)
@@ -27,7 +36,7 @@ test('layout wraps at the width and stacks line boxes', (t) => {
   for (const [i, line] of layout.lines.entries()) {
     t.true(line.width <= 200, `line ${i} is ${line.width} wide`)
     t.is(line.left, 0)
-    near(t, line.baseline, i * layout.lineHeight + (layout.lineHeight + layout.ascent - layout.descent) / 2)
+    near(t, line.baseline, i * layout.lineHeight + baselineInBox(layout))
     // Only the end of the text counts as a hard break.
     t.is(line.hardBreak, i === layout.lines.length - 1)
   }
@@ -46,7 +55,9 @@ test('lineHeight sets every line box', (t) => {
   const layout = new Paragraph(TEXT, { ...STYLE, lineHeight: 40 }).layout(200)
   t.is(layout.lineHeight, 40)
   for (const [i, line] of layout.lines.entries()) {
-    near(t, line.baseline, i * 40 + (40 + layout.ascent - layout.descent) / 2)
+    near(t, line.baseline, i * 40 + baselineInBox(layout))
+    // Iosevka Slab's 19.54 and 4.1 round to 20 and 4: 8px of leading above.
+    t.is(line.baseline, i * 40 + 28)
   }
 })
 
@@ -54,16 +65,14 @@ test('lineHeight 0 collapses every line box', (t) => {
   // Measured in Chrome 154 (headless, macOS) from `<div style="font: 20px
   // <this font>; line-height: 0">abc<br>def</div>`: the div is 0px tall, and
   // Range.getClientRects() puts both lines' text at the same place, its
-  // content area from -12 to 12 around the div's top, so the baseline at 8.
-  // That is this half-leading with Chrome's ascent and descent rounded to
-  // whole pixels: (0 + 20 - 4) / 2.
+  // content area from -12 to 12 around the div's top, so the baseline at 8:
+  // Chrome's half-leading, 20 + floor((0 - 20 - 4) / 2).
   const layout = new Paragraph(TEXT, { ...STYLE, lineHeight: 0 }).layout(200)
   t.true(layout.lines.length > 1)
   t.is(layout.lineHeight, 0)
   t.is(layout.height, 0)
   for (const line of layout.lines) {
-    near(t, line.baseline, (layout.ascent - layout.descent) / 2)
-    near(t, line.baseline, 8, 0.5)
+    t.is(line.baseline, 8)
   }
   // Omitted or null is `normal`.
   for (const lineHeight of [undefined, null]) {
@@ -138,7 +147,7 @@ test('noWrap with an ellipsis truncates every hard-broken line', (t) => {
   t.is(layout.lines[3].startIndex, 2 * TEXT.length + 3)
   t.is(layout.lines[3].endIndex, text.length)
   for (const [i, line] of layout.lines.entries()) {
-    near(t, line.baseline, i * layout.lineHeight + (layout.lineHeight + layout.ascent - layout.descent) / 2)
+    near(t, line.baseline, i * layout.lineHeight + baselineInBox(layout))
   }
   t.false(layout.didExceedMaxLines)
 })

@@ -48,6 +48,15 @@ function expectLines(t: ExecutionContext, layout: ParagraphLayout, expected: Lin
   }
 }
 
+// Where Chrome's half-leading puts the baseline below a line's top: the ascent
+// and descent rounded, the half of the leading above them floored
+// (`__test__/effing-paragraph-half-leading.spec.ts`).
+function baselineInBox(layout: { lineHeight: number; ascent: number; descent: number }) {
+  const ascent = Math.round(layout.ascent)
+  const descent = Math.round(layout.descent)
+  return ascent + Math.floor((layout.lineHeight - ascent - descent) / 2)
+}
+
 function near(t: ExecutionContext, actual: number, expected: number, epsilon = 0.02) {
   t.true(Math.abs(actual - expected) <= epsilon, `${actual} is not within ${epsilon} of ${expected}`)
 }
@@ -85,7 +94,7 @@ test('normal leaves a word wider than the line unbroken on a line of its own', (
   near(t, layout.longestLine, 150)
   near(t, layout.height, 3 * layout.lineHeight)
   for (const [i, line] of layout.lines.entries()) {
-    near(t, line.baseline, i * layout.lineHeight + (layout.lineHeight + layout.ascent - layout.descent) / 2)
+    near(t, line.baseline, i * layout.lineHeight + baselineInBox(layout))
     t.is(line.hardBreak, i === 2)
   }
   t.false(layout.didExceedMaxLines)
