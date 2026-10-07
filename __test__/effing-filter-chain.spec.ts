@@ -90,3 +90,76 @@ for (const invalid of [
     t.is(ctx.filter, 'sepia(1)')
   })
 }
+
+// What Chrome's canvas accepts as a filter value, and what it rejects, keeping
+// the previous filter. Each was checked against Chrome 154.
+
+function accepted(filter: string) {
+  const ctx = createCanvas(SIZE, SIZE).getContext('2d')
+  ctx.filter = 'sepia(1)'
+  ctx.filter = filter
+  return ctx.filter !== 'sepia(1)'
+}
+
+for (const valid of [
+  'hue-rotate(0)',
+  'drop-shadow(red 4px 4px 2px)',
+  'drop-shadow(red 4px 4px)',
+  'drop-shadow(4px 4px 2px hsl(120, 100%, 25%))',
+  'drop-shadow(hsla(120, 100%, 25%, 0.5) 4px 4px 2px)',
+  'drop-shadow(4px 4px 2px hwb(120 0% 50%))',
+  'drop-shadow(4px 4px 2px hsl(0 0% 0% / 0))',
+  'BLUR(4px)',
+  'blur(4PX)',
+  'Drop-Shadow(4PX 4px RED)',
+  'HUE-ROTATE(90DEG)',
+  'Opacity(50%)',
+]) {
+  test(`${valid} is accepted`, (t) => {
+    t.true(accepted(valid))
+  })
+}
+
+for (const invalid of [
+  'hue-rotate(90)',
+  'drop-shadow(4px red 4px)',
+  'drop-shadow(4px 4px 2px nosuchcolor)',
+  'drop-shadow(4px 4px 2px 1px)',
+  'drop-shadow(4px 4px 2px red 1px)',
+  'drop-shadow(4px 4px 2px red blue)',
+  'drop-shadow(4px)',
+  'drop-shadow(red)',
+  'drop-shadow(10% 4px)',
+]) {
+  test(`${invalid} is rejected`, (t) => {
+    t.false(accepted(invalid))
+  })
+}
+
+test('drop-shadow() takes its colour before or after the lengths', (t) => {
+  t.deepEqual(pixels('drop-shadow(red 4px 4px 2px)'), pixels('drop-shadow(4px 4px 2px red)'))
+  t.deepEqual(
+    pixels('drop-shadow(rgba(0, 0, 255, 0.5) 4px 4px) grayscale(1)'),
+    pixels('drop-shadow(4px 4px rgba(0, 0, 255, 0.5)) grayscale(1)'),
+  )
+})
+
+test('drop-shadow() takes hsl() and hwb() colours', (t) => {
+  // All three are rgb(0, 128, 0) at 8 bits.
+  const rgb = pixels('drop-shadow(4px 4px 2px rgb(0, 128, 0))')
+  t.deepEqual(pixels('drop-shadow(4px 4px 2px hsl(120, 100%, 25%))'), rgb)
+  t.deepEqual(pixels('drop-shadow(hsl(120deg 100% 25%) 4px 4px 2px)'), rgb)
+  t.deepEqual(pixels('drop-shadow(4px 4px 2px hwb(120 0% 50%))'), rgb)
+})
+
+for (const shadow of ['drop-shadow(4px 4px 2px hsla(0, 0%, 0%, 0))', 'drop-shadow(hsl(0 0% 0% / 0) 4px 4px)']) {
+  test(`a transparent ${shadow} is skipped`, (t) => {
+    t.deepEqual(pixels(`${shadow} grayscale(1)`), pixels('grayscale(1)'))
+  })
+}
+
+test('function names and units are case-insensitive', (t) => {
+  t.deepEqual(pixels('BLUR(4PX) Grayscale(1)'), pixels('blur(4px) grayscale(1)'))
+  t.deepEqual(pixels('Drop-Shadow(4PX 4Px 2pX RED)'), pixels('drop-shadow(4px 4px 2px red)'))
+  t.deepEqual(pixels('HUE-ROTATE(90DEG)'), pixels('hue-rotate(90deg)'))
+})

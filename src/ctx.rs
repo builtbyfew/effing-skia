@@ -1524,7 +1524,7 @@ impl Context {
       return Ok(());
     }
     // Parsed clean, so the assignment lands even if it builds no filter at all:
-    // `drop-shadow(0 0 transparent)` is legal and simply draws nothing. The id
+    // `drop-shadow(0 0 transparent)` is legal and skipped (effing). The id
     // advances with the stored chain so a reused ImageFilter dedups under one
     // accounting identity and a fresh chain re-charges under a new one.
     self.state.filter = css_filters_to_image_filter(filters);

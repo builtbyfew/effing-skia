@@ -1,11 +1,15 @@
 use std::num::ParseFloatError;
 
-use cssparser::Parser;
-use cssparser_color::{Color, RgbaLegacy, hsl_to_rgb};
+use cssparser::{Parser, Token};
+use cssparser_color::{Color, hsl_to_rgb, hwb_to_rgb};
 use nom::{
-  AsChar, Err, IResult, Parser as NomParser,
+  AsChar,
+  Err,
+  IResult,
+  Parser as NomParser,
   branch::alt,
-  bytes::complete::{tag, take_till, take_until},
+  // effing: function names and units are case-insensitive, as in CSS
+  bytes::complete::{tag_no_case as tag, take_till, take_until},
   character::complete::char,
   combinator::map_res,
   error::{Error, ErrorKind},
@@ -57,28 +61,9 @@ fn pixel<'a>(input: &'a str) -> Result<f32, ParseFilterError<'a>> {
   let (_, unit) = take_till(|c| c == ')')(input)?;
   let size = size.trim().parse::<f32>()?;
   let mut size_px = size;
-  match unit.trim() {
-    "em" | "rem" | "pc" => {
-      size_px = size * 16.0;
-    }
-    "pt" => {
-      size_px = size * 4.0 / 3.0;
-    }
-    "px" => {
-      size_px = size;
-    }
-    "in" => {
-      size_px = size * 96.0;
-    }
-    "cm" => {
-      size_px = size * 96.0 / 2.54;
-    }
-    "mm" => {
-      size_px = size * 96.0 / 25.4;
-    }
-    "q" => {
-      size_px = size * 96.0 / 25.4 / 4.0;
-    }
+  // effing: units are case-insensitive, as in CSS, and the table is shared
+  // with `drop-shadow()`'s lengths.
+  match unit.trim().to_ascii_lowercase().as_str() {
     "%" => {
       size_px = size * 16.0 / 100.0;
     }
@@ -87,12 +72,28 @@ fn pixel<'a>(input: &'a str) -> Result<f32, ParseFilterError<'a>> {
         return Err(ParseFilterError::UnitParseError("[No unit assigned]"));
       }
     }
-    _ => {
-      return Err(ParseFilterError::UnitParseError(unit));
-    }
+    lowercase => match length_px(size, lowercase) {
+      Some(px) => size_px = px,
+      None => return Err(ParseFilterError::UnitParseError(unit)),
+    },
   };
 
   Ok(size_px)
+}
+
+// effing: the length units `pixel` takes, for a lowercase unit. Font-relative
+// ones are 16px, not the context's font.
+fn length_px(size: f32, unit: &str) -> Option<f32> {
+  Some(match unit {
+    "em" | "rem" | "pc" => size * 16.0,
+    "pt" => size * 4.0 / 3.0,
+    "px" => size,
+    "in" => size * 96.0,
+    "cm" => size * 96.0 / 2.54,
+    "mm" => size * 96.0 / 25.4,
+    "q" => size * 96.0 / 25.4 / 4.0,
+    _ => return None,
+  })
 }
 
 #[inline(always)]
@@ -100,9 +101,11 @@ fn pixel_in_tuple(input: &str) -> IResult<&str, f32> {
   map_res(take_until(")"), pixel).parse(input)
 }
 
-// effing: a negative or non-finite amount or length is invalid, as in Chrome,
-// which then keeps the previous `ctx.filter`. Read as a value, it used to clamp
-// or, for a length, fail to build and take the whole filter list with it.
+// effing: a negative amount or length is invalid, as in Chrome, which then
+// keeps the previous `ctx.filter`; upstream clamped an amount and, for a
+// length, built no filter, which took the whole list with it. A value that
+// overflows f32 (`opacity(1e40)`, `blur(1e38in)`) is invalid too, where Chrome
+// clamps it: it would reach Skia as infinity, which builds nothing.
 fn reject_invalid(input: &str, value: f32) -> Result<(), Err<Error<&str>>> {
   if value.is_finite() && value >= 0.0 {
     Ok(())
@@ -135,8 +138,12 @@ fn hue_rotate_parser(input: &str) -> IResult<&str, CssFilter> {
     (output, CssFilter::HueRotate(angle.to_degrees()))
   } else if let Ok((output, _)) = tag::<&str, &str, Error<&str>>("grad")(output) {
     (output, CssFilter::HueRotate(angle * 0.9))
-  } else {
+  } else if angle == 0.0 {
     (output, CssFilter::HueRotate(0.0f32))
+  } else {
+    // effing: only a zero angle may go without a unit, as in Chrome; upstream
+    // read `hue-rotate(90)` as `hue-rotate(0)`.
+    return Err(Err::Error(Error::new(output, ErrorKind::Verify)));
   };
   let (finished_input, _) = char(')')(output.trim())?;
   Ok((finished_input.trim(), filter))
@@ -209,83 +216,111 @@ fn blur_parser(input: &str) -> IResult<&str, CssFilter> {
   Ok((finished_input.trim(), CssFilter::Blur(pixel)))
 }
 
-#[allow(clippy::unnecessary_lazy_evaluations)]
+// effing: `drop-shadow( [<color>]? && [<length>{2} <length [0,∞]>?] )`, read
+// with cssparser between balanced parentheses: the colour before or after the
+// lengths, any colour function inside, and anything else invalid, where
+// upstream took the colour only after the lengths, cut it at the first `)`
+// unless it was `rgb()`/`rgba()`, and drew black for what it could not read.
 fn drop_shadow_parser(input: &str) -> IResult<&str, CssFilter> {
-  let (drop_shadow_input, _) = tag("drop-shadow(")(input)?;
-  let drop_shadow_input = drop_shadow_input.trim();
-  let (offset_x_output, offset_x) = map_res(take_until(" "), pixel).parse(drop_shadow_input)?;
-  let offset_x_output = offset_x_output.trim();
-  let (offset_y_output, offset_y) =
-    map_res(take_till(|ch| ch == ' ' || ch == ')'), pixel).parse(offset_x_output)?;
-  let offset_y_output = offset_y_output.trim();
-  // effing: a negative offset is fine, a non-finite one (`1e38in`) is not.
-  if !offset_x.is_finite() || !offset_y.is_finite() {
-    return Err(Err::Error(Error::new(offset_y_output, ErrorKind::Verify)));
-  }
-  let (blur_radius_output, blur_radius) = map_res(take_till(|ch| ch == ' ' || ch == ')'), pixel)
-    .parse(offset_y_output)
-    .unwrap_or_else(|_: Err<Error<&str>>| (offset_y_output, 0.0f32));
-  let blur_radius_output = blur_radius_output.trim();
-  reject_invalid(blur_radius_output, blur_radius)?; // effing
-  let is_rgb_fn = blur_radius_output.starts_with("rgb(") || blur_radius_output.starts_with("rgba(");
-  let (shadow_color_output, shadow_color_str) =
-    take_until(if is_rgb_fn { "))" } else { ")" })(blur_radius_output)?;
-  let shadow_color_str = shadow_color_str.trim();
-  static BLACK: RGBA<u8> = RGBA {
-    r: 0,
-    g: 0,
-    b: 0,
-    a: 255,
-  };
-  let shadow_color = if !shadow_color_str.is_empty() {
-    let mut parser = Parser::new(shadow_color_str);
-    let color = Color::parse(&mut parser).unwrap_or_else(|_| {
-      Color::Rgba(RgbaLegacy {
-        red: 0,
-        green: 0,
-        blue: 0,
-        alpha: 1.0,
-      })
+  let invalid = || Err::Error(Error::new(input, ErrorKind::Verify));
+  let (args, _) = tag("drop-shadow(")(input)?;
+  let mut depth = 1usize;
+  let close = args
+    .char_indices()
+    .find(|&(_, ch)| {
+      match ch {
+        '(' => depth += 1,
+        ')' => depth -= 1,
+        _ => {}
+      }
+      depth == 0
+    })
+    .map(|(index, _)| index)
+    .ok_or_else(invalid)?;
+  let (args, rest) = (&args[..close], &args[close + 1..]);
+
+  let mut parser = Parser::new(args);
+  let mut lengths: Vec<f32> = Vec::with_capacity(3);
+  let mut color = None;
+  // The lengths are one run, before or after the colour.
+  let mut lengths_closed = false;
+  while !parser.is_exhausted() {
+    let length = parser.try_parse(|parser| match *parser.next().map_err(|_| ())? {
+      Token::Dimension {
+        value, ref unit, ..
+      } => length_px(value, &unit.to_ascii_lowercase()).ok_or(()),
+      Token::Number { value: 0.0, .. } => Ok(0.0),
+      _ => Err(()),
     });
-    match color {
-      Color::Rgba(rgba) => {
-        // Convert RgbaLegacy to RGBA<u8>
-        RGBA {
-          r: rgba.red,
-          g: rgba.green,
-          b: rgba.blue,
-          a: (rgba.alpha * 255.0) as u8,
-        }
+    match length {
+      Ok(_) if lengths_closed => return Err(invalid()),
+      Ok(length) => lengths.push(length),
+      Err(()) if color.is_none() => {
+        let parsed = Color::parse(&mut parser).map_err(|_| invalid())?;
+        color = Some(css_color_to_rgba(parsed).ok_or_else(invalid)?);
+        lengths_closed = !lengths.is_empty();
       }
-      Color::Hsl(hsl) => {
-        let h = hsl.hue.unwrap_or(0.0) / 360.0;
-        let s = hsl.saturation.unwrap_or(0.0);
-        let l = hsl.lightness.unwrap_or(0.0);
-        let a = hsl.alpha.unwrap_or(1.0);
-
-        let (r, g, b) = hsl_to_rgb(h, s, l);
-
-        RGBA {
-          r: (r * 255.0) as u8,
-          g: (g * 255.0) as u8,
-          b: (b * 255.0) as u8,
-          a: (a * 255.0) as u8,
-        }
-      }
-      _ => BLACK,
+      Err(()) => return Err(invalid()),
     }
-  } else {
-    BLACK
-  };
-  let (mut drop_shadow_output, _) = char(')')(shadow_color_output.trim())?;
-  if is_rgb_fn {
-    let (trimmed_drop_shadow_output, _) = char(')')(drop_shadow_output)?;
-    drop_shadow_output = trimmed_drop_shadow_output;
   }
+  let &[offset_x, offset_y, ref blur @ ..] = lengths.as_slice() else {
+    return Err(invalid());
+  };
+  let blur_radius = match *blur {
+    [] => 0.0,
+    [blur] => blur,
+    _ => return Err(invalid()),
+  };
+  // A negative offset is fine. One that overflows f32 (`1e38in`) is invalid,
+  // where Chrome clamps it, as is a negative or overflowing blur.
+  if !offset_x.is_finite() || !offset_y.is_finite() {
+    return Err(invalid());
+  }
+  reject_invalid(input, blur_radius)?;
+  // No colour is `currentcolor`, the canvas element's `color`, black unless
+  // styled; this canvas has no element to style.
+  let shadow_color = color.unwrap_or(RGBA::new(0, 0, 0, 255));
   Ok((
-    drop_shadow_output.trim(),
+    rest.trim(),
     CssFilter::DropShadow(offset_x, offset_y, blur_radius, shadow_color),
   ))
+}
+
+// effing: the colours the rest of the context takes (`rgb()`, `hsl()`, hex,
+// names, `transparent`), with `hwb()` and `currentcolor` (black, see above);
+// `None` for `lab()`, `lch()`, `oklab()`, `oklch()` and `color()`.
+fn css_color_to_rgba(color: Color) -> Option<RGBA<u8>> {
+  let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+  let hue = |hue: Option<f32>| hue.unwrap_or(0.0).rem_euclid(360.0) / 360.0;
+  let (r, g, b, a) = match color {
+    Color::CurrentColor => (0.0, 0.0, 0.0, 1.0),
+    Color::Rgba(rgba) => {
+      return Some(RGBA::new(
+        rgba.red,
+        rgba.green,
+        rgba.blue,
+        channel(rgba.alpha),
+      ));
+    }
+    Color::Hsl(hsl) => {
+      let (r, g, b) = hsl_to_rgb(
+        hue(hsl.hue),
+        hsl.saturation.unwrap_or(0.0).clamp(0.0, 1.0),
+        hsl.lightness.unwrap_or(0.0).clamp(0.0, 1.0),
+      );
+      (r, g, b, hsl.alpha.unwrap_or(1.0))
+    }
+    Color::Hwb(hwb) => {
+      let (r, g, b) = hwb_to_rgb(
+        hue(hwb.hue),
+        hwb.whiteness.unwrap_or(0.0).clamp(0.0, 1.0),
+        hwb.blackness.unwrap_or(0.0).clamp(0.0, 1.0),
+      );
+      (r, g, b, hwb.alpha.unwrap_or(1.0))
+    }
+    _ => return None,
+  };
+  Some(RGBA::new(channel(r), channel(g), channel(b), channel(a)))
 }
 
 pub fn css_filter(input: &str) -> IResult<&str, Vec<CssFilter>> {
@@ -693,6 +728,15 @@ fn negative_and_non_finite_values_are_left_unread() {
     "blur(1e38in)",
     "drop-shadow(1e38in 0 red)",
     "drop-shadow(0 -1e38in red)",
+    "hue-rotate(90)",
+    "drop-shadow(4px red 4px)",
+    "drop-shadow(4px 4px 2px nosuchcolor)",
+    "drop-shadow(4px 4px 2px 1px)",
+    "drop-shadow(4px 4px 2px red 1px)",
+    "drop-shadow(4px 4px 2px red blue)",
+    "drop-shadow(4px)",
+    "drop-shadow(red)",
+    "drop-shadow(4px 4px 2px lab(50% 40 59))",
   ] {
     let (rest, filters) = css_filter(input).unwrap();
     assert!(filters.is_empty(), "`{input}` should not parse to a filter");
@@ -707,18 +751,47 @@ fn negative_and_non_finite_values_are_left_unread() {
 #[test]
 fn transparent_drop_shadow_is_skipped_not_the_whole_list() {
   // effing: it used to return `None` for the whole list.
-  let transparent = CssFilter::DropShadow(0.0, 0.0, 0.0, RGBA::new(255, 0, 0, 0));
-  assert!(
-    css_filters_to_image_filter(vec![CssFilter::DropShadow(
-      0.0,
-      0.0,
-      0.0,
-      RGBA::new(255, 0, 0, 0)
-    )])
-    .is_none()
-  );
-  let filter = css_filters_to_image_filter(vec![transparent, CssFilter::Blur(2.0)]).unwrap();
+  let transparent = || CssFilter::DropShadow(0.0, 0.0, 0.0, RGBA::new(255, 0, 0, 0));
+  assert!(css_filters_to_image_filter(vec![transparent()]).is_none());
+  let filter = css_filters_to_image_filter(vec![transparent(), CssFilter::Blur(2.0)]).unwrap();
   assert!(filter.needs_device_space_layer());
   let unshifted = CssFilter::DropShadow(0.0, 0.0, 0.0, RGBA::new(255, 0, 0, 255));
   assert!(css_filters_to_image_filter(vec![unshifted, CssFilter::Grayscale(1.0)]).is_some());
+}
+
+#[test]
+fn drop_shadow_colour_before_or_after_any_colour_function() {
+  // effing: as in Chrome.
+  let green = RGBA::new(0, 128, 0, 255);
+  for input in [
+    "drop-shadow(4px 4px 2px rgb(0, 128, 0))",
+    "drop-shadow(rgb(0, 128, 0) 4px 4px 2px)",
+    "drop-shadow(4px 4px 2px hsl(120, 100%, 25%))",
+    "drop-shadow(hsl(120deg 100% 25%) 4px 4px 2px)",
+    "drop-shadow(4px 4px 2px hwb(120 0% 50%))",
+    "DROP-SHADOW(4PX 4px 2Px #008000)",
+  ] {
+    assert_eq!(
+      css_filter(input),
+      Ok(("", vec![CssFilter::DropShadow(4.0, 4.0, 2.0, green)])),
+      "`{input}`"
+    );
+  }
+  assert_eq!(
+    css_filter("drop-shadow(hsla(0, 0%, 0%, 0) 1px 2px) blur(1px)"),
+    Ok((
+      "",
+      vec![
+        CssFilter::DropShadow(1.0, 2.0, 0.0, RGBA::new(0, 0, 0, 0)),
+        CssFilter::Blur(1.0)
+      ]
+    ))
+  );
+  assert_eq!(
+    css_filter("hue-rotate(0) HUE-ROTATE(90DEG)"),
+    Ok((
+      "",
+      vec![CssFilter::HueRotate(0.0), CssFilter::HueRotate(90.0)]
+    ))
+  );
 }

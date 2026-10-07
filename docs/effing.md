@@ -588,14 +588,30 @@ standard deviation the canvas spec does define as half its value and which is
 left as it is. `drop-shadow(0 0 4px)` draws its shadow as `blur(4px)` does,
 the pixels Chrome's canvas draws for it.
 
-A filter list is read as Chrome's canvas reads it. A transparent
-`drop-shadow()` is skipped, and the rest of the list applies; upstream
-dropped the whole list for it and for `drop-shadow(0 0 0)`, which is kept:
-its shadow, unblurred and unshifted, shows where the content is translucent.
-A negative amount or blur length (`opacity(-1)`, `blur(-1px)`,
-`drop-shadow(0 0 -2px red)`) or a non-finite one makes the value invalid, so
-`ctx.filter` keeps its previous value and a group's filter is none; upstream
-clamped amounts and dropped the whole list for a negative blur.
+A filter list is read closer to how Chrome's canvas reads it than upstream
+does. A transparent `drop-shadow()` is skipped, and the rest of the list
+applies; upstream dropped the whole list for it and for `drop-shadow(0 0 0)`,
+which is kept: its shadow, unblurred and unshifted, shows where the content
+is translucent. `drop-shadow()` takes its colour before or after the
+lengths, in `rgb()`, `hsl()`, `hwb()`, hex, a name or `transparent`, and
+function names and units are case-insensitive. What Chrome rejects makes the
+value invalid, so `ctx.filter` keeps its previous value and a group's filter
+is none: a negative amount or blur length (`opacity(-1)`, `blur(-1px)`,
+`drop-shadow(0 0 -2px red)`), a unitless angle other than 0
+(`hue-rotate(90)`), and a `drop-shadow()` with a colour it cannot read, a
+fourth length or anything else in it. Upstream clamped amounts, read
+`hue-rotate(90)` as `hue-rotate(0)`, dropped the whole list for a negative
+blur, and drew a shadow it could not read in black.
+
+Where it still differs from Chrome:
+
+- A value that overflows f32 (`opacity(1e40)`, `blur(1e38in)`) is invalid;
+  Chrome clamps it.
+- `drop-shadow()` rejects `lab()`, `lch()`, `oklab()`, `oklch()` and
+  `color()` colours, which the rest of the context doesn't take either.
+- `em` and `rem` are 16px, not relative to the context's font.
+- Comments (`blur(/* */ 4px)`) are not read, except inside `drop-shadow()`.
+- A space before `%` (`opacity(50 %)`) is accepted.
 
 ## Releasing
 
@@ -660,10 +676,17 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 - A filter list with a transparent `drop-shadow()` or `drop-shadow(0 0 0)`
   in it applies the rest of the list, as in Chrome, where it used to apply
   none of it: `drop-shadow(0 0 transparent) grayscale(1)` now draws in gray.
-  A negative or non-finite amount or blur length (`opacity(-1)`,
-  `blur(-1px)`) is invalid, as in Chrome: the assignment to `ctx.filter` is
-  ignored and a group's filter is none, where amounts used to be clamped
-  (`opacity(-1)` drew nothing) and a negative blur dropped the whole list.
+- Filter values Chrome rejects are invalid: the assignment to `ctx.filter`
+  is ignored and a group's filter is none. That covers a negative amount or
+  blur length (`opacity(-1)` used to draw nothing, and `blur(-1px)` to drop
+  the whole list), `hue-rotate(90)` (read as `hue-rotate(0)`), and a
+  `drop-shadow()` whose colour can't be read (`nosuchcolor`), with a fourth
+  length or with anything else in it (drawn in black). A value that
+  overflows f32 (`opacity(1e40)`) is invalid too, where Chrome clamps it.
+- Filter values Chrome accepts that were rejected now apply:
+  `drop-shadow(red 4px 4px)` with the colour first, `hsl()`, `hsla()` and
+  `hwb()` shadow colours, and upper-case function names and units
+  (`BLUR(4PX)`).
 - A draw under `ctx.filter`, and the shadow of one or of a drawn image, goes
   through a layer the size of what it draws rather than of the canvas. Five
   lines of text under `blur(12px)` on a 1080x1080 canvas went from about
