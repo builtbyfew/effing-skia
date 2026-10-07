@@ -21,16 +21,16 @@ Fork code is kept out of upstream files so that upstream merges stay trivial.
 Each layer has an `effing` directory with one file per feature, and each
 upstream file has at most a few marked hook lines.
 
-| Layer                  | Fork code                                                                        | Upstream hooks                                                                                                                                                                                                                                                                                            |
-| ---------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer,fonts}.{hpp,cpp}`   | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
-| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs` | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`     | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
-| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                          | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`)                                                                                                                                                                                                                                    |
-| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                          | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
-| Build                  |                                                                                  | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
-| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                          | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                                                                       |
-| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                                                               |
+| Layer                  | Fork code                                                                             | Upstream hooks                                                                                                                                                                                                                                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer,blur,fonts}.{hpp,cpp}`   | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
+| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,blur,fonts}.rs` | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`          | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`, the canvas blur of `ctx.filter` and image shadows), `src/filter.rs` (`drop-shadow()`, filter lists, the blur they take)                                                |
+| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                               | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`)                                                                                                                                                                                                                                    |
+| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                               | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
+| Build                  |                                                                                       | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                               | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                                                                       |
+| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                     | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                                                               |
 
 C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
 napi bindings are functions that take the context as their first argument
@@ -690,6 +690,35 @@ standard deviation the canvas spec does define as half its value and which is
 left as it is. `drop-shadow(0 0 4px)` draws its shadow as `blur(4px)` does,
 the pixels Chrome's canvas draws for it.
 
+`blur()` and `drop-shadow()` in `ctx.filter`, and the shadow of a drawn
+image, blur as Chrome's software canvas does (`skia-c/effing/blur.cpp`).
+Chromium builds Skia with `SK_AVOID_SLOW_RASTER_PIPELINE_BLURS`, under which
+Skia's CPU blur takes three successive box blurs for the Gaussian at every
+standard deviation. Skia's default, and the prebuilt Skia the fork links,
+blurs with a Gaussian kernel below a standard deviation of 2 and with the
+boxes from there. Each box is `floor(σ · 3√(2π) / 4 + 0.5)` pixels wide, so
+in Chrome `blur(0.75px)` doesn't blur at all and `blur(1.75px)` draws as
+`blur(1.5px)`; the Gaussian kernel was up to 172 levels off below σ 2.
+The fork leaves Skia's blur where it boxes, gives a σ from about 1.86 to 2
+the σ 2.125, which has the same boxes and stays above 2 when a rotated
+layer maps it by a scale a rounding error under one, drops an axis whose
+boxes are one pixel wide, and computes boxes of 2 and 3 pixels, which no σ
+of Skia's has, in an SkSL shader, in the integers of Skia's box pass.
+Untransformed, such draws now have Chrome's pixels to a level. Where the
+shader runs it is slower than Skia's blur: a 1000x1000 rectangle under
+`blur(1px)` takes about 61 ms rather than 14 ms, under `blur(1.5px)` about
+85 ms rather than 18 ms. `shadowBlur` on other draws is a mask filter's
+blur, which was Chrome's already. A group's filters keep Skia's blur: their lengths follow
+the group's transform, as CSS's do on an element, which Chrome doesn't draw
+as its canvas, and a scale would have Skia filter the shader's input
+unscaled.
+
+Under a rotation, the antialiased edge of a filtered draw can still differ
+from Chrome's by up to 30 levels in a few pixels whatever the filter
+(`grayscale(0)` too): the outermost pixels of a rotated circle drawn
+through the filter layer are not those of the same circle drawn without it,
+while Chrome draws them alike.
+
 A filter list is read closer to how Chrome's canvas reads it than upstream
 does. A transparent `drop-shadow()` is skipped, and the rest of the list
 applies; upstream dropped the whole list for it and for `drop-shadow(0 0 0)`,
@@ -917,6 +946,15 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- `blur()` and `drop-shadow()` in `ctx.filter`, and a drawn image's
+  `shadowBlur`, blur as Chrome's canvas does below a standard deviation of
+  2, where they used to blur with Skia's Gaussian kernel: `blur(0.5px)` and
+  `blur(0.75px)` now draw unblurred, and `blur(1.75px)` as `blur(1.5px)`, as
+  in Chrome. A 200x200 test scene was up to 91, 172, 13, 4 and 16 levels off
+  Chrome 154 under `blur(0.5px)`, `blur(0.75px)`, `blur(1px)`, `blur(1.5px)`
+  and `blur(1.75px)`; it is now within a level. Rotated, `blur(2px)` went
+  from up to 9 levels off to 4 (see filtered draws). Blurs from about σ 0.8
+  to 1.86 take four to five times longer. A group's filters are unchanged.
 - A family's face for a style is the one CSS font matching picks: of the
   faces nearest in font-stretch, those nearest in font-style, and of those
   the one nearest in font-weight (see font matching). Bold italic in a

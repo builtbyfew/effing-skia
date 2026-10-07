@@ -14,6 +14,7 @@ use nom::{
 use rgb::RGBA;
 use thiserror::Error;
 
+use crate::sk::effing::blur::Blur; // effing
 use crate::sk::{ImageFilter, degrees_to_radians};
 
 #[derive(Error, Debug)]
@@ -424,13 +425,17 @@ pub fn css_filter(input: &str) -> IResult<&str, Vec<CssFilter>> {
 }
 
 /// Fold a parsed `<filter-value-list>` into one chained `SkImageFilter`, or
-/// `None` when the list produces no filter at all.
+/// `None` when the list produces no filter at all. `blur` picks the blur of
+/// `blur()` and `drop-shadow()` (effing: Chrome's canvas blur for `ctx.filter`).
 ///
 /// `None` is the only representation of "no filter" this may return, and the
 /// chain is threaded as an `Option` so that an empty list yields it by
 /// construction. A null `ImageFilter` here would reach
 /// `skiac_paint_set_image_filter` on the next draw and segfault.
-pub(crate) fn css_filters_to_image_filter(filters: Vec<CssFilter>) -> Option<ImageFilter> {
+pub(crate) fn css_filters_to_image_filter(
+  filters: Vec<CssFilter>,
+  blur: Blur, // effing
+) -> Option<ImageFilter> {
   let mut chain: Option<ImageFilter> = None;
   for f in filters {
     // effing: a step that builds no filter is skipped, as an identity step,
@@ -438,7 +443,7 @@ pub(crate) fn css_filters_to_image_filter(filters: Vec<CssFilter>) -> Option<Ima
     // values Skia rejects (a negative sigma, a non-finite matrix, where
     // `SkImageFilters::ColorFilter` hands back its input, null at the start).
     let next = match f {
-      CssFilter::Blur(blur) => ImageFilter::make_blur(blur, blur, chain.as_ref()),
+      CssFilter::Blur(sigma) => ImageFilter::make_blur_with(blur, sigma, sigma, chain.as_ref()),
       CssFilter::Brightness(brightness) => {
         let brightness = brightness.max(0.0);
         ImageFilter::make_image_filter(
@@ -475,7 +480,8 @@ pub(crate) fn css_filters_to_image_filter(filters: Vec<CssFilter>) -> Option<Ima
         if shadow_color.a == 0 {
           continue;
         }
-        ImageFilter::make_drop_shadow(
+        ImageFilter::make_drop_shadow_with(
+          blur,
           offset_x,
           offset_y,
           sigma,
@@ -484,6 +490,7 @@ pub(crate) fn css_filters_to_image_filter(filters: Vec<CssFilter>) -> Option<Ima
             | ((shadow_color.r as u32) << 16)
             | ((shadow_color.g as u32) << 8)
             | shadow_color.b as u32,
+          false,
           chain.as_ref(),
         )
       }
@@ -600,7 +607,7 @@ fn parse_empty() {
 fn empty_filter_list_is_no_filter_not_a_null_one() {
   // Pins the `Option` chain: an empty list must produce `None`, not a
   // `Some(ImageFilter(null))` that the next draw would dereference.
-  assert!(css_filters_to_image_filter(vec![]).is_none());
+  assert!(css_filters_to_image_filter(vec![], Blur::Canvas).is_none());
 }
 
 #[test]
@@ -828,11 +835,14 @@ fn negative_and_non_finite_values_are_left_unread() {
 fn transparent_drop_shadow_is_skipped_not_the_whole_list() {
   // effing: it used to return `None` for the whole list.
   let transparent = || CssFilter::DropShadow(0.0, 0.0, 0.0, RGBA::new(255, 0, 0, 0));
-  assert!(css_filters_to_image_filter(vec![transparent()]).is_none());
-  let filter = css_filters_to_image_filter(vec![transparent(), CssFilter::Blur(2.0)]).unwrap();
+  assert!(css_filters_to_image_filter(vec![transparent()], Blur::Canvas).is_none());
+  let filter =
+    css_filters_to_image_filter(vec![transparent(), CssFilter::Blur(2.0)], Blur::Canvas).unwrap();
   assert!(filter.needs_device_space_layer());
   let unshifted = CssFilter::DropShadow(0.0, 0.0, 0.0, RGBA::new(255, 0, 0, 255));
-  assert!(css_filters_to_image_filter(vec![unshifted, CssFilter::Grayscale(1.0)]).is_some());
+  assert!(
+    css_filters_to_image_filter(vec![unshifted, CssFilter::Grayscale(1.0)], Blur::Canvas).is_some()
+  );
 }
 
 #[test]

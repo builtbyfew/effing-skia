@@ -32,6 +32,7 @@ use crate::{
   image::*,
   path::Path,
   pattern::{CanvasPattern, Pattern},
+  sk::effing::blur::Blur, // effing
   sk::{
     AlphaType, Bitmap, BlendMode, ColorSpace, FillType, FontVariantCaps, ImageFilter, LineMetrics,
     MaskFilter, Matrix, Paint, PaintStyle, Path as SkPath, PathEffect, PathOp,
@@ -1530,7 +1531,9 @@ impl Context {
     // `drop-shadow(0 0 transparent)` is legal and skipped (effing). The id
     // advances with the stored chain so a reused ImageFilter dedups under one
     // accounting identity and a fresh chain re-charges under a new one.
-    self.state.filter = css_filters_to_image_filter(filters);
+    // effing: blurred as Chrome's canvas blurs, in the device pixels of
+    // `composited_filter_layer`'s layer (`sk/effing/blur.rs`).
+    self.state.filter = css_filters_to_image_filter(filters, Blur::Canvas);
     self.state.filters_string = filter_str.to_owned();
     self.state.filter_id = next_resource_id();
     Ok(())
@@ -1749,6 +1752,10 @@ impl Context {
   /// canvas, so this is ours alone, not a CPU-vs-GPU artefact. The sigma passed
   /// here is already correct; the lever is Skia's algorithm choice, not this.
   ///
+  /// effing: Chrome 154's software canvas boxes an image's shadow with these
+  /// windows, at every sigma (Chromium's SK_AVOID_SLOW_RASTER_PIPELINE_BLURS),
+  /// and the fork now blurs as it does, below sigma 2 too (`sk/effing/blur.rs`).
+  ///
   /// dx/dy and sigma go in raw, in device pixels, as Blink builds them -- safe
   /// ONLY because `composited_filter_layer` opens this filter's layer at the
   /// device identity. `shadow_takes_image_filter` decides between this and the
@@ -1764,7 +1771,9 @@ impl Context {
     // `SkImageFilters::Blur` allows it and degenerates to the identity, leaving
     // colorize + translate.
     let sigma = state.shadow_blur / 2f32;
-    ImageFilter::make_drop_shadow_only(
+    // effing: blurred as Chrome's canvas blurs (`sk/effing/blur.rs`).
+    ImageFilter::make_drop_shadow_with(
+      Blur::Canvas,
       // Device-space, straight from the setters. Safe ONLY under
       // `composited_filter_layer`'s identity layer.
       state.shadow_offset_x,
@@ -1772,6 +1781,7 @@ impl Context {
       sigma,
       sigma,
       ((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | b as u32,
+      true,
       // `ctx.filter` is the INPUT of the shadow graph, never applied to its
       // output: Blink composes `shadow_filter(canvas_filter(source))`
       // (canvas_2d_recorder_context.h:931-934). Since the graph colourises with

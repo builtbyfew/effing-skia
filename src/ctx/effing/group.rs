@@ -22,6 +22,7 @@ use napi::bindgen_prelude::*;
 
 use super::super::{Backend, CanvasRenderingContext2D, Context};
 use crate::filter::{CssTrim, css_filter, css_filters_to_image_filter};
+use crate::sk::effing::blur::Blur;
 use crate::sk::effing::group::GroupLayer;
 use crate::sk::{BlendMode, ImageFilter, Paint};
 
@@ -51,7 +52,9 @@ fn parse_filter(value: Option<&str>) -> Option<ImageFilter> {
   if filters.is_empty() || !rest.css_trim().is_empty() {
     return None;
   }
-  css_filters_to_image_filter(filters)
+  // Skia's blur, whose lengths follow the group's transform: a group's
+  // filter is CSS's on an element, which Chrome doesn't draw as its canvas.
+  css_filters_to_image_filter(filters, Blur::Skia)
 }
 
 /// A group's options, parsed. `paint` carries what the group's layer
