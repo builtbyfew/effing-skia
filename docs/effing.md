@@ -190,7 +190,8 @@ top:
     logical order, until the ellipsis fits. Chrome truncates the line on
     screen, at the ellipsis, so where an LTR line ends in an RTL word the
     two keep different parts of that word: `'ab بتثبتث بتث'` clamped to one
-    line at 70px shows "ab بتثبت…" here, and more of the word in Chrome.
+    line at 70px shows "ab بتثبت…" here, and more of the word in Chrome,
+    its end (#38 asks which to keep).
   - Under `justify`, Chrome justifies the clamped line as it laid it out
     before truncating it, the ellipsis taking the place of what it cut
     ("dd ee …" spread over the width); the fork start-aligns it, as a line
@@ -202,6 +203,14 @@ top:
   - `text-overflow` clips the line, ellipsis included, to the box; the fork
     clips nothing, so a `noWrap` line's kept cluster and ellipsis show past
     the width, as a clamped line's do in Chrome.
+- A clamped line is letter-spaced as the paragraph is. A character of no
+  script of its own, such as `%` or a space, takes that of the text around
+  it in its bidi run, and SkParagraph, like Chrome, letter-spaces no run of
+  a cursive script such as Arabic; laid out alone, the clamped line could
+  end such a run before the text that gave it its script, and space the
+  characters left at its end, moving what came after them on screen by
+  the letter spacing. Where it does, they get a style without letter
+  spacing, as in the paragraph.
 - The hard breaks are SkParagraph's: LF, VT, FF, CRLF, LS (U+2028) and PS
   (U+2029). A lone CR and NEL (U+0085) are not breaks. Chrome's
   `white-space: pre` breaks at LF and CRLF only and draws VT, FF, LS and PS
@@ -641,6 +650,12 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   drawn with `imageSmoothingEnabled = false` at a fractional scale and
   position, can pick the neighbouring source row or column where two are
   equally near (see filtered draws).
+- A clamped line is letter-spaced as the paragraph is: punctuation or a
+  space that the paragraph lays out in a run of Arabic (or another cursive
+  script), with no letter spacing, no longer gets it when the clamped line
+  ends that run, which moved what came after it on screen by the letter
+  spacing (a box at 10.67px or 14.17px at a letter spacing of -0.5px or
+  3px, where the paragraph and Chrome have it at 11.17px).
 
 ### 1.0.10-effing.5
 

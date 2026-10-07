@@ -382,6 +382,8 @@ size_t without_hard_break(const char* text,
 // `cr_style`, which ends the shaping run before it and starts another after
 // it, as a CR ends one in Chrome: HarfBuzz sees through U+2063, and would
 // kern, ligate and join the letters on either side of it.
+// The text in each of `unspaced` (ranges in `text`, sorted, apart) gets
+// `unspaced_style`, without letter spacing.
 template <typename Placed>
 void add_content(ParagraphBuilder* builder,
                  const char* text,
@@ -392,13 +394,36 @@ void add_content(ParagraphBuilder* builder,
                  size_t* next,
                  Placed placed,
                  const std::vector<size_t>& lone_crs = {},
-                 const TextStyle* cr_style = nullptr) {
+                 const TextStyle* cr_style = nullptr,
+                 const std::vector<std::pair<size_t, size_t>>& unspaced = {},
+                 const TextStyle* unspaced_style = nullptr) {
+  const auto add_spaced = [&](size_t from, size_t to) {
+    auto range = std::lower_bound(unspaced.begin(), unspaced.end(), from,
+                                  [](const std::pair<size_t, size_t>& r,
+                                     size_t at) { return r.second <= at; });
+    for (; range != unspaced.end() && range->first < to &&
+           unspaced_style != nullptr;
+         ++range) {
+      const size_t a = std::max(range->first, from);
+      const size_t b = std::min(range->second, to);
+      if (a > from) {
+        effing::add_text(builder, text + from, a - from,
+                         effing::TextKind::kCss);
+      }
+      builder->pushStyle(*unspaced_style);
+      effing::add_text(builder, text + a, b - a, effing::TextKind::kCss);
+      builder->pop();
+      from = b;
+    }
+    if (to > from) {
+      effing::add_text(builder, text + from, to - from, effing::TextKind::kCss);
+    }
+  };
   const auto add_run = [&](size_t from, size_t to) {
     auto cr = std::lower_bound(lone_crs.begin(), lone_crs.end(), from);
     for (; cr != lone_crs.end() && *cr < to && cr_style != nullptr; ++cr) {
       if (*cr > from) {
-        effing::add_text(builder, text + from, *cr - from,
-                         effing::TextKind::kCss);
+        add_spaced(from, *cr);
       }
       builder->pushStyle(*cr_style);
       effing::add_text(builder, text + *cr, 3, effing::TextKind::kCss);
@@ -406,7 +431,7 @@ void add_content(ParagraphBuilder* builder,
       from = *cr + 3;
     }
     if (to > from) {
-      effing::add_text(builder, text + from, to - from, effing::TextKind::kCss);
+      add_spaced(from, to);
     }
   };
   size_t at = start;
@@ -515,6 +540,9 @@ struct PieceOf {
   // its last line, which ends at a soft break, isn't the paragraph's last
   // and is justified as such.
   bool sentinel;
+  // Where its text, by offset in p->text, goes without the letter spacing
+  // the paragraph's style has (spaced_unlike_whole), or null.
+  const std::vector<std::pair<size_t, size_t>>* unspaced = nullptr;
 };
 
 // Builds a paragraph of text[start, end) (UTF-8 offsets in p->text) with the
@@ -621,13 +649,19 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
   // content).
   TextStyle cr_style = style.getTextStyle();
   cr_style.setLocale(SkString("zxx"));
+  TextStyle unspaced_style = style.getTextStyle();
+  unspaced_style.setLetterSpacing(0);
   add_content(
       &builder, p->text.data(), start, end, p->placeholder_specs.data(), last,
       &next,
       [&](size_t placeholder, size_t index) {
         placed->emplace_back(placeholder, index);
       },
-      p->lone_crs, &cr_style);
+      p->lone_crs, &cr_style,
+      piece != nullptr && piece->unspaced != nullptr
+          ? *piece->unspaced
+          : std::vector<std::pair<size_t, size_t>>(),
+      &unspaced_style);
   if (sentinel) {
     builder.addPlaceholder(PlaceholderStyle(kUnbounded, 1,
                                             PlaceholderAlignment::kBaseline,
@@ -660,7 +694,8 @@ std::pair<size_t, size_t> to_text(const effing_paragraph* p, size_t skia) {
 }
 
 // Builds a piece of the whole paragraph's Skia text [start, end), followed
-// by a sentinel if `sentinel`.
+// by a sentinel if `sentinel`. The text in `unspaced` (ranges in the whole
+// paragraph's Skia text) goes without letter spacing.
 std::unique_ptr<Paragraph> build_piece(
     const effing_paragraph* p,
     size_t start,
@@ -669,13 +704,64 @@ std::unique_ptr<Paragraph> build_piece(
     PieceKind kind,
     const SkString& suffix,
     std::vector<std::pair<size_t, size_t>>* placed,
-    bool sentinel = false) {
+    bool sentinel = false,
+    const std::vector<std::pair<size_t, size_t>>& unspaced = {}) {
   const auto [text_start, first] = to_text(p, start);
   const auto [text_end, last] = to_text(p, end);
-  const PieceOf piece{start, sentinel};
+  std::vector<std::pair<size_t, size_t>> unspaced_text;
+  for (const auto& [a, b] : unspaced) {
+    unspaced_text.emplace_back(to_text(p, a).first, to_text(p, b).first);
+  }
+  const PieceOf piece{start, sentinel, &unspaced_text};
   // Only the line given an ellipsis as `suffix` may truncate with Skia's.
   return build(p, text_start, text_end, first, last, max_lines, kind, suffix,
                placed, !suffix.isEmpty(), &piece);
+}
+
+// Where SkParagraph letter-spaced `paragraph`, a piece of the whole
+// paragraph's Skia text [start, end) with whatever follows it, unlike the
+// whole: the clusters of the piece's text it spaced that the whole has in a
+// run of a cursive script, which SkParagraph doesn't space. A character of
+// no script of its own (punctuation, a space) takes the script of the text
+// around it in its bidi run, and a piece can end that run before the text
+// that gave it a cursive script in the whole: the "%" in "بتث %" before
+// more Arabic, which a clamped line ends with. As ranges of the whole
+// paragraph's Skia text, sorted and apart; empty when they agree.
+std::vector<std::pair<size_t, size_t>> spaced_unlike_whole(
+    const effing_paragraph* p,
+    Paragraph* paragraph,
+    size_t start,
+    size_t end) {
+  std::vector<std::pair<size_t, size_t>> out;
+  if (p->paragraph_style.getTextStyle().getLetterSpacing() == 0 ||
+      p->paragraphs.size() != 1) {
+    return out;
+  }
+  auto* whole = static_cast<ParagraphImpl*>(p->paragraphs.front().get());
+  auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  for (const Cluster& cluster : impl->clusters()) {
+    const TextRange range = cluster.textRange();
+    if (cluster.runIndex() == EMPTY_RUN || range.start >= end - start ||
+        cluster.run().isPlaceholder() || cluster.run().isCursiveScript() ||
+        cluster.getHalfLetterSpacing() == 0) {
+      continue;
+    }
+    const Cluster& there =
+        whole->cluster(whole->clusterIndex(start + range.start));
+    if (there.runIndex() == EMPTY_RUN || there.run().isPlaceholder() ||
+        !there.run().isCursiveScript()) {
+      continue;
+    }
+    const size_t a = start + range.start;
+    const size_t b = start + std::min(range.end, end - start);
+    if (!out.empty() && out.back().second == a) {
+      out.back().second = b;
+    } else {
+      out.emplace_back(a, b);
+    }
+  }
+  std::sort(out.begin(), out.end());
+  return out;
 }
 
 // Whether SkParagraph gave up on the ellipsis of the last line it laid out.
@@ -883,6 +969,38 @@ size_t first_grapheme_end(Paragraph* paragraph, size_t start, size_t end) {
     }
   }
   return start;
+}
+
+// Builds a piece of the whole paragraph's Skia text [start, end) as
+// build_piece does into `piece` (its paragraph and placeholders), and lays
+// it out at `width`, letter-spaced as the whole paragraph is: where
+// SkParagraph spaces it otherwise (spaced_unlike_whole), it is built again
+// without that spacing. Says whether SkParagraph emptied its last line
+// (layout_paragraph).
+bool lay_out_piece(const effing_paragraph* p,
+                   Piece* piece,
+                   size_t start,
+                   size_t end,
+                   int max_lines,
+                   const SkString& suffix,
+                   bool sentinel,
+                   float width,
+                   bool justify) {
+  std::vector<std::pair<size_t, size_t>> unspaced;
+  for (;;) {
+    piece->placed.clear();
+    piece->paragraph = build_piece(p, start, end, max_lines, piece->kind,
+                                   suffix, &piece->placed, sentinel, unspaced);
+    const bool emptied =
+        layout_paragraph(piece->paragraph.get(), width, justify);
+    if (!unspaced.empty()) {
+      return emptied;
+    }
+    unspaced = spaced_unlike_whole(p, piece->paragraph.get(), start, end);
+    if (unspaced.empty()) {
+      return emptied;
+    }
+  }
 }
 
 // The bidi levels of the whole paragraph's Skia text (U+FFFC for each
@@ -1318,11 +1436,9 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
     last.suffixed = true;
     last.offset = whole->getUTF16Index(line_start);
     last.line_end = whole->getUTF16Index(line_end);
-    last.paragraph =
-        build_piece(p, line_start, line_end, 1, last.kind,
-                    p->paragraph_style.getEllipsis(), &last.placed);
-    if (layout_paragraph(last.paragraph.get(), w,
-                         justified(p, PieceKind::kWrapped))) {
+    if (lay_out_piece(p, &last, line_start, line_end, 1,
+                      p->paragraph_style.getEllipsis(), false, w,
+                      justified(p, PieceKind::kWrapped))) {
       // Not even the line's first grapheme cluster fits with the ellipsis
       // (or the ellipsis alone doesn't), and SkParagraph emptied the line.
       // CSS keeps it, and the ellipsis after it, both overflowing the line:
@@ -1331,11 +1447,8 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       last.kind = PieceKind::kUnbounded;
       last.max_lines = 0;
       last.line_end = whole->getUTF16Index(end);
-      last.placed.clear();
-      last.paragraph =
-          build_piece(p, line_start, end, 0, last.kind,
-                      p->paragraph_style.getEllipsis(), &last.placed);
-      layout_paragraph(last.paragraph.get(), kUnbounded, false);
+      lay_out_piece(p, &last, line_start, end, 0,
+                    p->paragraph_style.getEllipsis(), false, kUnbounded, false);
     }
     p->pieces.push_back(std::move(last));
   };

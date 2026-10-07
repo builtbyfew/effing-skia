@@ -626,3 +626,46 @@ test('the clamped line keeps the bidi levels its text has in the paragraph', (t)
   // The clamped line's text is cut short before the digits, logically last.
   t.true(at(clamped) >= 40, `${at(clamped)}`)
 })
+
+test('a clamped line is letter-spaced as in the paragraph', (t) => {
+  // A character of no script of its own, the "%" here, takes that of the
+  // text around it, Arabic, which neither Chrome nor SkParagraph letter-
+  // spaces. The clamped line used to end it before the Arabic after it, and
+  // space it: the box after it (on screen, before it) moved by the letter
+  // spacing. Chrome 154 puts the box at 11.17px at any letter spacing, the
+  // clamped line as the paragraph (#24).
+  const parts: ParagraphContent = ['بتث ', { width: 20, height: 20 }, '% بتث بتث بتث']
+  for (const letterSpacing of [0, -0.5, 3]) {
+    const style: ParagraphStyle = { ...HARMATTAN, letterSpacing }
+    const whole = new Paragraph(parts, style).layout(85)
+    const clamped = new Paragraph(parts, { ...style, maxLines: 1, ellipsis: '…' }).layout(85)
+    t.is(round(whole.placeholders[0]!.x), 11.17, `${letterSpacing}`)
+    t.is(round(clamped.placeholders[0]!.x), 11.17, `${letterSpacing}`)
+    t.deepEqual(
+      clamped.lines.map((line) => [line.startIndex, line.endIndex]),
+      [[0, 6]],
+    )
+  }
+  // As in #20: the clamped second line puts its boxes where the paragraph
+  // does, whatever the letter spacing.
+  const emoji = { width: 20, height: 20, lineBreak: 'emoji' } as const
+  const issue: ParagraphContent = [
+    'بتث -بالعالم ',
+    { width: 20, height: 20 },
+    '! 12 مرحبا )بتث شكرا بتث ',
+    emoji,
+    '% بالعالم ',
+    emoji,
+    ' 3.5',
+  ]
+  for (const letterSpacing of [-0.5, 3]) {
+    const style: ParagraphStyle = { ...HARMATTAN, fontFamily: 'WB Harmattan, WB Iosevka', letterSpacing }
+    const whole = new Paragraph(issue, style).layout(200)
+    const clamped = new Paragraph(issue, { ...style, maxLines: 2, ellipsis: '…' }).layout(200)
+    t.deepEqual(
+      clamped.placeholders.slice(0, 2).map((box) => box && [round(box.x), box.line]),
+      whole.placeholders.slice(0, 2).map((box) => box && [round(box.x), box.line]),
+      `${letterSpacing}`,
+    )
+  }
+})
