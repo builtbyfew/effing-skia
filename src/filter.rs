@@ -218,6 +218,10 @@ fn drop_shadow_parser(input: &str) -> IResult<&str, CssFilter> {
   let (offset_y_output, offset_y) =
     map_res(take_till(|ch| ch == ' ' || ch == ')'), pixel).parse(offset_x_output)?;
   let offset_y_output = offset_y_output.trim();
+  // effing: a negative offset is fine, a non-finite one (`1e38in`) is not.
+  if !offset_x.is_finite() || !offset_y.is_finite() {
+    return Err(Err::Error(Error::new(offset_y_output, ErrorKind::Verify)));
+  }
   let (blur_radius_output, blur_radius) = map_res(take_till(|ch| ch == ' ' || ch == ')'), pixel)
     .parse(offset_y_output)
     .unwrap_or_else(|_: Err<Error<&str>>| (offset_y_output, 0.0f32));
@@ -686,6 +690,9 @@ fn negative_and_non_finite_values_are_left_unread() {
     "opacity(inf)",
     "opacity(NaN)",
     "hue-rotate(infdeg)",
+    "blur(1e38in)",
+    "drop-shadow(1e38in 0 red)",
+    "drop-shadow(0 -1e38in red)",
   ] {
     let (rest, filters) = css_filter(input).unwrap();
     assert!(filters.is_empty(), "`{input}` should not parse to a filter");
