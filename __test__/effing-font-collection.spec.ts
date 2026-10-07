@@ -141,6 +141,27 @@ test.serial('registerFromPath() registers every face of a font collection under 
   t.deepEqual(styles('Effing Collection'), [])
 })
 
+// A setAlias mapping to a face of a collection goes when the collection is
+// removed, whichever face it maps to, as it does for a single font.
+test.serial('remove() drops the setAlias mappings of every face of a font collection', (t) => {
+  const key = GlobalFonts.registerFromPath(COLLECTION)
+  t.truthy(key)
+  t.true(GlobalFonts.setAlias('Effing Collection Serif', 'Collection Serif Alias'))
+  near(t, measure('20px "Collection Serif Alias"'), SERIF)
+  t.true(GlobalFonts.remove(key!))
+  t.deepEqual(styles('Collection Serif Alias'), [])
+  // A later rebuild, with a font of the removed family, doesn't bring the
+  // removed face back under the alias.
+  const lato = GlobalFonts.registerFromPath(LATO, 'Effing Collection Serif')
+  const other = GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Oswald.ttf'), 'Collection Other')
+  t.truthy(lato)
+  t.truthy(other)
+  t.true(GlobalFonts.remove(other!))
+  t.deepEqual(styles('Collection Serif Alias'), [])
+  t.true(Math.abs(measure('20px "Collection Serif Alias"') - SERIF) > 0.5)
+  t.true(GlobalFonts.remove(lato!))
+})
+
 // Last: system fonts can't be removed.
 test.serial('loadSystemFontsFromDir loads every face of a font collection as a system font', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'effing-system-collection-'))

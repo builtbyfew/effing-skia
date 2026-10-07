@@ -51,8 +51,10 @@ std::vector<sk_sp<SkTypeface>> more_faces(SkFontMgr& font_mgr,
       memcmp(tag, "ttcf", 4) == 0 ||
       (memcmp(tag, "wOF2", 4) == 0 && memcmp(tag + 4, "ttcf", 4) == 0);
   int count = 0;
+  // FreeType's scanner locks its library around each scan.
+  static const SkFontScanner* scanner = SkFontScanner_Make_FreeType().release();
   if (!collection || !stream->rewind() ||
-      !SkFontScanner_Make_FreeType()->scanFile(stream.get(), &count)) {
+      !scanner->scanFile(stream.get(), &count)) {
     return {};
   }
   std::vector<sk_sp<SkTypeface>> faces;

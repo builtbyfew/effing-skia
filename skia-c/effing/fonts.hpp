@@ -43,7 +43,7 @@ bool has_face(const sk_sp<SkFontStyleSet>& faces, const SkTypeface& typeface);
 // The faces after the first of the font collection (.ttc, .otc, or a WOFF2
 // of one) at `path`, or in `data` when `path` is empty, as `font_mgr` makes
 // them, in order. None for a font that is no collection, which is told by
-// its first four bytes, so that loading one opens it no further.
+// its first eight bytes, so that loading one opens it no further.
 std::vector<sk_sp<SkTypeface>> more_faces(SkFontMgr& font_mgr,
                                           const std::string& path,
                                           const sk_sp<SkData>& data);

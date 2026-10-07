@@ -873,15 +873,22 @@ whose `matchStyle` is `effing::match_css` (`effing::with_css_matching`).
 
 A font collection (`.ttc`, `.otc`, or a WOFF2 of one) is every face in it,
 wherever a font file is loaded: `loadSystemFonts()` and the user font
-directories `index.js` loads, `loadFontsFromDir`, `register` and
-`registerFromPath` (`effing::more_faces`). Each face joins its own family,
-as CoreText and Chrome have it, and the names a collection is registered
-under: `registerFromPath('Helvetica.ttc', 'Heading')` makes all six faces of
-Helvetica faces of "Heading". A collection is one registered font, under
-one key: `remove` removes every face of it, and the rebuild it does
-registers every face of the others again, as it was, a system face
-shadowable. A family registered under the name of a collection's family
-shadows every face of it there (see registered fonts over system fonts).
+directories `index.js` loads, `loadFontsFromDir` (which now takes `.otc`
+files too), `register` and `registerFromPath` (`effing::more_faces`). Each
+face joins its own family, as CoreText and Chrome have it, and the names a
+collection is registered under: `registerFromPath('Helvetica.ttc',
+'Heading')` makes all six faces of Helvetica faces of "Heading". A
+collection is one registered font, under one key: `remove` removes every
+face of it, and the `setAlias` mappings of each face's family, as it does
+those of a font's own family. The rebuild `remove` does registers every
+face of the other collections again as it was, a system face shadowable,
+reusing the faces after the first rather than opening the file again. A
+family registered under the name of a collection's family shadows every
+face of it there (see registered fonts over system fonts). A system
+collection registered again from its path, or a collection registered
+under the name of one of its faces' families, is a registered font of
+each of its families from then on, every face of it, as a single font is
+of its own family.
 
 Upstream registered the first face of a collection alone, so `Helvetica.ttc`
 was a family of one regular face, and every weight and style of Helvetica,
@@ -902,8 +909,11 @@ not.
 
 Loading every face costs `loadSystemFonts()` about 10ms more on macOS 26
 (about 75ms instead of 65ms for 372 files, 128 of them collections, which
-give 792 faces instead of 375). A file is told to be a collection by its
-first four bytes, so other fonts are opened no further than before.
+give 792 faces instead of 375), and memory: the process's RSS after it is
+118MB instead of 72MB. Each `GlobalFonts.remove` still adds about 25MB, as
+before, since its rebuild opens only the first face of each font again and
+keeps the old provider alive. A file is told to be a collection by its
+first eight bytes, so other fonts are opened no further than before.
 
 ## Releasing
 
@@ -968,8 +978,9 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   fox" at 20px, is 192.68px wide, Chrome's, where it was 187.34). Each face
   joins its own family and every name the file is registered under, and
   `GlobalFonts.remove` of the file's key removes all of them.
-  `GlobalFonts.families` lists more styles (792 instead of 375 on macOS 26)
-  and `loadSystemFonts()` takes about 10ms more there.
+  `GlobalFonts.families` lists more styles (792 instead of 375 on macOS 26),
+  and `loadSystemFonts()` takes about 10ms and 46MB more there (RSS 118MB
+  instead of 72MB). `loadFontsFromDir` loads `.otc` files too.
 - `ctx.font` takes any `font-weight` from 1 to 1000 (`550 20px X`), as
   Chrome does; it read `550 20px X` as a 550px font of the family "20px X".
   A weight outside that range (`0`, `1001`) makes the value invalid, so the
