@@ -229,16 +229,25 @@ top:
   the glyphs justifying gave them, so `'aa bb cc dd'` at 85px in Iosevka
   Slab is "aa bb …", "bb" at 32.5px and the ellipsis after the widened space
   at 65px, and the line can end short of the width (`'aa b cc d eee'` at
-  95px is "aa b cc…", 93.33px wide). SkParagraph would truncate the line first and justify what
-  is left, or, as for the clamped line's own piece, not at all: the line
+  95px is "aa b cc…", 93.33px wide). SkParagraph would truncate the line
+  first and justify what is left, or, as for the clamped line's own piece,
+  not at all: the line
   is laid out justified, with a sentinel after it, and SkParagraph's
   `TextLine::createEllipsis` then cuts that line, made to stop where the
   clusters' justified advance and the ellipsis's fit. As elsewhere, the
   clusters come off in logical order, so which part of a run in the other
   direction stays is as above; spaces of that other direction don't end
-  what is kept, as the ellipsis wouldn't follow them on screen. A clamped
-  line with no gap to widen, or that ends at a hard break, is start-aligned
-  with its ellipsis, as in Chrome.
+  what is kept, as the ellipsis wouldn't follow them on screen, and what is
+  kept ends at a grapheme cluster's end. The ellipsis is measured in the
+  font SkParagraph shapes it in: that of the last cluster kept, or else the
+  first of `fontFamily` that has it. A clamped line with no gap to widen, or
+  that ends at a hard break, is start-aligned with its ellipsis, as in
+  Chrome. Where this differs from Chrome: what is kept fits with the
+  ellipsis when SkParagraph's line breaker would take it to, up to 0.25px
+  over the width (rounded down to 0.01px), so at an exact fit the fork can
+  keep one more cluster than Chrome: in Iosevka Slab at 162px,
+  `['x brown ', box, ' brown x a gimme']` with a box 20px wide is
+  "x brown [box] bro…" here, 162px wide, and "x brown [box] br…" in Chrome.
 - A clamped line is letter-spaced as the paragraph is. A character of no
   script of its own, such as `%` or a space, takes that of the text around
   it in its bidi run, and SkParagraph, like Chrome, letter-spaces no run of

@@ -31,6 +31,7 @@ test.before((t) => {
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'iosevka-slab-regular.ttf'), 'WB Iosevka'))
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'Harmattan-Regular.ttf'), 'WB Harmattan'))
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'SourceHanSerifCN-Bold.ttf'), 'WB Source Han'))
+  t.truthy(GlobalFonts.registerFromPath(join(fonts, 'NotoSansDevanagari-Regular.ttf'), 'WB Devanagari'))
 })
 
 // A line as [startIndex, endIndex, width, left].
@@ -41,28 +42,30 @@ const lines = (layout: ParagraphLayout): Line[] =>
 
 const round = (x: number) => Math.round(x * 100) / 100
 
-// The columns each line of `paragraph` inks, painted at (0, 0) at its last
-// layout: [first, end) of those with a pixel in the line's band more than
-// ~40% opaque, or null for a line with no ink. Columns, not pixels, so that
-// antialiasing on another platform moves an edge by a pixel at most.
-function inkPerLine(paragraph: Paragraph, layout: ParagraphLayout, width = 300): Array<[number, number] | null> {
+// Which columns each line of `paragraph` inks, painted at (0, 0) at its last
+// layout: those with a pixel in the line's band more than ~40% opaque.
+function inkedColumns(paragraph: Paragraph, layout: ParagraphLayout, width: number): boolean[][] {
   const height = Math.max(1, Math.ceil(layout.height))
   const ctx = createCanvas(width, height).getContext('2d')
   fillParagraph(ctx, paragraph, 0, 0)
   const { data } = ctx.getImageData(0, 0, width, height)
-  return layout.lines.map((_, k) => {
-    let first = -1
-    let end = -1
-    for (let x = 0; x < width; x++) {
+  return layout.lines.map((_, k) =>
+    Array.from({ length: width }, (_, x) => {
       for (let y = Math.round(k * layout.lineHeight); y < Math.round((k + 1) * layout.lineHeight); y++) {
-        if (data[(y * width + x) * 4 + 3] > 96) {
-          if (first < 0) first = x
-          end = x + 1
-          break
-        }
+        if (data[(y * width + x) * 4 + 3] > 96) return true
       }
-    }
-    return first < 0 ? null : [first, end]
+      return false
+    }),
+  )
+}
+
+// The columns each line of `paragraph` inks, [first, end), or null for a
+// line with no ink. Columns, not pixels, so that antialiasing on another
+// platform moves an edge by a pixel at most.
+function inkPerLine(paragraph: Paragraph, layout: ParagraphLayout, width = 300): Array<[number, number] | null> {
+  return inkedColumns(paragraph, layout, width).map((columns) => {
+    const first = columns.indexOf(true)
+    return first < 0 ? null : [first, columns.lastIndexOf(true) + 1]
   })
 }
 
@@ -627,22 +630,11 @@ test('the clamped line keeps the bidi levels its text has in the paragraph', (t)
   t.true(at(clamped) >= 40, `${at(clamped)}`)
 })
 
-// The runs of columns `paragraph`'s line `k` inks, painted at (0, 0) at its
-// last layout, as inkPerLine counts them, runs at most 2px apart merged.
+// The runs of columns `paragraph`'s line `k` inks, as inkPerLine counts
+// them, runs at most 2px apart merged.
 function inkRuns(paragraph: Paragraph, layout: ParagraphLayout, k: number, width = 300): Array<[number, number]> {
-  const height = Math.max(1, Math.ceil(layout.height))
-  const ctx = createCanvas(width, height).getContext('2d')
-  fillParagraph(ctx, paragraph, 0, 0)
-  const { data } = ctx.getImageData(0, 0, width, height)
   const runs: Array<[number, number]> = []
-  for (let x = 0; x < width; x++) {
-    let inked = false
-    for (let y = Math.round(k * layout.lineHeight); y < Math.round((k + 1) * layout.lineHeight); y++) {
-      if (data[(y * width + x) * 4 + 3] > 96) {
-        inked = true
-        break
-      }
-    }
+  for (const [x, inked] of inkedColumns(paragraph, layout, width)[k].entries()) {
     if (!inked) continue
     const last = runs[runs.length - 1]
     if (last && x - last[1] <= 2) last[1] = x + 1
@@ -743,6 +735,23 @@ test('a clamped line is justified, then cut, as Chrome has it', (t) => {
         [8, 29],
         [43, 67],
         [81, 110],
+      ],
+    ],
+    // The last cluster in a font without the ellipsis, Noto Sans Devanagari:
+    // SkParagraph shapes the ellipsis in Iosevka Slab, the first family with
+    // it. "bb" at 34.73px and the ellipsis at 69.46px; the cut never splits
+    // "की", whose vowel sign is a cluster of its own in SkParagraph.
+    [
+      'aa bb की cc dd ee ff',
+      { fontFamily: 'WB Iosevka, WB Devanagari' },
+      90,
+      [0, 6, 89.46, 0],
+      [
+        [1, 20],
+        [35, 54],
+        [71, 75],
+        [78, 81],
+        [84, 88],
       ],
     ],
   ]

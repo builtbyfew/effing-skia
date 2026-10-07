@@ -1061,10 +1061,16 @@ bool justify_clamped_line(const effing_paragraph* p,
   auto* whole = static_cast<ParagraphImpl*>(p->paragraphs.front().get());
   const SkString& ellipsis = p->paragraph_style.getEllipsis();
   // SkParagraph shapes the ellipsis in the font of the last cluster it
-  // keeps, where that has it (and in another, which this leaves to
-  // SkParagraph's own cut, otherwise).
-  const auto advance_in = [&](const Run& run) {
-    const SkFont& font = run.font();
+  // keeps where that has it, and otherwise in the first of the style's
+  // families that does, or else in a fallback (TextLine::shapeEllipsis).
+  const TextStyle& text_style = p->paragraph_style.getTextStyle();
+  const auto advance_with = [&](sk_sp<SkTypeface> typeface) {
+    if (!typeface) {
+      return -1.f;
+    }
+    SkFont font(std::move(typeface), text_style.getFontSize());
+    font.setHinting(text_style.getFontHinting());
+    font.setSubpixel(text_style.getSubpixel());
     std::vector<SkGlyphID> glyphs(ellipsis.size());
     const size_t count =
         font.textToGlyphs(ellipsis.c_str(), ellipsis.size(),
@@ -1076,6 +1082,28 @@ bool justify_clamped_line(const effing_paragraph* p,
     }
     return font.measureText(ellipsis.c_str(), ellipsis.size(),
                             SkTextEncoding::kUTF8);
+  };
+  const auto advance_in = [&](const Run& run) {
+    float advance = advance_with(run.font().refTypeface());
+    if (advance >= 0) {
+      return advance;
+    }
+    for (const auto& typeface : p->font_collection->findTypefaces(
+             text_style.getFontFamilies(), text_style.getFontStyle(),
+             text_style.getFontArguments())) {
+      advance = advance_with(typeface);
+      if (advance >= 0) {
+        return advance;
+      }
+    }
+    if (p->font_collection->fontFallbackEnabled()) {
+      const char* at = ellipsis.c_str();
+      advance = advance_with(p->font_collection->defaultFallback(
+          SkUTF::NextUTF8WithReplacement(&at, at + ellipsis.size()),
+          text_style.getFontFamilies(), text_style.getFontStyle(),
+          text_style.getLocale(), text_style.getFontArguments()));
+    }
+    return advance;
   };
   // The ellipsis's advance as SkParagraph shaped it, when that was not the
   // one expected: the line is then cut again with it.
@@ -1100,9 +1128,10 @@ bool justify_clamped_line(const effing_paragraph* p,
         line.widthWithoutEllipsis() < w) {
       return false;
     }
-    // The clusters kept, up to `cut`, and their justified advance. Spaces of
-    // the other direction than the paragraph's don't end them: the ellipsis
-    // would follow them in their run, away from them on screen.
+    // The clusters kept, up to `cut`, and their justified advance, ending at
+    // a grapheme cluster's end. Spaces of the other direction than the
+    // paragraph's don't end them: the ellipsis would follow them in their
+    // run, away from them on screen.
     impl->ensureUTF16Mapping();
     const ClusterRange clusters = line.clusters();
     ClusterIndex cut = clusters.start;
@@ -1110,7 +1139,11 @@ bool justify_clamped_line(const effing_paragraph* p,
     float advance = 0;
     for (ClusterIndex c = clusters.end; c > clusters.start; c--) {
       const Cluster& end = impl->cluster(c - 1);
-      if (end.isWhitespaceBreak() && end.run().leftToRight() == p->rtl) {
+      // SkParagraph's clusters can split a grapheme cluster (a Devanagari
+      // vowel sign is one of its own), which Chrome keeps whole.
+      if ((end.isWhitespaceBreak() && end.run().leftToRight() == p->rtl) ||
+          !impl->codeUnitHasProperty(end.textRange().end,
+                                     SkUnicode::kGraphemeStart)) {
         continue;
       }
       const float e = shaped >= 0 ? shaped : advance_in(end.run());
