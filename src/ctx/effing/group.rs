@@ -21,7 +21,7 @@ use std::str::FromStr;
 use napi::bindgen_prelude::*;
 
 use super::super::{Backend, CanvasRenderingContext2D, Context};
-use crate::filter::{css_filter, css_filters_to_image_filter};
+use crate::filter::{CssTrim, css_filter, css_filters_to_image_filter};
 use crate::sk::effing::group::GroupLayer;
 use crate::sk::{BlendMode, ImageFilter, Paint};
 
@@ -43,12 +43,12 @@ pub struct GroupOptions {
 
 /// A CSS filter list as an image filter; `None` for `none`, empty or invalid.
 fn parse_filter(value: Option<&str>) -> Option<ImageFilter> {
-  let value = value?.trim();
+  let value = value?.css_trim();
   if value.is_empty() || value.eq_ignore_ascii_case("none") {
     return None;
   }
   let (rest, filters) = css_filter(value).ok()?;
-  if filters.is_empty() || !rest.trim().is_empty() {
+  if filters.is_empty() || !rest.css_trim().is_empty() {
     return None;
   }
   css_filters_to_image_filter(filters)

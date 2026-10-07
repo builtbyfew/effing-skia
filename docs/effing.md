@@ -4,8 +4,11 @@
 The main entry is a drop-in for upstream: same classes, same context, same
 types. Effing's additions live in a separate entry, `@effing/skia/extensions`,
 so that swapping the backend later only touches the code that imports it.
-One behaviour is changed, and only behind an opt-in: text rendering under
-`textRendering = 'geometricPrecision'`.
+Some behaviours are changed: text rendering under
+`textRendering = 'geometricPrecision'`, only behind that opt-in; registered
+fonts taking precedence over system fonts of the same family (see registered
+fonts over system fonts); and CSS filters, `drop-shadow()`'s blur among them,
+read and drawn as in Chrome (see filtered draws).
 
 ```ts
 import { createCanvas } from '@effing/skia' // upstream's API, unchanged
@@ -22,7 +25,7 @@ upstream file has at most a few marked hook lines.
 | ---------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer,fonts}.{hpp,cpp}`   | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs` | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`     | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`)                                                                                                                                                                        |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`     | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
 | Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                          | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`)                                                                                                                                                                                                                                    |
 | Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                          | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
 | Build                  |                                                                                  | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
@@ -285,6 +288,86 @@ top:
   `geometricPrecision`; the two agree pixel for pixel.
 - `letterSpacing` follows each character, as in Chrome, except the ones
   Chrome adds none after (below).
+- A line that starts after the space it wraps at carries no kerning against
+  that space, as in Chrome (below).
+- A line that breaks at a soft hyphen (U+00AD) ends with a hyphen, as CSS
+  `hyphens: manual`, the default, has it (below).
+
+#### Kerning at a line's start
+
+A font's legacy `kern` table, which HarfBuzz applies when the font has no
+GPOS kerning, can kern a space with the letter after it: Liberation Sans
+has space+A at -1.104px at 20px, and space+T and space+Y at -0.361px.
+HarfBuzz puts half of such a pair on each glyph, so where a line starts at
+the letter, the line kept the letter's half: `'OVER THE'` at 70px had a
+second line of 39.82px, where "THE" is 40px. Chrome shapes a line's text
+anew from its start where the break is not safe to break for HarfBuzz, so
+the letter has no kerning there, and lines break by that width too
+(`__test__/effing-paragraph-kerning.spec.ts`). So does the fork: such a
+line starts a piece of its own (see word breaking), built from its text on.
+A word that fits a line only with the kerning overflows it, as in Chrome.
+`minIntrinsicWidth` keeps the kerning, as Chrome's min-content does.
+
+The fork finds such letters by the offset HarfBuzz gives the second glyph of
+a pair it kerns that way, which is the letter in LTR and the space in RTL.
+Text laid out in pieces lays out more slowly: 1000 words of English in
+Liberation Sans at 300px (167 lines) take about 2.7ms to lay out first
+instead of 1.6ms, and 0.9ms instead of 0.25ms again at another width.
+Where the fork still differs from Chrome:
+
+- Chrome shapes anew from a line's start up to where the text is safe to
+  break again, which can run to its end: a line of `'AT'`, whose A and T
+  are kerned too, then has no kerning against the space after it either,
+  and is 24.08px wide in Chrome and 23.89px here.
+- Under `textAlign` `center`, `right` and `justify`, Chrome shapes a line's
+  end anew too, without the space after it, which the fork doesn't: a line
+  that ends in "T" before a space is 0.19px wider in Chrome. Start-aligned,
+  both keep that kerning.
+- GPOS kerning puts a pair's adjustment on its first glyph, which is the
+  space in LTR and hangs with it, but the letter in RTL, which the fork
+  doesn't find.
+
+#### Soft hyphens
+
+A soft hyphen draws nothing, unless a line breaks at it: the line then ends
+with a hyphen, measured and drawn, as Chrome draws it
+(`__test__/effing-paragraph-soft-hyphen.spec.ts`). It is U+2010 where the
+primary font has that, and "-" otherwise, shaped on its own: it doesn't kern
+with the letter before it and takes no `letterSpacing`. The line's text, its
+`endIndex`, ends after the soft hyphen, and its `width` takes in the hyphen,
+which it is aligned and justified with. A line breaks at a soft hyphen when
+its text and the hyphen fit, at the last opportunity before it otherwise,
+and overflows with the hyphen when it has none. Spaces between the soft
+hyphen and where the line breaks hang after the hyphen, as in Chrome, but a
+soft hyphen before a hard break or at the end of the text gets none. A line
+clamped by `maxLines` keeps its hyphen before the `ellipsis`
+("cali‐…"). `minIntrinsicWidth` takes the hyphen in after a word that ends
+at a soft hyphen, as Chrome's min-content does. Under `overflowWrap:
+'break-word'`, a word never breaks before a soft hyphen, as UAX #14 has it
+and Chrome does. There is no `hyphens: none`, where Chrome doesn't break at
+soft hyphens at all: a caller after that drops them from the text.
+
+HarfBuzz kerns across a soft hyphen, and with a font's legacy `kern` table
+puts half of a pair on the letter after it. The line after a soft hyphen
+it breaks at is laid out from its own text, as Chrome shapes it anew, so it
+has no such kerning, and a word after a soft hyphen that fits a line only
+with it overflows the line unbroken (`'ab A\u00ADVAVAVA'` at 72px, as in
+Chrome). Chrome shapes such a line anew up to where the text is safe to
+break again, which in a word whose pairs are all kerned is its end, so it
+also drops the kerning against the space after it: its "VAVAVA" is 72.63px,
+the fork's 72.07px, as with a kerned letter after a space.
+
+SkParagraph would break lines at soft hyphens without the hyphen. So text
+that has a line break at one is laid out in pieces (below): a line that
+breaks at a soft hyphen is a piece of its own, its text with the hyphen
+after it, in a text style of its own. Each such line is shaped twice, once
+to see whether it fits, as Chrome reshapes a line it hyphenates, which can
+be wider than its text measured in the paragraph: kerning between the last
+letter and the one after the soft hyphen is gone. A paragraph of 1000 words
+with a soft hyphen between every two syllables (193 lines) takes about 9ms
+to lay out first instead of 2.3ms, and 5ms instead of 0.2ms to lay out
+again at another width; 100 such words, 1.3ms and 0.2ms instead of 1.6ms
+and 0.02ms.
 
 #### Letter spacing
 
@@ -599,6 +682,52 @@ filter that affects transparent black), under a singular transform, and for
 content that covers the clip, such as a background, which a bounded layer
 would not make faster.
 
+The blur length of `drop-shadow(dx dy blur color)`, in `ctx.filter` and in a
+group's `filter` or `backdropFilter`, is the Gaussian's standard deviation,
+as the Filter Effects spec defines it and as `blur()` takes it
+(`src/filter.rs`). Upstream halves it, the rule for `shadowBlur`, whose
+standard deviation the canvas spec does define as half its value and which is
+left as it is. `drop-shadow(0 0 4px)` draws its shadow as `blur(4px)` does,
+the pixels Chrome's canvas draws for it.
+
+A filter list is read closer to how Chrome's canvas reads it than upstream
+does. A transparent `drop-shadow()` is skipped, and the rest of the list
+applies; upstream dropped the whole list for it and for `drop-shadow(0 0 0)`,
+which is kept: its shadow, unblurred and unshifted, shows where the content
+is translucent. `drop-shadow()` takes its colour before or after the
+lengths, in `rgb()`, `hsl()`, `hwb()`, hex, a name or `transparent`.
+Function names and units are case-insensitive, numbers take an exponent
+(`blur(4e1px)`), an omitted argument takes its default (`blur()` is
+`blur(0)`, `grayscale()` is `grayscale(1)`), and the end of the value
+closes a function left open (`blur(4px`). What Chrome rejects makes the
+value invalid, so `ctx.filter` keeps its previous value and a group's filter
+is none: a negative amount or blur length (`opacity(-1)`, `blur(-1px)`,
+`drop-shadow(0 0 -2px red)`), a unitless angle other than 0
+(`hue-rotate(90)`), a number ending in a dot (`blur(4.px)`), anything but
+CSS whitespace (space, tab, line feed, carriage return, form feed) between
+or around functions, such as U+00A0, and a `drop-shadow()` with a colour it
+cannot read, a fourth length or anything else in it. Upstream clamped
+amounts, read `hue-rotate(90)` as `hue-rotate(0)`, dropped the whole list
+for a negative blur, drew a shadow it could not read in black, rejected
+exponents outside `drop-shadow()` and took any Unicode space.
+
+Where it still differs from Chrome:
+
+- A value that overflows f32 (`opacity(1e40)`, `blur(1e38in)`) is invalid;
+  Chrome clamps it.
+- `drop-shadow(1e30px 0 red)` draws the content without its shadow, where
+  Chrome draws nothing.
+- `drop-shadow()` rejects `lab()`, `lch()`, `oklab()`, `oklch()` and
+  `color()` colours, which the rest of the context doesn't take either, and
+  `hsl()` with unitless saturation and lightness (`hsl(120 100 25)`).
+- `em` and `rem` are 16px, not relative to the context's font, and the other
+  font- and viewport-relative units (`ex`, `ch`, `vw`, `vh`, `vmin`, ...)
+  are rejected, as is `calc()`.
+- Comments (`blur(/* */ 4px)`) are not read, except inside `drop-shadow()`.
+- Outside `drop-shadow()`, whitespace between a number and its unit or `%`
+  is accepted (`blur(4 px)`, `opacity(50 %)`, `hue-rotate(90 deg)`), as
+  upstream's tests require.
+
 ## Registered fonts over system fonts
 
 A family registered with `GlobalFonts` (`register`, `registerFromPath`,
@@ -796,6 +925,30 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   upright bold the oblique face, and a width above normal the face of that
   width where a wider one was there too. Text set in a style a family has
   no face for can lay out differently.
+- `drop-shadow()` in `ctx.filter` and in a group's filters blurs with its
+  blur length as the standard deviation, as `blur()` does and as in Chrome,
+  where it used to blur with half of it: drop shadows are twice as blurry as
+  before, and `drop-shadow(6px 8px 12px black)` now draws what Chrome draws
+  for it, not what Chrome draws for `drop-shadow(6px 8px 6px black)`. To keep
+  the old look, halve the blur length. `shadowBlur` is unchanged.
+- A filter list with a transparent `drop-shadow()` or `drop-shadow(0 0 0)`
+  in it applies the rest of the list, as in Chrome, where it used to apply
+  none of it: `drop-shadow(0 0 transparent) grayscale(1)` now draws in gray.
+- Filter values Chrome rejects are invalid: the assignment to `ctx.filter`
+  is ignored and a group's filter is none. That covers a negative amount or
+  blur length (`opacity(-1)` used to draw nothing, and `blur(-1px)` to drop
+  the whole list), `hue-rotate(90)` (read as `hue-rotate(0)`), and a
+  `drop-shadow()` whose colour can't be read (`nosuchcolor`), with a fourth
+  length or with anything else in it (drawn in black). A value that
+  overflows f32 (`opacity(1e40)`) is invalid too, where Chrome clamps it.
+- Filter values Chrome accepts that were rejected now apply:
+  `drop-shadow(red 4px 4px)` with the colour first, `hsl()`, `hsla()` and
+  `hwb()` shadow colours, upper-case function names and units
+  (`BLUR(4PX)`), exponents (`blur(4e1px)`), omitted arguments (`blur()`,
+  `grayscale()`), and a function
+  the end of the value leaves open (`blur(4px`). Filter values with U+00A0
+  or another non-CSS space between functions, or a number ending in a dot
+  (`blur(4.px)`), are now invalid, as in Chrome.
 - A `Paragraph` places its baselines by Chrome's half-leading: from the
   ascent and descent rounded to whole pixels, the half of the leading above
   the text floored to whole pixels. They used to split the leading of the
@@ -818,6 +971,27 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   Chrome's baseline with no shift. Its text-box-trim, which goes from the
   baseline and the unrounded ascent, and its mock paragraph, which mirrors
   the old formula, need the same change.
+- A `Paragraph` line that starts after the space it wraps at carries no
+  kerning against that space, as in Chrome: with a font's legacy `kern`
+  table, HarfBuzz put half of a space+letter pair on the letter, which the
+  line kept. In Liberation Sans 20px, `'OVER THE'` at 70px has a second line
+  of 40px, as "THE" alone, not 39.82px, and `'Over Away Yes Tea'` at 60px
+  has "Away" at 48.55px, not 47.99px. Lines break by those widths, as in
+  Chrome, so a few now break earlier, and the text of such a line is drawn
+  as it is alone, its first letter up to half a kerning pair to the right.
+  Text with such a line is laid out in pieces, more slowly (see kerning at
+  a line's start).
+- A `Paragraph` line that breaks at a soft hyphen (U+00AD) ends with a
+  hyphen, as Chrome draws it under `hyphens: manual`: U+2010, or "-" where
+  the primary font has none, measured, drawn, aligned and justified with the
+  line. Such a line used to end with nothing, a hyphen's width short of
+  Chrome's (Liberation Sans 20px at 130px: `'super\u00ADcali\u00ADfragilistic'`
+  was 80.04px and 77.79px, now 86.72px, with the hyphen, and 77.79px), and
+  lines broke at soft hyphens where only their text fitted. A line clamped
+  by `maxLines` keeps its hyphen before the `ellipsis`, and
+  `minIntrinsicWidth` takes it in after a word that ends at a soft hyphen.
+  Text with such a line is laid out in pieces, more slowly (see soft
+  hyphens).
 - A draw under `ctx.filter`, and the shadow of one or of a drawn image, goes
   through a layer the size of what it draws rather than of the canvas. Five
   lines of text under `blur(12px)` on a 1080x1080 canvas went from about

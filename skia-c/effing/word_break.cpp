@@ -345,7 +345,8 @@ class WordBreakUnicode final : public SkUnicode {
 
   // Lets a line break between any two grapheme clusters of the text's first
   // word, up to its first opportunity, but not before the spaces after it,
-  // which hang.
+  // which hang, nor before a soft hyphen, which a line breaks after (UAX #14
+  // LB21), as Chrome has it.
   void break_first_word(const std::vector<Grapheme>& graphemes,
                         skia_private::TArray<Flags, true>* results) {
     for (size_t g = 1; g < graphemes.size(); g++) {
@@ -353,6 +354,9 @@ class WordBreakUnicode final : public SkUnicode {
       if (flags & (kSoftLineBreakBefore | kHardLineBreakBefore) ||
           fIcu->isWhitespace(graphemes[g].c)) {
         return;
+      }
+      if (graphemes[g].c == 0x00AD) {
+        continue;
       }
       flags = static_cast<Flags>(flags | kSoftLineBreakBefore);
     }
