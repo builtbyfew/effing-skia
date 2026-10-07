@@ -4,8 +4,11 @@
 The main entry is a drop-in for upstream: same classes, same context, same
 types. Effing's additions live in a separate entry, `@effing/skia/extensions`,
 so that swapping the backend later only touches the code that imports it.
-One behaviour is changed, and only behind an opt-in: text rendering under
-`textRendering = 'geometricPrecision'`.
+Some behaviours are changed: text rendering under
+`textRendering = 'geometricPrecision'`, only behind that opt-in; registered
+fonts taking precedence over system fonts of the same family (see registered
+fonts over system fonts); and CSS filters, `drop-shadow()`'s blur among them,
+read and drawn as in Chrome (see filtered draws).
 
 ```ts
 import { createCanvas } from '@effing/skia' // upstream's API, unchanged
@@ -22,7 +25,7 @@ upstream file has at most a few marked hook lines.
 | ---------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer,fonts}.{hpp,cpp}`   | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily`, `shadowable_faces` and system flag, the `setAlias` replay) |
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs` | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                 |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`     | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`)                                                                                                                         |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`     | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                        |
 | Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                          | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`)                                                                                                                                                                                     |
 | Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                          | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                      |
 | Build                  |                                                                                  | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                |
@@ -679,6 +682,52 @@ filter that affects transparent black), under a singular transform, and for
 content that covers the clip, such as a background, which a bounded layer
 would not make faster.
 
+The blur length of `drop-shadow(dx dy blur color)`, in `ctx.filter` and in a
+group's `filter` or `backdropFilter`, is the Gaussian's standard deviation,
+as the Filter Effects spec defines it and as `blur()` takes it
+(`src/filter.rs`). Upstream halves it, the rule for `shadowBlur`, whose
+standard deviation the canvas spec does define as half its value and which is
+left as it is. `drop-shadow(0 0 4px)` draws its shadow as `blur(4px)` does,
+the pixels Chrome's canvas draws for it.
+
+A filter list is read closer to how Chrome's canvas reads it than upstream
+does. A transparent `drop-shadow()` is skipped, and the rest of the list
+applies; upstream dropped the whole list for it and for `drop-shadow(0 0 0)`,
+which is kept: its shadow, unblurred and unshifted, shows where the content
+is translucent. `drop-shadow()` takes its colour before or after the
+lengths, in `rgb()`, `hsl()`, `hwb()`, hex, a name or `transparent`.
+Function names and units are case-insensitive, numbers take an exponent
+(`blur(4e1px)`), an omitted argument takes its default (`blur()` is
+`blur(0)`, `grayscale()` is `grayscale(1)`), and the end of the value
+closes a function left open (`blur(4px`). What Chrome rejects makes the
+value invalid, so `ctx.filter` keeps its previous value and a group's filter
+is none: a negative amount or blur length (`opacity(-1)`, `blur(-1px)`,
+`drop-shadow(0 0 -2px red)`), a unitless angle other than 0
+(`hue-rotate(90)`), a number ending in a dot (`blur(4.px)`), anything but
+CSS whitespace (space, tab, line feed, carriage return, form feed) between
+or around functions, such as U+00A0, and a `drop-shadow()` with a colour it
+cannot read, a fourth length or anything else in it. Upstream clamped
+amounts, read `hue-rotate(90)` as `hue-rotate(0)`, dropped the whole list
+for a negative blur, drew a shadow it could not read in black, rejected
+exponents outside `drop-shadow()` and took any Unicode space.
+
+Where it still differs from Chrome:
+
+- A value that overflows f32 (`opacity(1e40)`, `blur(1e38in)`) is invalid;
+  Chrome clamps it.
+- `drop-shadow(1e30px 0 red)` draws the content without its shadow, where
+  Chrome draws nothing.
+- `drop-shadow()` rejects `lab()`, `lch()`, `oklab()`, `oklch()` and
+  `color()` colours, which the rest of the context doesn't take either, and
+  `hsl()` with unitless saturation and lightness (`hsl(120 100 25)`).
+- `em` and `rem` are 16px, not relative to the context's font, and the other
+  font- and viewport-relative units (`ex`, `ch`, `vw`, `vh`, `vmin`, ...)
+  are rejected, as is `calc()`.
+- Comments (`blur(/* */ 4px)`) are not read, except inside `drop-shadow()`.
+- Outside `drop-shadow()`, whitespace between a number and its unit or `%`
+  is accepted (`blur(4 px)`, `opacity(50 %)`, `hue-rotate(90 deg)`), as
+  upstream's tests require.
+
 ## Registered fonts over system fonts
 
 A family registered with `GlobalFonts` (`register`, `registerFromPath`,
@@ -804,6 +853,30 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- `drop-shadow()` in `ctx.filter` and in a group's filters blurs with its
+  blur length as the standard deviation, as `blur()` does and as in Chrome,
+  where it used to blur with half of it: drop shadows are twice as blurry as
+  before, and `drop-shadow(6px 8px 12px black)` now draws what Chrome draws
+  for it, not what Chrome draws for `drop-shadow(6px 8px 6px black)`. To keep
+  the old look, halve the blur length. `shadowBlur` is unchanged.
+- A filter list with a transparent `drop-shadow()` or `drop-shadow(0 0 0)`
+  in it applies the rest of the list, as in Chrome, where it used to apply
+  none of it: `drop-shadow(0 0 transparent) grayscale(1)` now draws in gray.
+- Filter values Chrome rejects are invalid: the assignment to `ctx.filter`
+  is ignored and a group's filter is none. That covers a negative amount or
+  blur length (`opacity(-1)` used to draw nothing, and `blur(-1px)` to drop
+  the whole list), `hue-rotate(90)` (read as `hue-rotate(0)`), and a
+  `drop-shadow()` whose colour can't be read (`nosuchcolor`), with a fourth
+  length or with anything else in it (drawn in black). A value that
+  overflows f32 (`opacity(1e40)`) is invalid too, where Chrome clamps it.
+- Filter values Chrome accepts that were rejected now apply:
+  `drop-shadow(red 4px 4px)` with the colour first, `hsl()`, `hsla()` and
+  `hwb()` shadow colours, upper-case function names and units
+  (`BLUR(4PX)`), exponents (`blur(4e1px)`), omitted arguments (`blur()`,
+  `grayscale()`), and a function
+  the end of the value leaves open (`blur(4px`). Filter values with U+00A0
+  or another non-CSS space between functions, or a number ending in a dot
+  (`blur(4.px)`), are now invalid, as in Chrome.
 - A `Paragraph` places its baselines by Chrome's half-leading: from the
   ascent and descent rounded to whole pixels, the half of the leading above
   the text floored to whole pixels. They used to split the leading of the

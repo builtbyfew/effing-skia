@@ -20,9 +20,11 @@ use crate::page_recorder::{PageRecorder, RasterKey, next_resource_id};
 use crate::picture_recorder::PictureRecorder;
 use crate::sk::Canvas;
 use crate::{
-  CanvasElement, SVGCanvas,
+  CanvasElement,
+  SVGCanvas,
   avif::Config,
   error::SkError,
+  filter::CssTrim, // effing
   filter::css_filter,
   filter::css_filters_to_image_filter,
   font::Font,
@@ -1507,7 +1509,8 @@ impl Context {
   /// string, one that yields no filter, and one with tokens left over -- that
   /// last makes a `<filter-value-list>` all-or-nothing, keeping no valid prefix.
   pub fn set_filter(&mut self, filter_str: &str) -> result::Result<(), SkError> {
-    if filter_str.trim().eq_ignore_ascii_case("none") {
+    // effing: CSS whitespace only, here and for the leftover below
+    if filter_str.css_trim().eq_ignore_ascii_case("none") {
       // An ident, so Blink matches it case-insensitively, but the getter still
       // replays whatever case was assigned.
       self.state.filters_string = filter_str.to_owned();
@@ -1520,11 +1523,11 @@ impl Context {
     let Ok((rest, filters)) = css_filter(filter_str) else {
       return Ok(());
     };
-    if filters.is_empty() || !rest.trim().is_empty() {
+    if filters.is_empty() || !rest.css_trim().is_empty() {
       return Ok(());
     }
     // Parsed clean, so the assignment lands even if it builds no filter at all:
-    // `drop-shadow(0 0 transparent)` is legal and simply draws nothing. The id
+    // `drop-shadow(0 0 transparent)` is legal and skipped (effing). The id
     // advances with the stored chain so a reused ImageFilter dedups under one
     // accounting identity and a fresh chain re-charges under a new one.
     self.state.filter = css_filters_to_image_filter(filters);
