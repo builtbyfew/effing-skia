@@ -26,37 +26,38 @@ uint32_t effing_font_collection_register_system_font(
 
 namespace effing {
 
-void SystemFaces::add(const SkString& family, const SkTypeface& typeface) {
+void ShadowableFaces::add(const SkString& family, const SkTypeface& typeface) {
   faces_.emplace(std::string(family.c_str()), typeface.uniqueID());
 }
 
-sk_sp<SkFontStyleSet> SystemFaces::shadow(const char family[],
-                                          sk_sp<SkFontStyleSet> faces) const {
-  if (family == nullptr || faces == nullptr) {
+sk_sp<SkFontStyleSet> ShadowableFaces::shadow(
+    const char family[],
+    sk_sp<SkFontStyleSet> faces) const {
+  if (family == nullptr || faces == nullptr || faces->count() == 0) {
     return faces;
   }
   std::string name(family);
-  // Most families are all registered or all system; skip those with no system
-  // face at all without looking at their faces.
+  // Most families have no shadowable face at all; skip them without looking
+  // at their faces.
   auto first = faces_.lower_bound({name, 0});
   if (first == faces_.end() || first->first != name) {
     return faces;
   }
   auto registered =
       sk_make_sp<skia::textlayout::TypefaceFontStyleSet>(SkString(family));
-  bool has_system_face = false;
+  bool has_shadowable_face = false;
   for (int i = 0; i < faces->count(); i++) {
     sk_sp<SkTypeface> face = faces->createTypeface(i);
     if (face == nullptr) {
       continue;
     }
     if (faces_.count({name, face->uniqueID()}) > 0) {
-      has_system_face = true;
+      has_shadowable_face = true;
     } else {
       registered->appendTypeface(std::move(face));
     }
   }
-  if (!has_system_face || registered->count() == 0) {
+  if (!has_shadowable_face || registered->count() == 0) {
     return faces;
   }
   return registered;

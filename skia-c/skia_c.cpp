@@ -2503,6 +2503,8 @@ bool skiac_font_collection_set_alias(skiac_font_collection* c_font_collection,
     // re-register
     c_font_collection->set_aliases.insert(
         {std::string(family), std::string(alias)});
+    c_font_collection->alias_faces.emplace(  // effing
+        std::make_pair(std::string(family), std::string(alias)), typeface);
     return true;
   }
 
@@ -2510,6 +2512,10 @@ bool skiac_font_collection_set_alias(skiac_font_collection* c_font_collection,
   // auto-deduplicates)
   c_font_collection->set_aliases.insert(
       {std::string(family), std::string(alias)});
+  // effing: a rebuild replays this face, or the one the alias took first,
+  // which matching it prefers (docs/effing.md).
+  c_font_collection->alias_faces.emplace(
+      std::make_pair(std::string(family), std::string(alias)), typeface);
 
   // Register the alias - this will shadow any existing font with the same name
   c_font_collection->assets->registerTypeface(std::move(typeface),

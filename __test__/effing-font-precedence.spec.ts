@@ -1,4 +1,4 @@
-import { copyFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -13,7 +13,9 @@ import { Paragraph } from '../extensions'
 // the same family name, as an @font-face font does over a local one in a
 // browser (docs/effing.md). `loadSystemFontsFromDir` loads fixture fonts as
 // system fonts, so the tests don't depend on the fonts the machine has.
-// index.js loads the real system fonts with it.
+// index.js loads the real system fonts with it. The fixture families can be
+// installed on a developer's machine too, so the assertions allow for more
+// system faces than the fixtures add.
 const { loadSystemFontsFromDir } = createRequire(import.meta.url)('../js-binding.js') as {
   loadSystemFontsFromDir: (dir: string) => number
 }
@@ -21,6 +23,7 @@ const { loadSystemFontsFromDir } = createRequire(import.meta.url)('../js-binding
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const fonts = join(__dirname, 'fonts')
 const LATO = join(fonts, 'Lato-Regular.ttf')
+const CURLY_DIR = join(__dirname, 'fonts-dir')
 const IOSEVKA_SLAB = join(fonts, 'iosevka-slab-regular.ttf')
 
 const tmpDirs: string[] = []
@@ -67,10 +70,56 @@ function styles(family: string) {
   return GlobalFonts.families.find((f) => f.family === family)?.styles
 }
 
-test.serial('a registered family shadows the system family of the same name, in every style', (t) => {
+// Removing a font rebuilds the font provider from what was registered.
+function rebuild(t: { truthy: (value: unknown) => void; true: (value: boolean) => void }) {
+  const key = GlobalFonts.register(readFileSync(join(fonts, 'osrs-font-compact.otf')), 'FP Rebuild')
+  t.truthy(key)
+  t.true(GlobalFonts.remove(key!))
+}
+
+test.before((t) => {
   // Iosevka Curly: regular, italic and heavy (900).
-  t.is(loadSystemFontsFromDir(join(__dirname, 'fonts-dir')), 3)
-  t.is(styles('Iosevka Curly')?.length, 3)
+  t.is(loadSystemFontsFromDir(CURLY_DIR), 3)
+})
+
+test.serial('a font registered under an alias joins its own family without shadowing it', (t) => {
+  const regular = STYLES[0]
+  const heavy = STYLES[2]
+  const before = { regular: draw('"Iosevka Curly"', regular), heavy: draw('"Iosevka Curly"', heavy) }
+  const styleCount = styles('Iosevka Curly')!.length
+  t.true(styleCount >= 3)
+  t.notDeepEqual(before.regular, before.heavy)
+
+  t.truthy(GlobalFonts.register(readFileSync(join(CURLY_DIR, 'iosevka-curly_heavy.Woff2')), 'FP Heading'))
+  for (const when of ['registered', 'rebuilt']) {
+    // Iosevka Curly keeps its system faces, the heavy among them.
+    t.is(styles('Iosevka Curly')!.length, styleCount + 1, when)
+    t.true(draw('"Iosevka Curly"', regular).equals(before.regular), when)
+    t.true(draw('"Iosevka Curly"', heavy).equals(before.heavy), when)
+    // The alias is the heavy face, at any weight.
+    t.deepEqual(styles('FP Heading'), [{ weight: 900, width: 'normal', style: 'normal' }], when)
+    t.true(draw('"FP Heading"', regular).equals(before.heavy), when)
+    rebuild(t)
+  }
+})
+
+test.serial('a family named with setAlias keeps the face it took, also after a rebuild', (t) => {
+  t.is(loadSystemFontsFromDir(systemDir({ 'harmattan.ttf': join(fonts, 'Harmattan-Regular.ttf') })), 1)
+  const regular = STYLES[0]
+  const harmattan = measure('"Harmattan"', regular)
+  t.true(GlobalFonts.setAlias('Harmattan', 'FP Harmattan Alias'))
+  t.deepEqual(measure('"FP Harmattan Alias"', regular), harmattan)
+  // Registering Lato as Harmattan shadows the system's Harmattan, but not
+  // the face the alias took from it.
+  t.truthy(GlobalFonts.registerFromPath(LATO, 'Harmattan'))
+  t.notDeepEqual(measure('"Harmattan"', regular), harmattan)
+  t.deepEqual(measure('"FP Harmattan Alias"', regular), harmattan)
+  rebuild(t)
+  t.notDeepEqual(measure('"Harmattan"', regular), harmattan)
+  t.deepEqual(measure('"FP Harmattan Alias"', regular), harmattan)
+})
+
+test.serial('a registered family shadows the system family of the same name, in every style', (t) => {
   const system = STYLES.map((style) => measure('"Iosevka Curly"', style))
   t.truthy(GlobalFonts.registerFromPath(LATO, 'FP Lato'))
   const lato = STYLES.map((style) => measure('"FP Lato"', style))
@@ -107,7 +156,7 @@ test.serial('a system font registered from its path is a registered font', (t) =
     'b.ttf': join(fonts, 'SourceSerifPro-Regular.ttf'),
   })
   t.is(loadSystemFontsFromDir(dir), 2)
-  t.is(styles('Source Serif Pro')?.length, 2)
+  t.true(styles('Source Serif Pro')!.length >= 2)
   // Registering one of them shadows the other.
   t.truthy(GlobalFonts.registerFromPath(join(dir, 'a.ttf')))
   t.is(styles('Source Serif Pro')?.length, 1)

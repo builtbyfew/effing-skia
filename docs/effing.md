@@ -18,16 +18,16 @@ Fork code is kept out of upstream files so that upstream merges stay trivial.
 Each layer has an `effing` directory with one file per feature, and each
 upstream file has at most a few marked hook lines.
 
-| Layer                  | Fork code                                                                        | Upstream hooks                                                                                                                                                                             |
-| ---------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer,fonts}.{hpp,cpp}`   | `skia-c/skia_c.cpp` (include + four `text_rendering` checks), `skia-c/skia_c.hpp` (include, `RegisteredFont::system`, the font provider's `onMatchFamily`, `system_faces` and system flag) |
-| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs` | `src/sk.rs` (`mod effing`)                                                                                                                                                                 |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`     | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`)                                                         |
-| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                          | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`)                                                                                                                     |
-| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                          | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)      |
-| Build                  |                                                                                  | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                |
-| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                          | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                        |
-| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                |
+| Layer                  | Fork code                                                                        | Upstream hooks                                                                                                                                                                                                                                             |
+| ---------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer,fonts}.{hpp,cpp}`   | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily`, `shadowable_faces` and system flag, the `setAlias` replay) |
+| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs` | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                 |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`     | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`)                                                                                                                         |
+| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                          | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`)                                                                                                                                                                                     |
+| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                          | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                      |
+| Build                  |                                                                                  | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                          | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                        |
+| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                |
 
 C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
 napi bindings are functions that take the context as their first argument
@@ -601,10 +601,12 @@ the system's face won every style the system had. In `node:22-bookworm` with
 `fonts-liberation`, the Liberation Sans 1.x woff `@effing/canvas` bundles,
 registered as "Liberation Sans", laid out the "A" of `'A A'` broken after it
 12.236px wide, the system TTF's kerning, rather than its own 12.788px; under
-an alias of its own it was 12.788px. The fork marks the faces loaded as
-system fonts (`effing::SystemFaces`), and the provider's family lookup
-(`onMatchFamily`, which every lookup above goes through) leaves them out of a
-family that has registered faces.
+an alias of its own it was 12.788px. The fork marks the faces that join a
+family without shadowing it (`effing::ShadowableFaces`, with the names in
+`RegisteredFont::shadowable_names` so that the rebuild `GlobalFonts.remove`
+does keeps them), and the provider's family lookup (`onMatchFamily`, which
+every lookup above goes through) leaves them out of a family that has
+registered faces.
 
 - A registered family replaces the system's family of that name whole, not
   style by style, as `@font-face` does: CSS font matching takes the faces of
@@ -620,10 +622,23 @@ family that has registered faces.
 - The order of registering and loading the system's fonts doesn't matter.
 - Among the registered faces of a family, the first registered of equally
   good matches still wins, where a browser takes the last `@font-face` rule.
-- Registering a font under an alias only adds it to the alias's family. A
-  system font registered again from its path, under its own family name, is
-  a registered face from then on, and shadows the rest of the system's
-  family.
+- A font registered under an alias is a registered face of the alias's
+  family only. Under its own family name, where `GlobalFonts` adds it too,
+  it joins the family as a system font does, without shadowing it:
+  registering Inter Bold as "Heading" on a machine with Inter installed
+  leaves "Inter" the installed family, the registered bold among its faces.
+  A font registered again under its own family name, a system font from its
+  path or a font first registered under an alias, is a registered face there
+  from then on, and shadows the rest of the family.
+- `setAlias(family, alias)` names the face `family` resolves to in the
+  default style when it is called, as upstream's does: a registered face of
+  `alias`, which shadows a system family of that name. It keeps that face
+  when `family` later resolves to another, as when a font is registered
+  under `family`, and also after the rebuild `GlobalFonts.remove` does,
+  where upstream matched `family` anew. The mapping goes when the fonts of
+  `family` are removed, as before.
+- Family names match case-sensitively, as upstream's always have: a font
+  registered as "liberation sans" doesn't shadow "Liberation Sans".
 - `GlobalFonts.families` lists the styles a family resolves to: for a family
   with registered faces, those faces alone.
 - `GlobalFonts.loadFontsFromDir` registers the fonts it loads, as before, so
@@ -695,18 +710,23 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   drawn with `imageSmoothingEnabled = false` at a fractional scale and
   position, can pick the neighbouring source row or column where two are
   equally near (see filtered draws).
-- A font registered with `GlobalFonts` takes precedence over the system's
-  fonts of the same family name, in every style, as an `@font-face` font does
-  in a browser. In `node:22-bookworm` with `fonts-liberation`, the Liberation
-  Sans woff `@effing/canvas` bundles, registered as "Liberation Sans", lays
-  out the "A" of `'A A'` broken after it 12.788px wide, its own width, where
-  it took the system TTF's 12.236px. A style the registered family lacks is
-  synthesized from its faces rather than taken from the system's family
-  (bold text in a family registered in regular alone is an emboldened
-  regular), and `GlobalFonts.families` lists only the registered styles of
-  such a family. Fonts loaded with `loadFontsFromDir` count as registered;
-  the system's and the user's font directories, which `index.js` loads at
-  startup, as system fonts.
+- A family registered with `GlobalFonts` (`register`, `registerFromPath`,
+  `loadFontsFromDir`, `setAlias`) now replaces the system's family of the
+  same name whole, in every style, as `@font-face` does in a browser. Styles
+  you don't register are synthesized from the ones you do (bold from a
+  regular, italic by slanting), not taken from the installed font: register
+  every style you use. `GlobalFonts.families` lists only the registered
+  styles of such a family. A font registered under an alias shadows only the
+  alias's family; under its own family name it joins the installed family
+  without replacing it. Fonts from `loadFontsFromDir` count as registered;
+  only `loadSystemFonts()` and the user font directories loaded at startup
+  are system fonts. Family names match case-sensitively, as before. In
+  `node:22-bookworm` with `fonts-liberation`, the Liberation Sans woff
+  `@effing/canvas` bundles, registered as "Liberation Sans", lays out the
+  "A" of `'A A'` broken after it 12.788px wide, its own width, where it took
+  the system TTF's 12.236px.
+- `setAlias` keeps the face it took after a `GlobalFonts.remove`, which used
+  to match the aliased family anew.
 
 ### 1.0.10-effing.5
 

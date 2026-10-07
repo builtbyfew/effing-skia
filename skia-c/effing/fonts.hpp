@@ -32,13 +32,15 @@ uint32_t effing_font_collection_register_system_font(
 
 namespace effing {
 
-// The faces of a font provider that are system fonts, by the family name they
-// were added under. Every other face is a registered one.
-class SystemFaces {
+// The faces of a font provider that join a family without shadowing it, by
+// the family name they were added under: the system's fonts, and a font
+// registered under an alias alone, under its own family name. Every other
+// face is a registered one, which shadows them.
+class ShadowableFaces {
  public:
   void add(const SkString& family, const SkTypeface& typeface);
 
-  // The provider's `faces` of `family`, without the system ones when the
+  // The provider's `faces` of `family`, without the shadowable ones when the
   // family has registered faces too: a family registered under a name
   // replaces the system's family of that name whole, as an @font-face family
   // replaces a local one. A style only the system has, such as the bold of a
