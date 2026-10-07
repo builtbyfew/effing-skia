@@ -144,8 +144,8 @@ pub struct ParagraphOptions<'a> {
   pub weight: u32,
   pub style: FontStyle,
   pub letter_spacing: f32,
-  /// Line box height in px, 0 included; `None` for `normal` (hhea ascender +
-  /// descender).
+  /// Line box height in px, 0 included; `None` for `normal`, as Chrome's:
+  /// round(ascent) + round(descent) + round(lineGap) of the hhea metrics.
   pub line_height: Option<f32>,
   /// `Start` and `End` follow `direction`.
   pub align: TextAlign,
