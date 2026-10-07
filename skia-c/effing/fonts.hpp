@@ -1,6 +1,7 @@
 // Effing's font precedence: a family registered with GlobalFonts shadows the
 // system's family of the same name, as an @font-face family shadows a local
-// one in a browser. See docs/effing.md.
+// one in a browser. And its font matching: a family's face for a style is the
+// one CSS font matching picks. See docs/effing.md.
 //
 // skia_c.hpp includes this header for its font provider, so it doesn't
 // include skia_c.hpp itself.
@@ -13,6 +14,7 @@
 #include <utility>
 
 #include "include/core/SkFontMgr.h"
+#include "include/core/SkFontStyle.h"
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkString.h"
 #include "include/core/SkTypeface.h"
@@ -56,6 +58,24 @@ class ShadowableFaces {
  private:
   std::set<std::pair<std::string, SkTypefaceID>> faces_;
 };
+
+// The index of the face of `faces` that CSS font matching (CSS Fonts 4
+// §5.2) picks for `desired`, or -1 for none: of the faces nearest in
+// font-stretch, those nearest in font-style, and of those the one nearest in
+// font-weight, each in the order CSS checks them. The first of equally good
+// faces wins.
+//
+// Skia's SkFontStyleSet::matchStyleCSS3 scores the three in one number with
+// eight bits apart, where a weight scores up to 1000, so the weight spills
+// into the style: for bold italic it takes a bold face over an italic one.
+int match_css(SkFontStyleSet& faces, const SkFontStyle& desired);
+
+// `faces`, whose matchStyle picks the face match_css does. Null stays null.
+sk_sp<SkFontStyleSet> with_css_matching(sk_sp<SkFontStyleSet> faces);
+
+// `fonts`, whose families match a style as with_css_matching's do. Everything
+// else it passes to `fonts`.
+sk_sp<SkFontMgr> with_css_matching(sk_sp<SkFontMgr> fonts);
 
 }  // namespace effing
 
