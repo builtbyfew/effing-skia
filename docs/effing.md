@@ -704,11 +704,11 @@ face, slanted: 194.45, 185.62, 170.05, 143.34 and 107.77, broken elsewhere.
 
 Upstream matches with Skia's `SkFontStyleSet::matchStyleCSS3`, which scores
 the three properties in one number, eight bits apart, while a weight scores
-up to 1000, so the weight spills into the style and the style into the
-width. For 700 italic it scored the bold 1·256 + 1000 = 1256 and the italic
-3·256 + 400 = 1168, and took the bold. For the same reason it took an
-italic over a bold for a normal style in a family with no regular face, an
-upright bold over an oblique face for an italic, and, above normal width, a
+up to 1000, so the weight spills into the style. For 700 italic it scored
+the bold 1·256 + 1000 = 1256 and the italic 3·256 + 400 = 1168, and took
+the bold. For the same reason it took an italic over a bold for a normal
+style in a family with no regular face, and an upright bold over an oblique
+face for an italic. Above normal width its stretch score also ranked a
 wider face over one of the desired width. The fork's font provider and the
 system font directory's font manager hand out their families as style sets
 whose `matchStyle` is `effing::match_css` (`effing::with_css_matching`).
