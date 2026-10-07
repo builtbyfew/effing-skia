@@ -307,7 +307,7 @@ test("a paragraph's normal line height and baseline are Chrome's at sizes the fl
 // Chrome's measureText widths are the same from 17.29 to 17.3, and so are
 // its paragraphs' (78.7732 for DEVANAGARI in Noto Sans Devanagari, 272.3864
 // for LATIN in Lato), and 13.333 is 13.33. The fork's differ from Chrome's
-// by Skia's FreeType size, which is the floored size truncated to 1/64px.
+// by Skia's FreeType size, the floored size to the nearest 1/64px (below).
 test('a paragraph and geometricPrecision text are as wide at 17.3px as at 17.29px', (t) => {
   for (const [family, text] of [
     ['FS Noto Devanagari', DEVANAGARI],
@@ -322,6 +322,26 @@ test('a paragraph and geometricPrecision text are as wide at 17.3px as at 17.29p
     t.true(layOut(text, family, 17.31).lines[0].width > floored)
     t.true(measure(text, family, 17.31, 'geometricPrecision') > measured)
     t.is(layOut(text, family, 13.333).lines[0].width, layOut(text, family, 13.33).lines[0].width)
+  }
+})
+
+// Chrome's measureText widths at fractional sizes (Chrome 154, macOS, a
+// fresh FontFace per size), which CoreText lays out at the floored size
+// exactly. Skia's FreeType takes sizes in 1/64px, so the fork lays the glyphs
+// out at the floored size to the nearest 1/64px: within 0.06px of Chrome
+// here, where the size truncated to 1/64px was 0.16 to 0.21px off.
+const CHROME_WIDTHS: Array<[string, string, number, number]> = [
+  ['FS Lato', LATIN, 14.7, 231.5835],
+  ['FS Lato', LATIN, 17.31, 272.7015],
+  ['FS Oswald', LATIN, 14.7, 191.1291],
+  ['FS Oswald', LATIN, 17.31, 225.0644],
+  ['FS Noto Devanagari', DEVANAGARI, 17.31, 78.8643],
+]
+
+test("a paragraph's widths at fractional sizes are near Chrome's", (t) => {
+  for (const [family, text, size, width] of CHROME_WIDTHS) {
+    near(t, layOut(text, family, size).lines[0].width, width, 0.06)
+    near(t, measure(text, family, size, 'geometricPrecision'), width, 0.06)
   }
 })
 

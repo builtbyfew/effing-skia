@@ -55,9 +55,9 @@ producing several resolutions needs. Runs with glyphs that have no outline
 (color or bitmap emoji) fall back to masks with baseline snapping off.
 
 Under `geometricPrecision`, `fillText`, `strokeText` and `measureText` lay
-the text out at the font size floored to 1/100px, as Chrome's canvas does
-and as a `Paragraph` does (see the font size under `Paragraph`): at 17.3px
-the text is as wide as at 17.29px. The other `textRendering` values keep
+the text out at the font size floored to 1/100px, as Chrome's canvas does,
+to the nearest 1/64px, as a `Paragraph` does (see the font size under
+`Paragraph`): at 17.3px the text is as wide as at 17.29px. The other `textRendering` values keep
 upstream's exact size.
 
 Under `geometricPrecision`, `fillText`, `strokeText` and `measureText` also
@@ -164,11 +164,19 @@ top:
     float), so in a page that used 17.29 first it lays 17.30 out at 17.29,
     and the other way round. The fork takes the floored size, as Chrome
     does with a face it hasn't used at the size below.
-  - Skia's FreeType takes the size in 1/64px, truncated, so the advances
-    and outlines are those of the floored size truncated to 1/64px (17.29 is
-    17.28125): Noto Sans Devanagari text Chrome on macOS, which takes the
-    exact size from CoreText, measures 78.7732px wide at 17.3px is 78.7336px
-    here. The metrics are the floored size's.
+  - Skia's FreeType takes a size in 1/64px, truncated, and lays the glyphs
+    out at that size, where Chrome on macOS, effing's reference, takes them
+    from CoreText at the floored size exactly. So the fork gives Skia the
+    floored size to the nearest 1/64px (`effing::freetype_font_size`), whose
+    advances and outlines come closest to CoreText's; the metrics above, the
+    x-height and the line boxes are the floored size's. Noto Sans
+    Devanagari text Chrome measures 78.7732px wide at 17.3px (17.29) is
+    78.8042px here (17.296875). Over 16 fonts at 26 fractional sizes, the
+    widths are 0.041px off Chrome's on average and 0.14px at most, where
+    the exact size truncated to 1/64px was 0.053px and 0.27px off (0.063px
+    and 0.27px for the floored size truncated). Chrome on Linux, which
+    uses FreeType too, truncates as plain FreeType does, so the fork's
+    widths are a little further from its own.
   - A metric within 0.0001px below a half pixel can round the other way:
     Chrome rounds Noto Sans Devanagari's descent at 37.99px, 15.49992, up
     to 16 (3 of the 622 sizes measured).
@@ -954,8 +962,11 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   `lineGap`, `normal` line height and baselines are those of that size,
   which changes them where the exact size rounded the other way: Noto Sans
   Devanagari at 17.3px has 22px lines with the baseline at 15, as in
-  Chrome, where it had 23px lines with the baseline at 16. Widths at a
-  fractional size can shrink, by up to 0.13% in the cases measured.
+  Chrome, where it had 23px lines with the baseline at 16. The glyphs are
+  laid out at that size to the nearest 1/64px, which Skia's FreeType takes
+  sizes in and used to truncate to, so widths at a fractional size change,
+  closer to Chrome's on macOS: 0.041px off on average in the cases
+  measured, where they were 0.053px off.
 - A family's face for a style is the one CSS font matching picks: of the
   faces nearest in font-stretch, those nearest in font-style, and of those
   the one nearest in font-weight (see font matching). Bold italic in a

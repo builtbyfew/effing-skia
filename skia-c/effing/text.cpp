@@ -162,6 +162,11 @@ float effective_font_size(float size) {
   return std::isfinite(effective) && effective > 0 ? effective : size;
 }
 
+float freetype_font_size(float size) {
+  const float rounded = std::round(size * 64) / 64;
+  return std::isfinite(rounded) && rounded > 0 ? rounded : size;
+}
+
 void make_unhinted(skia::textlayout::TextStyle* text_style,
                    skia::textlayout::StrutStyle* strut_style) {
   text_style->setFontHinting(SkFontHinting::kNone);

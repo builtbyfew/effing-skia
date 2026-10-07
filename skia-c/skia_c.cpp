@@ -665,10 +665,11 @@ void skiac_canvas_get_line_metrics_or_draw_text(
   struct_style.setLeading(0);
   // effing: geometricPrecision also drops hinting, so glyph outlines and
   // advances don't depend on the device scale, and lays the text out at
-  // the size Chrome does, floored to 1/100px.
+  // the size Chrome does, floored to 1/100px, to the nearest 1/64px.
   if (text_rendering == effing::kTextRenderingGeometricPrecision) {
     effing::make_unhinted(&text_style, &struct_style);
-    text_style.setFontSize(effing::effective_font_size(font_size));
+    text_style.setFontSize(
+        effing::freetype_font_size(effing::effective_font_size(font_size)));
   }
 
   ParagraphStyle paragraph_style;

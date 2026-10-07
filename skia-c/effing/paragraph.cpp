@@ -2314,6 +2314,10 @@ effing_paragraph* effing_paragraph_create(
   // The text is laid out at the size Chrome lays it out at, floored to
   // 1/100px, and so are the metrics the line boxes come from (#46).
   const float font_size = effing::effective_font_size(s->font_size);
+  // Skia lays the glyphs out at that size to the nearest 1/64px, which its
+  // FreeType takes sizes in, as CoreText's advances at the size come closest
+  // to (effing::freetype_font_size).
+  const float skia_font_size = effing::freetype_font_size(font_size);
 
   auto* out = new effing_paragraph();
   out->align = resolve_align(static_cast<TextAlign>(s->align), direction);
@@ -2349,7 +2353,7 @@ effing_paragraph* effing_paragraph_create(
 
   TextStyle text_style;
   text_style.setFontFamilies(families);
-  text_style.setFontSize(font_size);
+  text_style.setFontSize(skia_font_size);
   text_style.setFontStyle(font_style);
   text_style.setLetterSpacing(s->letter_spacing);
   // Unhinted outlines, so layout and placement don't depend on the device.
@@ -2363,8 +2367,8 @@ effing_paragraph* effing_paragraph_create(
   strut.setForceStrutHeight(true);
   strut.setFontFamilies(families);
   strut.setFontStyle(font_style);
-  strut.setFontSize(font_size);
-  strut.setHeight(out->line_height / font_size);
+  strut.setFontSize(skia_font_size);
+  strut.setHeight(out->line_height / skia_font_size);
   strut.setHeightOverride(true);
   strut.setHalfLeading(true);
   strut.setLeading(0);
