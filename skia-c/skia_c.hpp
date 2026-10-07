@@ -168,10 +168,16 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   sk_sp<SkFontMgr> getFontMgr() const { return font_mgr; }
 
   // effing: a family registered under a name shadows the system's family of
-  // that name. See docs/effing.md.
+  // that name, and a family matches a style as CSS does. See docs/effing.md.
   sk_sp<SkFontStyleSet> onMatchFamily(const char familyName[]) const override {
-    return shadowable_faces.shadow(
-        familyName, TypefaceFontProvider::onMatchFamily(familyName));
+    return effing::with_css_matching(shadowable_faces.shadow(
+        familyName, TypefaceFontProvider::onMatchFamily(familyName)));
+  }
+
+  // effing: a family matches a style as CSS does.
+  sk_sp<SkFontStyleSet> onCreateStyleSet(int index) const override {
+    return effing::with_css_matching(
+        TypefaceFontProvider::onCreateStyleSet(index));
   }
 
   // effing: registers the face setAlias names `alias` as a registered face
@@ -625,7 +631,8 @@ struct skiac_font_collection {
         font_mgr(SkFontMgr_New_Custom_Directory(SK_FONT_FILE_PREFIX)),
         assets(sk_make_sp<TypefaceFontProviderCustom>(font_mgr)) {
     collection->setDefaultFontManager(SkFontMgr_New_Custom_Empty());
-    collection->setAssetFontManager(font_mgr);
+    collection->setAssetFontManager(
+        effing::with_css_matching(font_mgr));  // effing
     collection->setDynamicFontManager(assets);
     collection->enableFontFallback();
   }
