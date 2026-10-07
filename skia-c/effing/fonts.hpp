@@ -32,6 +32,9 @@ uint32_t effing_font_collection_register_system_font(
 
 namespace effing {
 
+// Whether `faces` holds `typeface` itself.
+bool has_face(const sk_sp<SkFontStyleSet>& faces, const SkTypeface& typeface);
+
 // The faces of a font provider that join a family without shadowing it, by
 // the family name they were added under: the system's fonts, and a font
 // registered under an alias alone, under its own family name. Every other

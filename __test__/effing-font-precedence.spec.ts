@@ -119,6 +119,20 @@ test.serial('a family named with setAlias keeps the face it took, also after a r
   t.deepEqual(measure('"FP Harmattan Alias"', regular), harmattan)
 })
 
+test.serial("setAlias to a font's own family makes it a registered face there", (t) => {
+  // An aliased font joins its own family as a shadowable face; setAlias
+  // naming that family after it makes the same face a registered one.
+  const mongolian = join(fonts, 'NotoSansMongolian-Regular.ttf')
+  t.is(loadSystemFontsFromDir(systemDir({ 'mongolian.ttf': mongolian })), 1)
+  t.true(styles('Noto Sans Mongolian')!.length >= 1)
+  t.truthy(GlobalFonts.register(readFileSync(mongolian), 'FP Mongolian'))
+  t.true(styles('Noto Sans Mongolian')!.length >= 2)
+  t.true(GlobalFonts.setAlias('FP Mongolian', 'Noto Sans Mongolian'))
+  t.is(styles('Noto Sans Mongolian')!.length, 1)
+  rebuild(t)
+  t.is(styles('Noto Sans Mongolian')!.length, 1)
+})
+
 test.serial('a registered family shadows the system family of the same name, in every style', (t) => {
   const system = STYLES.map((style) => measure('"Iosevka Curly"', style))
   t.truthy(GlobalFonts.registerFromPath(LATO, 'FP Lato'))

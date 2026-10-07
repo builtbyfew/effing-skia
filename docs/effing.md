@@ -603,8 +603,8 @@ registered as "Liberation Sans", laid out the "A" of `'A A'` broken after it
 12.236px wide, the system TTF's kerning, rather than its own 12.788px; under
 an alias of its own it was 12.788px. The fork marks the faces that join a
 family without shadowing it (`effing::ShadowableFaces`, with the names in
-`RegisteredFont::shadowable_names` so that the rebuild `GlobalFonts.remove`
-does keeps them), and the provider's family lookup (`onMatchFamily`, which
+`RegisteredFont::shadowable_names`, which the rebuild that
+`GlobalFonts.remove` does replays), and the provider's family lookup (`onMatchFamily`, which
 every lookup above goes through) leaves them out of a family that has
 registered faces.
 
@@ -632,7 +632,10 @@ registered faces.
   from then on, and shadows the rest of the family.
 - `setAlias(family, alias)` names the face `family` resolves to in the
   default style when it is called, as upstream's does: a registered face of
-  `alias`, which shadows a system family of that name. It keeps that face
+  `alias`, which shadows a system family of that name, also when the face
+  is already one of that family's shadowable faces: `setAlias('Heading',
+'Inter')` after registering Inter Bold as "Heading" makes "Inter" that
+  bold. It keeps that face
   when `family` later resolves to another, as when a font is registered
   under `family`, and also after the rebuild `GlobalFonts.remove` does,
   where upstream matched `family` anew. The mapping goes when the fonts of

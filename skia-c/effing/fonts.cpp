@@ -26,6 +26,19 @@ uint32_t effing_font_collection_register_system_font(
 
 namespace effing {
 
+bool has_face(const sk_sp<SkFontStyleSet>& faces, const SkTypeface& typeface) {
+  if (faces == nullptr) {
+    return false;
+  }
+  for (int i = 0; i < faces->count(); i++) {
+    sk_sp<SkTypeface> face = faces->createTypeface(i);
+    if (face != nullptr && face->uniqueID() == typeface.uniqueID()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void ShadowableFaces::add(const SkString& family, const SkTypeface& typeface) {
   faces_.emplace(std::string(family.c_str()), typeface.uniqueID());
 }

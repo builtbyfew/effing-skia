@@ -174,6 +174,17 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
         familyName, TypefaceFontProvider::onMatchFamily(familyName));
   }
 
+  // effing: registers the face setAlias names `alias` as a registered face
+  // there, even when the family holds it already as a shadowable face, as an
+  // aliased font's own name does.
+  void registerAlias(sk_sp<SkTypeface> typeface, const SkString& alias) {
+    shadowable_faces.remove(alias, *typeface);
+    if (!effing::has_face(TypefaceFontProvider::onMatchFamily(alias.c_str()),
+                          *typeface)) {
+      this->registerTypeface(std::move(typeface), alias);
+    }
+  }
+
   // Get registered fonts for rebuild
   const std::map<uint32_t, RegisteredFont>& getRegisteredFonts() const {
     return registered_fonts;
@@ -681,8 +692,8 @@ struct skiac_font_collection {
       if (typeface) {
         // Register the alias - this may shadow existing families (intended
         // behavior)
-        new_assets->registerTypeface(std::move(typeface),
-                                     SkString(alias.c_str()));
+        new_assets->registerAlias(std::move(typeface),  // effing
+                                  SkString(alias.c_str()));
       }
     }
 

@@ -2518,8 +2518,8 @@ bool skiac_font_collection_set_alias(skiac_font_collection* c_font_collection,
       std::make_pair(std::string(family), std::string(alias)), typeface);
 
   // Register the alias - this will shadow any existing font with the same name
-  c_font_collection->assets->registerTypeface(std::move(typeface),
-                                              SkString(alias));
+  c_font_collection->assets->registerAlias(std::move(typeface),  // effing
+                                           SkString(alias));
   c_font_collection->markCachesDirty();
   return true;
 }
