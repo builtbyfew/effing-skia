@@ -1076,6 +1076,83 @@ bool justified(const effing_paragraph* p, PieceKind kind) {
          kind != PieceKind::kUnbounded;
 }
 
+// Pointers to the members of a line and a run that SkParagraph keeps
+// private, and that order_placeholders sets right: an explicit
+// instantiation may name a private member, and Member's friend function
+// hands the pointer out.
+template <typename Tag, typename Tag::Type pointer>
+struct Member {
+  friend typename Tag::Type member(Tag) { return pointer; }
+};
+struct LineRunsInVisualOrder {
+  using Type = skia_private::STArray<1, size_t, true> TextLine::*;
+  friend Type member(LineRunsInVisualOrder);
+};
+struct RunBidiLevel {
+  using Type = uint8_t Run::*;
+  friend Type member(RunBidiLevel);
+};
+template struct Member<LineRunsInVisualOrder, &TextLine::fRunsInVisualOrder>;
+template struct Member<RunBidiLevel, &Run::fBidiLevel>;
+
+// The number of placeholders in `paragraph`, not counting the empty one
+// SkParagraph ends its list with.
+size_t placeholder_count(ParagraphImpl* impl) {
+  size_t count = 0;
+  for (const Placeholder& placeholder : impl->placeholders()) {
+    count += placeholder.fRange.width() > 0 ? 1 : 0;
+  }
+  return count;
+}
+
+// Puts the placeholders on each line of `paragraph` where their bidi levels
+// put them, as Chrome (UAX #9) does. SkParagraph orders a line's runs by
+// their levels, then deals its placeholders out to the places it gave
+// placeholders, from the left in their order in the text (TextLine's
+// constructor; Flutter wants placeholders laid out in the order they were
+// added). So between right-to-left words, the first placeholder lands on
+// the left of the second, with each one's width moving the text between
+// them. The runs' order is put back as their levels have it. Justification
+// (the run shifts) follows the order its lines are in, so only lines that
+// are not justified yet can take this.
+void order_placeholders(ParagraphImpl* impl) {
+  if (placeholder_count(impl) < 2) {
+    return;
+  }
+  std::vector<SkUnicode::BidiLevel> levels;
+  std::vector<int32_t> logical;
+  for (TextLine& line : impl->lines()) {
+    auto& runs = line.*member(LineRunsInVisualOrder{});
+    const size_t n = static_cast<size_t>(runs.size());
+    if (n < 2) {
+      continue;
+    }
+    // Its runs are those from the first in the text to the last, in some
+    // order.
+    const auto [first, last] = std::minmax_element(runs.begin(), runs.end());
+    const size_t start = *first;
+    if (*last - start + 1 != n) {
+      continue;
+    }
+    size_t placeholders = 0;
+    levels.resize(n);
+    for (size_t i = 0; i < n; i++) {
+      const Run& run = impl->run(start + i);
+      placeholders += run.isPlaceholder() ? 1 : 0;
+      levels[i] = run.*member(RunBidiLevel{});
+    }
+    if (placeholders < 2) {
+      continue;
+    }
+    logical.resize(n);
+    impl->getUnicode()->reorderVisual(levels.data(), static_cast<int>(n),
+                                      logical.data());
+    for (size_t i = 0; i < n; i++) {
+      runs[i] = start + logical[i];
+    }
+  }
+}
+
 // Lays `paragraph` out at `width`, justified if `justify`, and says whether
 // SkParagraph gave up on its ellipsis (ellipsis_failed). SkParagraph would
 // never return from justifying a line it emptied that way when the line has
@@ -1098,6 +1175,11 @@ bool justified(const effing_paragraph* p, PieceKind kind) {
 // paragraph's (#12). So a justified paragraph has its lines broken anew,
 // with no shifts, every time: laid out as a fresh one is, but not shaped
 // again.
+//
+// The placeholders are put in their places (order_placeholders) before
+// justifying too, which spreads the line in the order its runs are in: a
+// justified paragraph with two or more is also laid out start-aligned
+// first.
 bool layout_paragraph(Paragraph* paragraph, float width, bool justify) {
   auto* impl = static_cast<ParagraphImpl*>(paragraph);
   if (justify) {
@@ -1106,11 +1188,13 @@ bool layout_paragraph(Paragraph* paragraph, float width, bool justify) {
     }
     impl->resetShifts();
   }
-  if (!justify || !impl->paragraphStyle().ellipsized()) {
+  if (!justify ||
+      (!impl->paragraphStyle().ellipsized() && placeholder_count(impl) < 2)) {
     if (justify) {
       impl->updateTextAlign(TextAlign::kJustify);
     }
     paragraph->layout(width);
+    order_placeholders(impl);
     return ellipsis_failed(paragraph);
   }
   impl->updateTextAlign(TextAlign::kLeft);
@@ -1118,10 +1202,13 @@ bool layout_paragraph(Paragraph* paragraph, float width, bool justify) {
   if (ellipsis_failed(paragraph)) {
     return true;
   }
+  order_placeholders(impl);
   // Keeps the lines, which start-aligning left as they were, and formats
-  // them anew.
+  // them anew; but breaks a paragraph of one line anew, which isn't
+  // justified (it is its last line).
   impl->updateTextAlign(TextAlign::kJustify);
   paragraph->layout(width);
+  order_placeholders(impl);
   return false;
 }
 

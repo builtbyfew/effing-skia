@@ -484,6 +484,19 @@ inline-block placement (`__test__/effing-paragraph-placeholders.spec.ts`). A CSS
 that length. Letter spacing is not added to a placeholder, as Chrome doesn't
 add it to an inline-block.
 
+Along the line, placeholders are ordered by their bidi levels, as Chrome
+orders inline-blocks (UAX #9): a placeholder is a neutral (U+FFFC), so one
+between right-to-left words is right-to-left, and the first of two such
+placeholders lies right of the second. SkParagraph orders a line's runs by
+their levels too, but then deals its placeholders out to the places it gave
+placeholders from the left, in the order they were added (Flutter's API has
+no way to say that bidi moved one). Effing puts each line's runs back in
+the order their levels give before the line is justified
+(`order_placeholders` in `skia-c/effing/paragraph.cpp`). That sets
+SkParagraph's private run order (`TextLine::fRunsInVisualOrder`), so a Skia
+upgrade should check that `TextLine`'s constructor still orders runs that
+way.
+
 Unlike in CSS, a placeholder never grows its line box: lines stay exactly
 `lineHeight` tall, as with fallback fonts, and a box taller than its place
 in the line overflows it. So a tall box aligned `bottom` or `text-bottom`
@@ -1028,6 +1041,14 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   the system TTF's 12.236px.
 - `setAlias` keeps the face it took after a `GlobalFonts.remove`, which used
   to match the aliased family anew.
+- Placeholders between right-to-left words are ordered as in Chrome, by
+  their bidi levels: the first of two lies right of the second. Each line
+  used to have its placeholders from the left in their order in the text,
+  whatever their direction, which also moved the text between them. In RTL
+  `'سلام سلام شكرا بالعالم '`, a 13px box, `' سلام '`, a 24px box,
+  `' 12 '` and a 28px box in Harmattan at 20px, justified at 141px, the
+  second line has the 13px box at x 85.08 and the 24px one at 22.28, as in
+  Chrome, where they were at 22.28 and 74.08 (#47).
 
 ### 1.0.10-effing.5
 
