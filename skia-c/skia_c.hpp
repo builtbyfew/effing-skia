@@ -569,8 +569,11 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   void promoteOwnName(RegisteredFont& font, sk_sp<SkTypeface> typeface) {
     if (!font.aliases.empty() &&
         font.shadowable_names.erase(font.aliases[0]) > 0) {
-      this->registerTypeface(std::move(typeface),
-                             SkString(font.aliases[0].c_str()));
+      SkString name(font.aliases[0].c_str());
+      // The caller made `typeface` afresh, but a font manager that hands out
+      // a cached typeface would give the shadowable one back.
+      shadowable_faces.remove(name, *typeface);
+      this->registerTypeface(std::move(typeface), name);
     }
   }
 

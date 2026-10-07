@@ -30,6 +30,11 @@ void ShadowableFaces::add(const SkString& family, const SkTypeface& typeface) {
   faces_.emplace(std::string(family.c_str()), typeface.uniqueID());
 }
 
+void ShadowableFaces::remove(const SkString& family,
+                             const SkTypeface& typeface) {
+  faces_.erase({std::string(family.c_str()), typeface.uniqueID()});
+}
+
 sk_sp<SkFontStyleSet> ShadowableFaces::shadow(
     const char family[],
     sk_sp<SkFontStyleSet> faces) const {

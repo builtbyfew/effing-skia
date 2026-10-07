@@ -39,6 +39,7 @@ namespace effing {
 class ShadowableFaces {
  public:
   void add(const SkString& family, const SkTypeface& typeface);
+  void remove(const SkString& family, const SkTypeface& typeface);
 
   // The provider's `faces` of `family`, without the shadowable ones when the
   // family has registered faces too: a family registered under a name
