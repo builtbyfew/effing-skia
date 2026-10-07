@@ -109,7 +109,7 @@ struct effing_paragraph {
   // The words of wrapping text, what lies between two line-break
   // opportunities, by offset in the Skia text of `paragraphs.front()` (UTF-8,
   // U+FFFC for each placeholder), with their width without trailing
-  // whitespace. Measured on the first layout.
+  // whitespace at the start of a line. Measured on the first layout.
   struct Word {
     size_t start;
     size_t end;
@@ -129,6 +129,9 @@ struct effing_paragraph {
   // Where that text has no opportunity beside a placeholder, sorted: where
   // SkParagraph may end a line it shouldn't (misplaced_break).
   std::vector<size_t> glued;
+  // Where a line of that text may start at a glyph kerned against the space
+  // before it, sorted (kerned_line_start).
+  std::vector<size_t> kerned;
   // The runs of spaces and tabs that start a line of that Skia text, at its
   // start or after a hard break, [first, second), where whitespace isn't
   // kept: white-space: normal collapses them away. Not those that end it.
@@ -1039,6 +1042,34 @@ Misplaced hyphen_break(effing_paragraph* p,
   return {};
 }
 
+// SkParagraph lays a line out as the paragraph's text was shaped, which
+// Chrome shapes anew from where a line starts, where the break is not safe
+// for HarfBuzz: a line that starts at a letter kerned against the space it
+// wraps at (measure_words) keeps a half of that kerning that Chrome drops.
+// Finds the first line of `paragraph`, built from the whole paragraph's Skia
+// text at `offset` on, but its first, that starts so: where the text should
+// break for that line to start a piece of its own, built from its own text,
+// and how many lines the text before it takes, as misplaced_break has it
+// (`at` is 0 if no line starts so). Only its lines after `first_line`
+// count, and only from that line on do they make up `lines`.
+Misplaced kerned_line_start(const effing_paragraph* p,
+                            Paragraph* paragraph,
+                            size_t offset,
+                            int first_line = 0) {
+  auto* impl = static_cast<ParagraphImpl*>(paragraph);
+  int index = 0;
+  for (const TextLine& line : impl->lines()) {
+    const size_t start = line.text().start;
+    if (index > first_line &&
+        std::binary_search(p->kerned.begin(), p->kerned.end(),
+                           offset + start)) {
+      return {start, index - first_line};
+    }
+    index++;
+  }
+  return {};
+}
+
 // Whether a paragraph or piece of `kind` is justified by SkParagraph.
 bool justified(const effing_paragraph* p, PieceKind kind) {
   return p->paragraph_style.getTextAlign() == TextAlign::kJustify &&
@@ -1267,6 +1298,66 @@ void measure_words(effing_paragraph* p) {
       }
     }
   }
+  // HarfBuzz splits a pair kerning from the font's legacy `kern` table
+  // between the two glyphs: half on the first's advance, half on the
+  // second's advance and offset, and it kerns across a soft hyphen. Where a
+  // space or a soft hyphen and the letter after it are such a pair, a line
+  // that starts at the letter keeps a half that Chrome drops, as it shapes
+  // the line's text anew from there. In visual order, that offset is on the
+  // letter in LTR and on the space or soft hyphen in RTL. Each such letter
+  // with what a word that starts there is wider for it at a line's start,
+  // its half of the kerning, sorted. Those after a space start lines that
+  // SkParagraph lays out with the kerning (kerned_line_start); those after
+  // a soft hyphen start a piece of their own anyway (hyphen_break).
+  std::vector<std::pair<size_t, float>> kerned;
+  p->kerned.clear();
+  const auto space = [&](size_t i) {
+    return i < text.size() && (text[i] == ' ' || text[i] == '\t');
+  };
+  const auto soft_hyphen = [&](size_t i) {
+    return !p->hyphen.empty() && i + 1 < text.size() && text[i] == '\xC2' &&
+           text[i + 1] == '\xAD';
+  };
+  for (const Run& run : whole->runs()) {
+    if (run.isPlaceholder()) {
+      continue;
+    }
+    const SkSpan<const SkPoint> offsets = run.offsets();
+    for (size_t g = 0; g < run.size() && g < offsets.size(); g++) {
+      if (offsets[g].fX == 0) {
+        continue;
+      }
+      const size_t at = run.globalClusterIndex(g);
+      const size_t start = run.leftToRight() ? at
+                           : soft_hyphen(at) ? at + 2
+                                             : at + 1;
+      if (start >= text.size() || space(start)) {
+        continue;
+      }
+      if (start > 0 && space(start - 1)) {
+        kerned.emplace_back(start, -offsets[g].fX);
+        if (p->kerned.empty() || p->kerned.back() != start) {
+          p->kerned.push_back(start);
+        }
+      } else if (start >= 2 && soft_hyphen(start - 2)) {
+        kerned.emplace_back(start, -offsets[g].fX);
+      }
+    }
+  }
+  std::sort(kerned.begin(), kerned.end());
+  std::sort(p->kerned.begin(), p->kerned.end());
+  p->kerned.erase(std::unique(p->kerned.begin(), p->kerned.end()),
+                  p->kerned.end());
+  // A word is measured as it is shaped in the paragraph, as Chrome's
+  // min-content is, but a word that starts a line is shaped anew, and is too
+  // wide for one with its half of the kerning.
+  const auto unkerned = [&](size_t start, float width) {
+    const auto it = std::lower_bound(kerned.begin(), kerned.end(), start,
+                                     [](const std::pair<size_t, float>& k,
+                                        size_t at) { return k.first < at; });
+    return it != kerned.end() && it->first == start ? width + it->second
+                                                    : width;
+  };
   const auto breaks = [&](size_t i) {
     if (!p->opportunities.empty()) {
       return static_cast<bool>(p->opportunities[i]);
@@ -1277,44 +1368,6 @@ void measure_words(effing_paragraph* p) {
   p->words.clear();
   p->graphemes.clear();
   p->widest_word = 0;
-  // HarfBuzz kerns across a soft hyphen, and from a font's legacy `kern`
-  // table puts half of a pair on each glyph: the second's advance and
-  // offset hold one half. A line that starts after a soft hyphen it breaks
-  // at is shaped anew from there, as in Chrome, without that half. In visual
-  // order, the offset is on the letter after the soft hyphen in LTR, and on
-  // the soft hyphen in RTL. Each such letter with that half, sorted.
-  std::vector<std::pair<size_t, float>> kerned;
-  const auto after_soft_hyphen = [&](size_t i) {
-    return i >= 2 && i < text.size() && text[i - 2] == '\xC2' &&
-           text[i - 1] == '\xAD';
-  };
-  for (const Run& run : whole->runs()) {
-    if (p->hyphen.empty() || run.isPlaceholder()) {
-      continue;
-    }
-    const SkSpan<const SkPoint> offsets = run.offsets();
-    for (size_t g = 0; g < run.size() && g < offsets.size(); g++) {
-      if (offsets[g].fX == 0) {
-        continue;
-      }
-      const size_t at = run.globalClusterIndex(g);
-      const size_t start = run.leftToRight() ? at : at + 2;
-      if (after_soft_hyphen(start)) {
-        kerned.emplace_back(start, -offsets[g].fX);
-      }
-    }
-  }
-  std::sort(kerned.begin(), kerned.end());
-  // A word is measured as it is shaped in the paragraph, as Chrome's
-  // min-content is, but one that starts a line is shaped anew, and is too
-  // wide for one by that width.
-  const auto unkerned = [&](size_t start, float width) {
-    const auto it = std::lower_bound(kerned.begin(), kerned.end(), start,
-                                     [](const std::pair<size_t, float>& k,
-                                        size_t at) { return k.first < at; });
-    return it != kerned.end() && it->first == start ? width + it->second
-                                                    : width;
-  };
   // A word that a line can break after at a soft hyphen is that wide with
   // the hyphen, as Chrome's min-content has it.
   const auto add_word = [&](size_t start, size_t end, size_t content_end,
@@ -1936,10 +1989,12 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
   // Adds the pieces of [start, end). Spaces that start a line, which CSS
   // collapses away, are left out of every piece, and a piece ends at the
   // hard break before them. With placeholders, where SkParagraph may end a
-  // line where it shouldn't (misplaced_break), and with soft hyphens, where
-  // it breaks lines without the hyphen (hyphen_break), the text is laid out
-  // a window at a time first: a piece ends where such a line should, or
-  // else before the window's last line, which the text after the window may
+  // line where it shouldn't (misplaced_break), with soft hyphens, where it
+  // breaks lines without the hyphen (hyphen_break), and with letters kerned
+  // against the space before them, where a line may start with that kerning
+  // (kerned_line_start), the text is laid out a window at a time first: a
+  // piece ends where such a line should, or before such a line, or else
+  // before the window's last line, which the text after the window may
   // change, and the next starts there. The windows keep the work in
   // proportion to the text, and so does going on with a window's lines after
   // a piece that ends where one of them does. A piece that ends where a line
@@ -1969,8 +2024,9 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       int soft_lines = 0;
       PieceKind piece_kind = kind;
       // Only text with a placeholder beside no opportunity can have a line
-      // end where it shouldn't, and only text with a soft hyphen can have a
-      // line break at one.
+      // end where it shouldn't, only text with a soft hyphen can have a line
+      // break at one, and only text with a kerned letter after a space can
+      // have a line start with that kerning.
       const auto glued =
           std::lower_bound(p->glued.begin(), p->glued.end(), start + 1);
       const bool misplaceable = glued != p->glued.end() && *glued < stop;
@@ -1980,7 +2036,11 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
             std::string_view(text.data(), len).find("\xC2\xAD", start);
       }
       const bool hyphenable = soft_hyphen < stop;
-      if ((misplaceable || hyphenable) && kind != PieceKind::kUnbounded) {
+      const auto kerned =
+          std::lower_bound(p->kerned.begin(), p->kerned.end(), start + 1);
+      const bool kernable = kerned != p->kerned.end() && *kerned < stop;
+      if ((misplaceable || hyphenable || kernable) &&
+          kind != PieceKind::kUnbounded) {
         // The last probe's line that starts at `start`, unless that is the
         // last line of a window, which the text after the window may change,
         // or the probe kerned its first glyph against the text before it,
@@ -2020,9 +2080,17 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
             hyphenable ? hyphen_break(p, probe.paragraph.get(), kind, text,
                                       probe.start, w, first_line)
                        : Misplaced{};
-        if (hyphenated.at > 0 &&
-            (misplaced.at == 0 || hyphenated.lines < misplaced.lines)) {
-          misplaced = hyphenated;
+        const Misplaced kerned_start =
+            kernable ? kerned_line_start(p, probe.paragraph.get(), probe.start,
+                                         first_line)
+                     : Misplaced{};
+        // The earliest of them.
+        for (const Misplaced& other : {hyphenated, kerned_start}) {
+          if (other.at > 0 &&
+              (misplaced.at == 0 || other.lines < misplaced.lines ||
+               (other.lines == misplaced.lines && other.at < misplaced.at))) {
+            misplaced = other;
+          }
         }
         const auto probed =
             static_cast<ParagraphImpl*>(probe.paragraph.get())->lines();
@@ -2482,11 +2550,17 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
   // So is text with spaces that start a line, which CSS collapses away.
   const bool collapsed = whole && !p->collapsed.empty();
   // And text with a line that breaks at a soft hyphen, which ends with a
-  // hyphen that SkParagraph neither draws nor makes room for.
+  // hyphen that SkParagraph neither draws nor makes room for, or that starts
+  // at a letter kerned against the space before it, which Chrome shapes
+  // without that kerning.
   const bool hyphenated = whole && w < kUnbounded && !p->hyphen.empty() &&
                           breaks_at_soft_hyphen(p->paragraphs.front().get());
+  const bool kerned =
+      whole && w < kUnbounded && !p->kerned.empty() &&
+      kerned_line_start(p, p->paragraphs.front().get(), 0).at > 0;
   split_around_long_words(
-      p, w, any_emptied || misplaced || clamped || collapsed || hyphenated);
+      p, w,
+      any_emptied || misplaced || clamped || collapsed || hyphenated || kerned);
   if (p->nowrap && any_emptied) {
     truncate_nowrap_lines(p, w, emptied);
   }

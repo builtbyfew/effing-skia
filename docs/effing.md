@@ -285,8 +285,44 @@ top:
   `geometricPrecision`; the two agree pixel for pixel.
 - `letterSpacing` follows each character, as in Chrome, except the ones
   Chrome adds none after (below).
+- A line that starts after the space it wraps at carries no kerning against
+  that space, as in Chrome (below).
 - A line that breaks at a soft hyphen (U+00AD) ends with a hyphen, as CSS
   `hyphens: manual`, the default, has it (below).
+
+#### Kerning at a line's start
+
+A font's legacy `kern` table, which HarfBuzz applies when the font has no
+GPOS kerning, can kern a space with the letter after it: Liberation Sans
+has space+A at -1.104px at 20px, and space+T and space+Y at -0.361px.
+HarfBuzz puts half of such a pair on each glyph, so where a line starts at
+the letter, the line kept the letter's half: `'OVER THE'` at 70px had a
+second line of 39.82px, where "THE" is 40px. Chrome shapes a line's text
+anew from its start where the break is not safe to break for HarfBuzz, so
+the letter has no kerning there, and lines break by that width too
+(`__test__/effing-paragraph-kerning.spec.ts`). So does the fork: such a
+line starts a piece of its own (see word breaking), built from its text on.
+A word that fits a line only with the kerning overflows it, as in Chrome.
+`minIntrinsicWidth` keeps the kerning, as Chrome's min-content does.
+
+The fork finds such letters by the offset HarfBuzz gives the second glyph of
+a pair it kerns that way, which is the letter in LTR and the space in RTL.
+Text laid out in pieces lays out more slowly: 1000 words of English in
+Liberation Sans at 300px (167 lines) take about 2.7ms to lay out first
+instead of 1.6ms, and 0.9ms instead of 0.25ms again at another width.
+Where the fork still differs from Chrome:
+
+- Chrome shapes anew from a line's start up to where the text is safe to
+  break again, which can run to its end: a line of `'AT'`, whose A and T
+  are kerned too, then has no kerning against the space after it either,
+  and is 24.08px wide in Chrome and 23.89px here.
+- Under `textAlign` `center`, `right` and `justify`, Chrome shapes a line's
+  end anew too, without the space after it, which the fork doesn't: a line
+  that ends in "T" before a space is 0.19px wider in Chrome. Start-aligned,
+  both keep that kerning.
+- GPOS kerning puts a pair's adjustment on its first glyph, which is the
+  space in LTR and hangs with it, but the letter in RTL, which the fork
+  doesn't find.
 
 #### Soft hyphens
 
@@ -790,6 +826,16 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   Chrome's baseline with no shift. Its text-box-trim, which goes from the
   baseline and the unrounded ascent, and its mock paragraph, which mirrors
   the old formula, need the same change.
+- A `Paragraph` line that starts after the space it wraps at carries no
+  kerning against that space, as in Chrome: with a font's legacy `kern`
+  table, HarfBuzz put half of a space+letter pair on the letter, which the
+  line kept. In Liberation Sans 20px, `'OVER THE'` at 70px has a second line
+  of 40px, as "THE" alone, not 39.82px, and `'Over Away Yes Tea'` at 60px
+  has "Away" at 48.55px, not 47.99px. Lines break by those widths, as in
+  Chrome, so a few now break earlier, and the text of such a line is drawn
+  as it is alone, its first letter up to half a kerning pair to the right.
+  Text with such a line is laid out in pieces, more slowly (see kerning at
+  a line's start).
 - A `Paragraph` line that breaks at a soft hyphen (U+00AD) ends with a
   hyphen, as Chrome draws it under `hyphens: manual`: U+2010, or "-" where
   the primary font has none, measured, drawn, aligned and justified with the
