@@ -18,15 +18,15 @@ Fork code is kept out of upstream files so that upstream merges stay trivial.
 Each layer has an `effing` directory with one file per feature, and each
 upstream file has at most a few marked hook lines.
 
-| Layer                  | Fork code                                                       | Upstream hooks                                                                                                                                                                        |
-| ---------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group}.{hpp,cpp}`     | `skia-c/skia_c.cpp` (include + four `text_rendering` checks)                                                                                                                          |
-| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group}.rs`   | `src/sk.rs` (`mod effing`)                                                                                                                                                            |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`)                                                                                |
-| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)         | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`) |
-| Build                  |                                                                 | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                           |
-| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`         | `js-binding.js` (exports; hand-maintained, like `index.d.ts`)                                                                                                                         |
-| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)               | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                           |
+| Layer                  | Fork code                                                                    | Upstream hooks                                                                                                                                                                        |
+| ---------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer}.{hpp,cpp}`     | `skia-c/skia_c.cpp` (include + four `text_rendering` checks)                                                                                                                          |
+| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer}.rs`   | `src/sk.rs` (`mod effing`)                                                                                                                                                            |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs` | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`)                                                    |
+| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                      | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`) |
+| Build                  |                                                                              | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                           |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                      | `js-binding.js` (exports; hand-maintained, like `index.d.ts`)                                                                                                                         |
+| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                            | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                           |
 
 C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
 napi bindings are functions that take the context as their first argument
@@ -546,6 +546,29 @@ API takes the layer's alpha and blend mode from `globalAlpha` and
 `globalCompositeOperation` and resets them inside the layer, while a group is
 configured explicitly and leaves the state alone.
 
+## Filtered draws
+
+A draw under `ctx.filter`, and the shadow of one or of a drawn image, which
+is cast through an image filter, goes through a layer opened at the device
+identity, so that the filter's lengths are device pixels (upstream's
+`composited_filter_layer`). Upstream opens it without bounds, so Skia sizes
+it to the clip and the filter runs over the whole canvas for one line of
+text. The fork records the draw first and gives the layer what it draws as
+bounds (`src/ctx/effing/filter_layer.rs`): five `fillText` calls under
+`blur(12px)` on a 1080x1080 canvas take about 32 ms instead of 132 ms, as
+with upstream 1.0.0, which had no such layer, or with a clip around the
+text. Skia still sizes the layer to what the filter needs to fill the clip,
+so a blur keeps taking in what is drawn past the clip or the canvas edge.
+
+The pixels are those of the canvas-sized layer, up to rounding: where the
+layer starts moves the rounding of what is drawn into it and of the filter,
+by up to 4 levels in a few pixels, mostly under a scale, rotation or skew.
+The layer covers the clip as before for a blend mode or a filter that
+changes what is behind it where it is transparent (`clear`, `modulate`, a
+filter that affects transparent black), under a singular transform, and for
+content that covers the clip, such as a background, which a bounded layer
+would not make faster.
+
 ## Releasing
 
 Versions are upstream's version with an `-effing.N` suffix, so the lineage
@@ -597,6 +620,16 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### Unreleased
+
+- A draw under `ctx.filter`, and the shadow of one or of a drawn image, goes
+  through a layer the size of what it draws rather than of the canvas.
+  Five lines of text under `blur(12px)` on a 1080x1080 canvas went from
+  about 132 ms to 32 ms, and 200 small blurred squares from about 4 s to
+  11 ms. Results are the same pixels up to rounding, which can move a few
+  pixels by a level or so, mostly under a scale, rotation or skew (see
+  filtered draws).
 
 ### 1.0.10-effing.5
 

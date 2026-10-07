@@ -1245,6 +1245,14 @@ impl Context {
     if let Some(ref inverted) = inverted {
       canvas.concat(inverted);
     }
+    // effing: a layer the size of what `f` draws (`ctx/effing/filter_layer.rs`)
+    if inverted.is_some()
+      && let Some(result) =
+        Self::draw_fitted_filter_layer(canvas, device_ctm, &layer_paint, &inner_paint, &f)
+    {
+      canvas.restore();
+      return result;
+    }
     canvas.save_layer(&layer_paint);
     if inverted.is_some() {
       canvas.concat(device_ctm);
