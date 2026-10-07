@@ -303,9 +303,20 @@ hyphen and where the line breaks hang after the hyphen, as in Chrome, but a
 soft hyphen before a hard break or at the end of the text gets none. A line
 clamped by `maxLines` keeps its hyphen before the `ellipsis`
 ("cali‐…"). `minIntrinsicWidth` takes the hyphen in after a word that ends
-at a soft hyphen, as Chrome's min-content does. There is no `hyphens:
-none`, where Chrome doesn't break at soft hyphens at all: a caller after
-that drops them from the text.
+at a soft hyphen, as Chrome's min-content does. Under `overflowWrap:
+'break-word'`, a word never breaks before a soft hyphen, as UAX #14 has it
+and Chrome does. There is no `hyphens: none`, where Chrome doesn't break at
+soft hyphens at all: a caller after that drops them from the text.
+
+HarfBuzz kerns across a soft hyphen, and with a font's legacy `kern` table
+puts half of a pair on the letter after it. The line after a soft hyphen
+it breaks at is laid out from its own text, as Chrome shapes it anew, so it
+has no such kerning, and a word after a soft hyphen that fits a line only
+with it overflows the line unbroken (`'ab A\u00ADVAVAVA'` at 72px, as in
+Chrome). Chrome shapes such a line anew up to where the text is safe to
+break again, which in a word whose pairs are all kerned is its end, so it
+also drops the kerning against the space after it: its "VAVAVA" is 72.63px,
+the fork's 72.07px, as with a kerned letter after a space.
 
 SkParagraph would break lines at soft hyphens without the hyphen. So text
 that has a line break at one is laid out in pieces (below): a line that
@@ -316,7 +327,7 @@ be wider than its text measured in the paragraph: kerning between the last
 letter and the one after the soft hyphen is gone. A paragraph of 1000 words
 with a soft hyphen between every two syllables (193 lines) takes about 9ms
 to lay out first instead of 2.3ms, and 5ms instead of 0.2ms to lay out
-again at another width; 100 such words, 2.1ms and 0.2ms instead of 1.6ms
+again at another width; 100 such words, 1.3ms and 0.2ms instead of 1.6ms
 and 0.02ms.
 
 #### Letter spacing

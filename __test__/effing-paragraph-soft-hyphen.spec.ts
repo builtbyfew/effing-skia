@@ -182,3 +182,45 @@ test('the hyphen is drawn after the text of its line', (t) => {
   // A soft hyphen where no line breaks draws nothing.
   t.deepEqual(paint('super\u00ADcali', 1000), paint('supercali', 1000))
 })
+
+test('a line after a soft hyphen is laid out from its own text, as in Chrome', (t) => {
+  // HarfBuzz kerns across a soft hyphen: T and A here, V and A below. Laid
+  // out from its start, as Chrome does, the line after the break is wider
+  // than in the text shaped as a whole, and so are the lines it is followed
+  // by: "yy zz" no longer fits with "qq-".
+  expectLines(t, new Paragraph('ab LT­AVAV yy zz qq­rr ss tt', LIBERATION).layout(74), [
+    [0, 6, 56.344],
+    [6, 10, 48.906],
+    [11, 16, 45.563],
+    [17, 25, 61.125],
+    [26, 28, 11.125],
+  ])
+  // A word that fits the line only with that kerning overflows it, unbroken.
+  // Chrome's "VAVAVA" is 72.625px: it shapes it anew to the line's end, as
+  // its pairs are all kerned, so the A has no kerning against the space
+  // after it either, where the fork keeps that half (72.07px).
+  const layout = new Paragraph('ab A­VAVAVA yy zz­qq rr ss', LIBERATION).layout(72)
+  t.deepEqual(
+    layout.lines.map((line) => [line.startIndex, line.endIndex]),
+    [
+      [0, 5],
+      [5, 11],
+      [12, 20],
+      [21, 26],
+    ],
+  )
+  near(t, layout.lines[0].width, 46.719)
+  t.true(layout.lines[1].width > 72)
+  near(t, layout.lines[2].width, 67.813)
+  near(t, layout.lines[3].width, 38.891)
+  // Chrome's min-content keeps the kerning: 71.33px.
+  near(t, layout.minIntrinsicWidth, 71.328)
+})
+
+test('overflowWrap break-word never breaks before a soft hyphen', (t) => {
+  // UAX #14 LB21: "supercali-" is too wide, so the word breaks before the i.
+  expectLines(t, new Paragraph('supercali­fragilistic', { ...LIBERATION, overflowWrap: 'break-word' }).layout(85.5), [
+    [0, 8, 75.609],
+    [8, 21, 82.25],
+  ])
+})

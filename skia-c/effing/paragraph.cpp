@@ -176,6 +176,10 @@ struct effing_paragraph {
     // Whether its text ends at a soft hyphen where its last line breaks, with
     // the hyphen after it.
     bool hyphen;
+    // Where the spaces that hang after that hyphen end, in UTF-16 units of
+    // the whole text: they are left out of its text, but are its last
+    // line's, as a line's hanging spaces are. 0 otherwise.
+    size_t hanging_end;
   };
   std::vector<Piece> pieces;
   bool pieces_exceeded_max_lines = false;
@@ -1273,6 +1277,44 @@ void measure_words(effing_paragraph* p) {
   p->words.clear();
   p->graphemes.clear();
   p->widest_word = 0;
+  // HarfBuzz kerns across a soft hyphen, and from a font's legacy `kern`
+  // table puts half of a pair on each glyph: the second's advance and
+  // offset hold one half. A line that starts after a soft hyphen it breaks
+  // at is shaped anew from there, as in Chrome, without that half. In visual
+  // order, the offset is on the letter after the soft hyphen in LTR, and on
+  // the soft hyphen in RTL. Each such letter with that half, sorted.
+  std::vector<std::pair<size_t, float>> kerned;
+  const auto after_soft_hyphen = [&](size_t i) {
+    return i >= 2 && i < text.size() && text[i - 2] == '\xC2' &&
+           text[i - 1] == '\xAD';
+  };
+  for (const Run& run : whole->runs()) {
+    if (p->hyphen.empty() || run.isPlaceholder()) {
+      continue;
+    }
+    const SkSpan<const SkPoint> offsets = run.offsets();
+    for (size_t g = 0; g < run.size() && g < offsets.size(); g++) {
+      if (offsets[g].fX == 0) {
+        continue;
+      }
+      const size_t at = run.globalClusterIndex(g);
+      const size_t start = run.leftToRight() ? at : at + 2;
+      if (after_soft_hyphen(start)) {
+        kerned.emplace_back(start, -offsets[g].fX);
+      }
+    }
+  }
+  std::sort(kerned.begin(), kerned.end());
+  // A word is measured as it is shaped in the paragraph, as Chrome's
+  // min-content is, but one that starts a line is shaped anew, and is too
+  // wide for one by that width.
+  const auto unkerned = [&](size_t start, float width) {
+    const auto it = std::lower_bound(kerned.begin(), kerned.end(), start,
+                                     [](const std::pair<size_t, float>& k,
+                                        size_t at) { return k.first < at; });
+    return it != kerned.end() && it->first == start ? width + it->second
+                                                    : width;
+  };
   // A word that a line can break after at a soft hyphen is that wide with
   // the hyphen, as Chrome's min-content has it.
   const auto add_word = [&](size_t start, size_t end, size_t content_end,
@@ -1281,7 +1323,7 @@ void measure_words(effing_paragraph* p) {
         soft_hyphen_end(text.data(), text.size(), end) > 0) {
       width += hyphen_width(p);
     }
-    p->words.push_back({start, end, content_end, width});
+    p->words.push_back({start, end, content_end, unkerned(start, width)});
     p->widest_word = std::max(p->widest_word, width);
   };
   size_t start = 0;
@@ -1459,6 +1501,39 @@ void measure_max_content(effing_paragraph* p) {
     i += brk;
     line_start = i;
   }
+}
+
+// Whether HarfBuzz kerned the first glyph of `line` against the text before
+// it, which a line laid out from there has no kerning against: the glyph has
+// an x offset, as the second glyph of a pair from a legacy `kern` table gets
+// one, or in RTL the glyph of the character before it has, which is that
+// second glyph in visual order. Such a line is narrower in the text shaped
+// as a whole than on its own.
+bool starts_kerned(ParagraphImpl* impl, const TextLine& line) {
+  const ClusterRange clusters = line.clustersWithSpaces();
+  if (clusters.width() == 0) {
+    return false;
+  }
+  const auto offset = [&](size_t k) {
+    const Cluster& cluster = impl->cluster(k);
+    const Run& run = cluster.run();
+    if (run.isPlaceholder()) {
+      return false;
+    }
+    const SkSpan<const SkPoint> offsets = run.offsets();
+    const size_t from = std::min(cluster.startPos(), cluster.endPos());
+    const size_t to = std::max(cluster.startPos(), cluster.endPos());
+    for (size_t g = from; g < to && g < offsets.size(); g++) {
+      if (offsets[g].fX != 0) {
+        return true;
+      }
+    }
+    return false;
+  };
+  return offset(clusters.start) ||
+         (clusters.start > 0 &&
+          !impl->cluster(clusters.start).run().leftToRight() &&
+          offset(clusters.start - 1));
 }
 
 // Lays the text out at width `w` the way CSS treats a word too wide for its
@@ -1875,6 +1950,12 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
                                 [](const std::pair<size_t, size_t>& run,
                                    size_t at) { return run.second <= at; });
     Probe probe;
+    // The first soft hyphen from `start` on, looked for again only once
+    // `start` passes it, so that finding them all takes one pass.
+    size_t soft_hyphen =
+        p->hyphen.empty()
+            ? std::string_view::npos
+            : std::string_view(text.data(), len).find("\xC2\xAD", start);
     while (start < end) {
       for (; run != p->collapsed.end() && run->first <= start; ++run) {
         start = std::max(start, std::min(run->second, end));
@@ -1893,22 +1974,27 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       const auto glued =
           std::lower_bound(p->glued.begin(), p->glued.end(), start + 1);
       const bool misplaceable = glued != p->glued.end() && *glued < stop;
-      const size_t soft_hyphen =
-          p->hyphen.empty()
-              ? std::string_view::npos
-              : std::string_view(text.data(), stop).find("\xC2\xAD", start);
-      const bool hyphenable = soft_hyphen != std::string_view::npos;
+      if (!p->hyphen.empty() && soft_hyphen != std::string_view::npos &&
+          soft_hyphen < start) {
+        soft_hyphen =
+            std::string_view(text.data(), len).find("\xC2\xAD", start);
+      }
+      const bool hyphenable = soft_hyphen < stop;
       if ((misplaceable || hyphenable) && kind != PieceKind::kUnbounded) {
         // The last probe's line that starts at `start`, unless that is the
-        // last line of a window, which the text after the window may change.
+        // last line of a window, which the text after the window may change,
+        // or the probe kerned its first glyph against the text before it,
+        // which makes it and the lines after it narrower than they are on
+        // their own.
         int first_line = -1;
         if (probe.paragraph && probe.start < start && start < probe.end &&
             probe.end <= stop) {
-          const auto& lines =
-              static_cast<ParagraphImpl*>(probe.paragraph.get())->lines();
+          auto* probed = static_cast<ParagraphImpl*>(probe.paragraph.get());
+          const auto& lines = probed->lines();
           for (size_t i = 1; i < lines.size(); i++) {
             if (probe.start + lines[i].text().start == start) {
-              if (i + 1 < lines.size() || probe.end == stop) {
+              if ((i + 1 < lines.size() || probe.end == stop) &&
+                  !starts_kerned(probed, lines[i])) {
                 first_line = static_cast<int>(i);
               }
               break;
@@ -1966,8 +2052,14 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       const size_t hyphen_end =
           p->hyphen.empty() ? 0 : soft_hyphen_end(text.data(), len, to);
       const bool hyphen = hyphen_end > start;
-      if (!add_one(start, hyphen ? hyphen_end : to, piece_kind, soft_lines,
-                   &probe, hyphen)) {
+      const bool more = add_one(start, hyphen ? hyphen_end : to, piece_kind,
+                                soft_lines, &probe, hyphen);
+      Piece& added = p->pieces.back();
+      if (hyphen && to > hyphen_end && added.start == start && added.hyphen &&
+          added.line_end != SIZE_MAX) {
+        added.hanging_end = whole->getUTF16Index(to);
+      }
+      if (!more) {
         return false;
       }
       start = to;
@@ -2434,6 +2526,10 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
         for (size_t* index : {&last.fEndExcludingWhitespaces, &last.fEndIndex,
                               &last.fEndIncludingNewline}) {
           *index = piece.empty_last_line ? end : std::min(*index, end);
+        }
+        if (piece.hanging_end > piece.line_end) {
+          last.fEndIndex = last.fEndIncludingNewline =
+              piece.hanging_end - offset;
         }
       }
     } else if (p->clamped_end != SIZE_MAX && k + 1 == paragraphs.size() &&
