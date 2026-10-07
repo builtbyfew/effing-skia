@@ -20,6 +20,7 @@ const {
   GifEncoder,
   GifDisposal,
   LottieAnimation,
+  loadSystemFontsFromDir, // effing: fonts registered under the same name shadow these
 } = require('./js-binding')
 
 const { DOMPoint, DOMMatrix, DOMRect } = require('./geometry')
@@ -153,14 +154,14 @@ if (!process.env.DISABLE_SYSTEM_FONTS_LOAD) {
   const homedirPath = homedir()
   switch (platformName) {
     case 'win32':
-      GlobalFonts.loadFontsFromDir(join(homedirPath, 'AppData', 'Local', 'Microsoft', 'Windows', 'Fonts'))
+      loadSystemFontsFromDir(join(homedirPath, 'AppData', 'Local', 'Microsoft', 'Windows', 'Fonts'))
       break
     case 'darwin':
-      GlobalFonts.loadFontsFromDir(join(homedirPath, 'Library', 'Fonts'))
+      loadSystemFontsFromDir(join(homedirPath, 'Library', 'Fonts'))
       break
     case 'linux':
-      GlobalFonts.loadFontsFromDir(join('usr', 'local', 'share', 'fonts'))
-      GlobalFonts.loadFontsFromDir(join(homedirPath, '.fonts'))
+      loadSystemFontsFromDir(join('usr', 'local', 'share', 'fonts'))
+      loadSystemFontsFromDir(join(homedirPath, '.fonts'))
       break
   }
 }

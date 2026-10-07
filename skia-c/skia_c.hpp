@@ -65,6 +65,8 @@
 
 #include <stdint.h>
 
+#include "effing/fonts.hpp"  // effing
+
 using namespace skia::textlayout;
 
 typedef struct skiac_surface skiac_surface;
@@ -149,6 +151,10 @@ struct RegisteredFont {
   sk_sp<SkData> data;  // For buffer-registered fonts (null for path-registered)
   std::string path;  // For path-registered fonts (empty for buffer-registered)
   std::vector<std::string> aliases;  // All aliases for this font
+  // effing: the names under which this font joins a family without shadowing
+  // it: its own name when loaded as a system font or registered only under an
+  // alias. See docs/effing.md.
+  std::set<std::string> shadowable_names;
 };
 
 class TypefaceFontProviderCustom : public TypefaceFontProvider {
@@ -160,6 +166,24 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
 
   // Get font manager for rebuild
   sk_sp<SkFontMgr> getFontMgr() const { return font_mgr; }
+
+  // effing: a family registered under a name shadows the system's family of
+  // that name. See docs/effing.md.
+  sk_sp<SkFontStyleSet> onMatchFamily(const char familyName[]) const override {
+    return shadowable_faces.shadow(
+        familyName, TypefaceFontProvider::onMatchFamily(familyName));
+  }
+
+  // effing: registers the face setAlias names `alias` as a registered face
+  // there, even when the family holds it already as a shadowable face, as an
+  // aliased font's own name does.
+  void registerAlias(sk_sp<SkTypeface> typeface, const SkString& alias) {
+    shadowable_faces.remove(alias, *typeface);
+    if (!effing::has_face(TypefaceFontProvider::onMatchFamily(alias.c_str()),
+                          *typeface)) {
+      this->registerTypeface(std::move(typeface), alias);
+    }
+  }
 
   // Get registered fonts for rebuild
   const std::map<uint32_t, RegisteredFont>& getRegisteredFonts() const {
@@ -187,6 +211,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
               memcmp(font_it->second.data->data(), data->data(),
                      data->size()) == 0) {
             // Found matching content via index - true duplicate
+            promoteOwnName(font_it->second, std::move(typeface));  // effing
             return existing_id;
           }
         }
@@ -254,6 +279,8 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
                 aliases.end()) {
               aliases.push_back(aliasStr);
               this->registerTypeface(typeface, alias);
+            } else if (aliasStr == originalName) {
+              promoteOwnName(font_it->second, std::move(typeface));  // effing
             }
             return existing_id;
           }
@@ -278,6 +305,8 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     // Only add alias if different from original name
     if (aliasStr != originalName) {
       font_info.aliases.push_back(aliasStr);
+      // effing: registered under the alias alone.
+      markShadowable(font_info, originalName, *typeface);
     }
     registered_fonts[id] = std::move(font_info);
 
@@ -297,11 +326,13 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   // Register with explicit ID (used during rebuild to preserve FontKey)
   // Only registers under the names in aliases (which includes original family
   // name if tracked)
-  void registerTypefaceWithId(uint32_t id,
-                              sk_sp<SkData> data,
-                              const std::string& path,
-                              sk_sp<SkTypeface> typeface,
-                              const std::vector<std::string>& aliases) {
+  void registerTypefaceWithId(
+      uint32_t id,
+      sk_sp<SkData> data,
+      const std::string& path,
+      sk_sp<SkTypeface> typeface,
+      const std::vector<std::string>& aliases,
+      const std::set<std::string>& shadowable_names = {}) {  // effing
     if (!typeface) {
       return;
     }
@@ -310,6 +341,9 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     font_info.data = data;
     font_info.path = path;
     font_info.aliases = aliases;
+    for (const auto& name : shadowable_names) {  // effing
+      markShadowable(font_info, name, *typeface);
+    }
     registered_fonts[id] = std::move(font_info);
 
     // Update secondary index
@@ -350,8 +384,10 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
    * @param typeface The typeface created from the font file
    * @return The font ID (content hash), or 0 on failure
    */
-  uint32_t registerTypefaceFromPathWithTracking(const std::string& path,
-                                                sk_sp<SkTypeface> typeface) {
+  uint32_t registerTypefaceFromPathWithTracking(
+      const std::string& path,
+      sk_sp<SkTypeface> typeface,
+      bool system = false) {  // effing
     if (!typeface) {
       return 0;
     }
@@ -367,6 +403,9 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
         if (font_it != registered_fonts.end() &&
             !font_it->second.path.empty() && font_it->second.path == path) {
           // Found matching path via index - true duplicate
+          if (!system) {
+            promoteOwnName(font_it->second, std::move(typeface));  // effing
+          }
           return existing_id;
         }
       }
@@ -390,6 +429,9 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     RegisteredFont font_info;
     font_info.path = path;
     font_info.aliases.push_back(originalName);
+    if (system) {  // effing
+      markShadowable(font_info, originalName, *typeface);
+    }
     registered_fonts[id] = std::move(font_info);
 
     // Update secondary index
@@ -428,6 +470,8 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
               aliases.end()) {
             aliases.push_back(aliasStr);
             this->registerTypeface(typeface, alias);
+          } else if (aliasStr == originalName) {
+            promoteOwnName(font_it->second, std::move(typeface));  // effing
           }
           return existing_id;
         }
@@ -451,6 +495,8 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     // Only add alias if different from original name
     if (aliasStr != originalName) {
       font_info.aliases.push_back(aliasStr);
+      // effing: registered under the alias alone.
+      markShadowable(font_info, originalName, *typeface);
     }
     registered_fonts[id] = std::move(font_info);
 
@@ -520,6 +566,28 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   }
 
  private:
+  // effing: `font` joins the family `name` without shadowing it.
+  void markShadowable(RegisteredFont& font,
+                      const std::string& name,
+                      const SkTypeface& typeface) {
+    font.shadowable_names.insert(name);
+    shadowable_faces.add(SkString(name.c_str()), typeface);
+  }
+
+  // effing: `font` registered again under its own name, as a system font or
+  // an aliased font can be, is a registered face there from now on, and
+  // shadows the rest of the family as a font registered afresh would.
+  void promoteOwnName(RegisteredFont& font, sk_sp<SkTypeface> typeface) {
+    if (!font.aliases.empty() &&
+        font.shadowable_names.erase(font.aliases[0]) > 0) {
+      SkString name(font.aliases[0].c_str());
+      // The caller made `typeface` afresh, but a font manager that hands out
+      // a cached typeface would give the shadowable one back.
+      shadowable_faces.remove(name, *typeface);
+      this->registerTypeface(std::move(typeface), name);
+    }
+  }
+
   sk_sp<SkFontMgr> font_mgr;
   std::map<uint32_t, RegisteredFont> registered_fonts;
   // Secondary index: content hash -> set of registered IDs with that hash
@@ -527,6 +595,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   // chain. Complexity is O(k) where k is the number of hash collisions
   // (typically 1-2).
   std::map<uint32_t, std::set<uint32_t>> content_hash_index;
+  effing::ShadowableFaces shadowable_faces;  // effing
 };
 
 struct skiac_svg_surface {
@@ -543,6 +612,9 @@ struct skiac_font_collection {
   std::vector<sk_sp<TypefaceFontProviderCustom>> retired_assets;
   // Track setAlias mappings for rebuild: {family, alias} pairs
   std::set<std::pair<std::string, std::string>> set_aliases;
+  // effing: the face each setAlias mapping took, which a rebuild replays
+  // rather than matching the family again (docs/effing.md).
+  std::map<std::pair<std::string, std::string>, sk_sp<SkTypeface>> alias_faces;
   // Set when the dynamic provider gains a face or an alias. FontCollection
   // memoizes findTypefaces() per {family list, weight, slant}, including
   // fallback misses, so any such change can invalidate an existing match.
@@ -597,8 +669,9 @@ struct skiac_font_collection {
       }
 
       if (typeface) {
-        new_assets->registerTypefaceWithId(id, font_info.data, font_info.path,
-                                           typeface, font_info.aliases);
+        new_assets->registerTypefaceWithId(
+            id, font_info.data, font_info.path, typeface, font_info.aliases,
+            font_info.shadowable_names);  // effing
       }
     }
 
@@ -607,12 +680,27 @@ struct skiac_font_collection {
     for (const auto& [family, alias] : set_aliases) {
       auto style = SkFontStyle();
       auto typeface = new_assets->matchFamilyStyle(family.c_str(), style);
+      // effing: the face the alias took, while its family is still there.
+      auto taken = alias_faces.find({family, alias});
+      if (taken != alias_faces.end() &&
+          (typeface || std::any_of(set_aliases.begin(), set_aliases.end(),
+                                   [&](const auto& mapping) {
+                                     return mapping.second == family;
+                                   }))) {
+        typeface = taken->second;
+      }
       if (typeface) {
         // Register the alias - this may shadow existing families (intended
         // behavior)
-        new_assets->registerTypeface(std::move(typeface),
-                                     SkString(alias.c_str()));
+        new_assets->registerAlias(std::move(typeface),  // effing
+                                  SkString(alias.c_str()));
       }
+    }
+
+    // effing: forget the faces of mappings that are gone.
+    for (auto it = alias_faces.begin(); it != alias_faces.end();) {
+      it = set_aliases.count(it->first) > 0 ? std::next(it)
+                                            : alias_faces.erase(it);
     }
 
     // IMPORTANT: Font Provider Lifecycle Management
