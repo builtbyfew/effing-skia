@@ -9,6 +9,8 @@
 
 #include <vector>
 
+namespace effing {
+
 namespace {
 
 // Everything a layer could hold: SkRectPriv::MakeLargeS32, the extent Skia
@@ -44,11 +46,13 @@ class AllOps final : public SkBBoxHierarchy {
 
 }  // namespace
 
+}  // namespace effing
+
 extern "C" {
 
 void effing_filter_layer_begin_content(skiac_picture_recorder* c_recorder) {
   reinterpret_cast<SkPictureRecorder*>(c_recorder)
-      ->beginRecording(everything(), sk_make_sp<AllOps>());
+      ->beginRecording(effing::everything(), sk_make_sp<effing::AllOps>());
 }
 
 void effing_canvas_draw_filter_layer(skiac_canvas* c_canvas,
