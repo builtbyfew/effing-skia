@@ -2,7 +2,7 @@
 // Skia breaks the lines and shapes them; effing places them. Line boxes follow
 // effing's (and satori's) CSS model: every line is exactly `line_height` tall,
 // with the baseline placed by half-leading around the primary font's hhea
-// ascender and descender.
+// ascender and descender, rounded as Chrome rounds them.
 #include "paragraph.hpp"
 
 #include <algorithm>
@@ -52,6 +52,10 @@ struct effing_paragraph {
   float ascent = 0;
   float descent = 0;
   float line_gap = 0;
+  // The ascent and descent rounded to whole pixels, as Chrome's content area
+  // has them: what the half-leading and text-top/text-bottom go from.
+  float content_ascent = 0;
+  float content_descent = 0;
   // The primary font's x-height, for middle-aligned placeholders.
   float x_height = 0;
   // Where `text` has the U+2063 that stands for each lone CR (hide_lone_crs),
@@ -229,6 +233,37 @@ bool hhea_metrics(const sk_sp<SkTypeface>& typeface,
   *line_gap = std::max(
       read_be_i16(buf + 4) / static_cast<float>(upem) * font_size, 0.f);
   return true;
+}
+
+// A length in px as Chrome lays it out: in LayoutUnits of 1/64px, to which
+// Blink rounds a px line height (ComputedLineHeightAsFixed).
+float to_layout_units(float px) {
+  const float rounded = std::round(px * 64) / 64;
+  return std::isfinite(rounded) ? rounded : px;
+}
+
+// A font's ascent or descent as Chrome's content area has it: rounded half up
+// to whole pixels (FontMetrics::AscentDescentWithHacks).
+float round_metric(float px) {
+  return std::floor(px + 0.5f);
+}
+
+// The baseline's distance from the top of a line box `line_height` tall, by
+// Chrome's half-leading (CalculateLeadingSpace in Blink's inline layout): the
+// leading is the line height less the content area, and the half above it is
+// floored to whole pixels, the odd pixel and any fraction going below. The
+// leading can be negative (a line height smaller than the content area), and
+// is floored the same way. Blink halves in LayoutUnits, truncating towards 0.
+float baseline_in_line_box(float line_height,
+                           float content_ascent,
+                           float content_descent) {
+  // In LayoutUnits: line_height is a whole number of them (to_layout_units),
+  // so the leading is too, and halving it truncates as Blink's integer
+  // division does.
+  const double leading = static_cast<double>(line_height) * 64 -
+                         (content_ascent + content_descent) * 64.0;
+  const double above = std::floor(std::trunc(leading / 2) / 64);
+  return content_ascent + static_cast<float>(above);
 }
 
 // Resolves start and end against the direction; every other value is itself.
@@ -522,9 +557,9 @@ float placeholder_top(const effing_paragraph* p,
     case EFFING_PLACEHOLDER_BOTTOM:
       return top + p->line_height - spec.height;
     case EFFING_PLACEHOLDER_TEXT_TOP:
-      return baseline - p->ascent;
+      return baseline - p->content_ascent;
     case EFFING_PLACEHOLDER_TEXT_BOTTOM:
-      return baseline + p->descent - spec.height;
+      return baseline + p->content_descent - spec.height;
     default:
       return baseline - spec.baseline_offset;
   }
@@ -2134,8 +2169,14 @@ effing_paragraph* effing_paragraph_create(
     out->descent = m.fDescent;
     out->line_gap = std::max(m.fLeading, 0.f);
   }
-  out->line_height =
-      s->line_height >= 0 ? s->line_height : out->ascent + out->descent;
+  out->content_ascent = round_metric(out->ascent);
+  out->content_descent = round_metric(out->descent);
+  // `normal` is Chrome's line spacing (SimpleFontData::PlatformInit): the
+  // ascent, descent and line gap each rounded to whole pixels.
+  out->line_height = s->line_height >= 0
+                         ? to_layout_units(s->line_height)
+                         : out->content_ascent + out->content_descent +
+                               round_metric(out->line_gap);
   out->x_height = placeholder_count > 0 ? x_height(primary, s->font_size) : 0;
 
   TextStyle text_style;
@@ -2474,10 +2515,11 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
   const size_t n = p->lines.size();
 
   // CSS half-leading: each line box is exactly line_height tall, with the
-  // baseline centred by the font's ascent and descent. Skia rounds line
-  // heights to whole pixels and measures the strut with hinted metrics, so
-  // its own baselines drift from this.
-  const float baseline_in_box = (p->line_height + p->ascent - p->descent) / 2;
+  // baseline placed by the font's ascent and descent as Chrome rounds them.
+  // Skia rounds line heights to whole pixels and measures the strut with
+  // hinted metrics, so its own baselines drift from this.
+  const float baseline_in_box = baseline_in_line_box(
+      p->line_height, p->content_ascent, p->content_descent);
   p->line_origins.assign(n, {0, 0});
   for (size_t i = 0; i < n; i++) {
     const float slack = w - p->line_widths[i];
