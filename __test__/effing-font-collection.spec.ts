@@ -131,8 +131,13 @@ test.serial('registerFromPath() registers every face of a font collection under 
   near(t, measure('bold 20px "Effing Collection"'), BOLD)
   near(t, measure('20px "Effing Collection Serif"'), SERIF)
 
+  // Registered again under the family of a face other than the first, the
+  // collection is a registered font of that family, that face included.
+  t.deepEqual(GlobalFonts.registerFromPath(COLLECTION, 'Effing Collection Serif'), key)
+  t.deepEqual(styles('Effing Collection Serif'), ['400 normal', '400 normal', '700 normal'])
   t.true(GlobalFonts.remove(key!))
   t.deepEqual(styles('Collection Alias'), [])
+  t.deepEqual(styles('Effing Collection Serif'), [])
   t.deepEqual(styles('Effing Collection'), [])
 })
 

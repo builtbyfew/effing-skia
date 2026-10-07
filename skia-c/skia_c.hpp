@@ -649,15 +649,24 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
 
   // effing: registers the faces after the first of the font collection
   // `font` was made from under `alias`, which the caller registered its
-  // first face under, except those of that family, already registered under
-  // it.
-  void registerMoreFacesAs(const RegisteredFont& font, const SkString& alias) {
+  // first face under. A face of that family is registered there under its
+  // own name already; where it joined the family without shadowing it, it is
+  // a registered face there from now on, as promoteOwnName makes the first.
+  void registerMoreFacesAs(RegisteredFont& font, const SkString& alias) {
+    bool promoted = false;
     for (auto& face : effing::more_faces(*font_mgr, font.path, font.data)) {
       SkString own;
       face->getFamilyName(&own);
       if (own != alias) {
         this->registerTypeface(std::move(face), alias);
+      } else if (font.shadowable_names.count(own.c_str()) > 0) {
+        shadowable_faces.remove(own, *face);
+        this->registerTypeface(std::move(face), own);
+        promoted = true;
       }
+    }
+    if (promoted) {
+      font.shadowable_names.erase(alias.c_str());
     }
   }
 
