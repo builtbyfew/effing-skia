@@ -192,10 +192,6 @@ top:
     two keep different parts of that word: `'ab بتثبتث بتث'` clamped to one
     line at 70px shows "ab بتثبت…" here, and more of the word in Chrome,
     its end (#38 asks which to keep).
-  - Under `justify`, Chrome justifies the clamped line as it laid it out
-    before truncating it, the ellipsis taking the place of what it cut
-    ("dd ee …" spread over the width); the fork start-aligns it, as a line
-    ending in the ellipsis.
   - A line of nothing but spaces keeps none of them: it is the ellipsis
     alone, at the line's start, where Chrome keeps the spaces before it.
     Wrapped text has such lines only with `keepTrailingWhitespace`, or from
@@ -203,6 +199,23 @@ top:
   - `text-overflow` clips the line, ellipsis included, to the box; the fork
     clips nothing, so a `noWrap` line's kept cluster and ellipsis show past
     the width, as a clamped line's do in Chrome.
+- Under `justify`, a clamped line that ends at a soft break is justified
+  as a line that isn't the paragraph's last, then cut, as Chrome does it
+  (`__test__/effing-paragraph-ellipsis.spec.ts`): grapheme clusters come off
+  its end until the ellipsis fits after the rest, which keep the places and
+  the glyphs justifying gave them, so `'aa bb cc dd'` at 85px in Iosevka
+  Slab is "aa bb …", "bb" at 32.5px and the ellipsis after the widened space
+  at 65px, and the line can end short of the width (`'aa b cc d eee'` at
+  95px is "aa b cc…", 93.33px wide). SkParagraph would truncate the line first and justify what
+  is left, or, as for the clamped line's own piece, not at all: the line
+  is laid out justified, with a sentinel after it, and SkParagraph's
+  `TextLine::createEllipsis` then cuts that line, made to stop where the
+  clusters' justified advance and the ellipsis's fit. As elsewhere, the
+  clusters come off in logical order, so which part of a run in the other
+  direction stays is as above; spaces of that other direction don't end
+  what is kept, as the ellipsis wouldn't follow them on screen. A clamped
+  line with no gap to widen, or that ends at a hard break, is start-aligned
+  with its ellipsis, as in Chrome.
 - A clamped line is letter-spaced as the paragraph is. A character of no
   script of its own, such as `%` or a space, takes that of the text around
   it in its bidi run, and SkParagraph, like Chrome, letter-spaces no run of
@@ -650,6 +663,12 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   drawn with `imageSmoothingEnabled = false` at a fractional scale and
   position, can pick the neighbouring source row or column where two are
   equally near (see filtered draws).
+- Under `textAlign: 'justify'`, a line `maxLines` clamps with an `ellipsis`
+  is justified, then cut, as Chrome does: what is left of it keeps its
+  justified place, with the ellipsis after it ("aa bb …" over 85px, where
+  it was "aa bb…" start-aligned). Its `width` is that of what is left and
+  the ellipsis, so it can end short of the layout width. Only a line that
+  ends at a soft break, and has a gap between words to widen, is.
 - A clamped line is letter-spaced as the paragraph is: punctuation or a
   space that the paragraph lays out in a run of Arabic (or another cursive
   script), with no letter spacing, no longer gets it when the clamped line

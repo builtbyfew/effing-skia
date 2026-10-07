@@ -1003,6 +1003,134 @@ bool lay_out_piece(const effing_paragraph* p,
   }
 }
 
+// Lays the clamped line, the whole paragraph's Skia text [start, next) up to
+// the soft break that ends it, out into `last` as Chrome does under justify,
+// and says whether it could. Chrome justifies the line as one that isn't the
+// paragraph's last, then takes grapheme clusters off its end until the
+// ellipsis fits after the rest, which keeps its place and its glyphs: "dd ee
+// ff" becomes "dd ee …" over the width, its spaces as wide as when it was
+// whole. SkParagraph instead truncates a line before it justifies it, and
+// justifies none that ends the text, as the clamped line's piece does.
+// So the line is laid out justified, a sentinel after it keeping it from
+// being the last, and SkParagraph's own ellipsis then cuts it where its
+// clusters' justified advance, with the ellipsis's, fits the width: taken
+// off its end in logical order, as SkParagraph takes them off any line. Its
+// TextLine::createEllipsis measures what it takes off without the
+// justification, so it is given the width that stops it there. A line with
+// no gap to spread is left as `last` has it.
+bool justify_clamped_line(const effing_paragraph* p,
+                          float w,
+                          size_t start,
+                          size_t next,
+                          Piece* last) {
+  auto* whole = static_cast<ParagraphImpl*>(p->paragraphs.front().get());
+  const SkString& ellipsis = p->paragraph_style.getEllipsis();
+  // SkParagraph shapes the ellipsis in the font of the last cluster it
+  // keeps, where that has it (and in another, which this leaves to
+  // SkParagraph's own cut, otherwise).
+  const auto advance_in = [&](const Run& run) {
+    const SkFont& font = run.font();
+    std::vector<SkGlyphID> glyphs(ellipsis.size());
+    const size_t count =
+        font.textToGlyphs(ellipsis.c_str(), ellipsis.size(),
+                          SkTextEncoding::kUTF8, SkSpan(glyphs));
+    for (size_t i = 0; i < count; i++) {
+      if (glyphs[i] == 0) {
+        return -1.f;
+      }
+    }
+    return font.measureText(ellipsis.c_str(), ellipsis.size(),
+                            SkTextEncoding::kUTF8);
+  };
+  // The ellipsis's advance as SkParagraph shaped it, when that was not the
+  // one expected: the line is then cut again with it.
+  float shaped = -1;
+  for (int attempt = 0; attempt < 2; attempt++) {
+    Piece clamped{};
+    clamped.start = start;
+    clamped.kind = PieceKind::kWrapped;
+    clamped.max_lines = 1;
+    clamped.suffixed = true;
+    clamped.offset = whole->getUTF16Index(start);
+    // The line ends where `last`'s does.
+    clamped.hard_break = true;
+    clamped.override_hard_break = true;
+    lay_out_piece(p, &clamped, start, next, 1, SkString(), true, w, true);
+    auto* impl = static_cast<ParagraphImpl*>(clamped.paragraph.get());
+    if (impl->lines().size() != 1) {
+      return false;
+    }
+    TextLine& line = impl->lines().front();
+    if (line.textWithNewlines().end != next - start ||
+        line.widthWithoutEllipsis() < w) {
+      return false;
+    }
+    // The clusters kept, up to `cut`, and their justified advance. Spaces of
+    // the other direction than the paragraph's don't end them: the ellipsis
+    // would follow them in their run, away from them on screen.
+    impl->ensureUTF16Mapping();
+    const ClusterRange clusters = line.clusters();
+    ClusterIndex cut = clusters.start;
+    float kept = 0;
+    float advance = 0;
+    for (ClusterIndex c = clusters.end; c > clusters.start; c--) {
+      const Cluster& end = impl->cluster(c - 1);
+      if (end.isWhitespaceBreak() && end.run().leftToRight() == p->rtl) {
+        continue;
+      }
+      const float e = shaped >= 0 ? shaped : advance_in(end.run());
+      if (e < 0) {
+        return false;
+      }
+      float width = 0;
+      for (const auto& box : impl->getRectsForRange(
+               0, impl->getUTF16Index(end.textRange().end),
+               RectHeightStyle::kTight, RectWidthStyle::kTight)) {
+        width += box.rect.width();
+      }
+      if (!too_wide(width + e, w)) {
+        cut = c;
+        kept = width;
+        advance = e;
+        break;
+      }
+    }
+    const ClusterIndex ghosts = line.clustersWithSpaces().end;
+    if (cut == clusters.start || cut >= ghosts) {
+      return false;
+    }
+    // TextLine::createEllipsis takes clusters off from the end of the
+    // line's spaces, subtracting their advance without the justification
+    // from the line's, until the ellipsis fits; the line is then as wide as
+    // what is left, which its runs are clipped to. So the first it takes off
+    // is made wider by the difference while it does, for it to stop at
+    // `cut` with the line as wide as the clusters kept, justified (give or
+    // take the rounding of the sums).
+    float difference = line.widthWithoutEllipsis() - kept;
+    for (ClusterIndex c = ghosts; c > cut; c--) {
+      difference -= impl->cluster(c - 1).width();
+    }
+    impl->cluster(ghosts - 1).space(difference);
+    line.createEllipsis(kept + advance + 0.01f, ellipsis, !p->rtl);
+    impl->cluster(ghosts - 1).space(-difference);
+    const Run* run = line.ellipsis();
+    if (run == nullptr) {
+      return false;
+    }
+    const float actual = run->advance().fX;
+    if (line.clusters().end != cut || too_wide(kept + actual, w)) {
+      shaped = actual;
+      continue;
+    }
+    const size_t end = start + impl->cluster(cut - 1).textRange().end;
+    clamped.end = end;
+    clamped.line_end = whole->getUTF16Index(end);
+    *last = std::move(clamped);
+    return true;
+  }
+  return false;
+}
+
 // The bidi levels of the whole paragraph's Skia text (U+FFFC for each
 // placeholder) into p->bidi, from the text as it was given: before
 // SkParagraph replaced its tabs with spaces, which bidi treats otherwise
@@ -1410,6 +1538,12 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
         text[line_end - 1] == '\r') {
       line_end--;
     }
+    // Where the line ends with the spaces that hang after it, when that is
+    // at a soft break: Chrome justifies such a line, and only such a line.
+    const size_t next =
+        empty ? len : p->utf8_offsets[piece.offset + lines[k].fEndIndex];
+    const bool soft =
+        next < len && hard_break_at(text.data(), len, next, nullptr, 0) == 0;
     if (k == 0) {
       p->pieces.pop_back();
     } else {
@@ -1449,6 +1583,8 @@ void split_around_long_words(effing_paragraph* p, float w, bool force) {
       last.line_end = whole->getUTF16Index(end);
       lay_out_piece(p, &last, line_start, end, 0,
                     p->paragraph_style.getEllipsis(), false, kUnbounded, false);
+    } else if (soft && justified(p, PieceKind::kWrapped)) {
+      justify_clamped_line(p, w, line_start, next, &last);
     }
     p->pieces.push_back(std::move(last));
   };
