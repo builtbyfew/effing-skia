@@ -249,6 +249,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     content_hash_index[content_hash].insert(id);
 
     this->registerTypeface(std::move(typeface));
+    registerMoreFaces(registered_fonts[id], /*system=*/false);  // effing
     return id;
   }
 
@@ -285,6 +286,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
                 aliases.end()) {
               aliases.push_back(aliasStr);
               this->registerTypeface(typeface, alias);
+              registerMoreFacesAs(font_it->second, alias);  // effing
             } else if (aliasStr == originalName) {
               promoteOwnName(font_it->second, std::move(typeface));  // effing
             }
@@ -326,6 +328,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     if (aliasStr != originalName) {
       this->registerTypeface(std::move(typeface), alias);
     }
+    registerMoreFaces(registered_fonts[id], /*system=*/false);  // effing
     return id;
   }
 
@@ -347,8 +350,11 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     font_info.data = data;
     font_info.path = path;
     font_info.aliases = aliases;
-    for (const auto& name : shadowable_names) {  // effing
-      markShadowable(font_info, name, *typeface);
+    // effing: the first face joins its own family without shadowing it; the
+    // names of the other faces of a collection are for registerMoreFaces.
+    font_info.shadowable_names = shadowable_names;
+    if (!aliases.empty() && shadowable_names.count(aliases[0]) > 0) {
+      markShadowable(font_info, aliases[0], *typeface);
     }
     registered_fonts[id] = std::move(font_info);
 
@@ -368,6 +374,8 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     for (const auto& name : aliases) {
       this->registerTypeface(typeface, SkString(name.c_str()));
     }
+    // effing: and the other faces of a collection, as they were.
+    registerMoreFaces(registered_fonts[id], /*system=*/false, /*replay=*/true);
   }
 
   /**
@@ -444,6 +452,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     content_hash_index[content_hash].insert(id);
 
     this->registerTypeface(std::move(typeface));
+    registerMoreFaces(registered_fonts[id], system);  // effing
     return id;
   }
 
@@ -476,6 +485,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
               aliases.end()) {
             aliases.push_back(aliasStr);
             this->registerTypeface(typeface, alias);
+            registerMoreFacesAs(font_it->second, alias);  // effing
           } else if (aliasStr == originalName) {
             promoteOwnName(font_it->second, std::move(typeface));  // effing
           }
@@ -516,6 +526,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     if (aliasStr != originalName) {
       this->registerTypeface(std::move(typeface), alias);
     }
+    registerMoreFaces(registered_fonts[id], /*system=*/false);  // effing
     return id;
   }
 
@@ -582,15 +593,71 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
 
   // effing: `font` registered again under its own name, as a system font or
   // an aliased font can be, is a registered face there from now on, and
-  // shadows the rest of the family as a font registered afresh would.
+  // shadows the rest of the family as a font registered afresh would. So is
+  // every other face of a collection, under its own name.
   void promoteOwnName(RegisteredFont& font, sk_sp<SkTypeface> typeface) {
-    if (!font.aliases.empty() &&
-        font.shadowable_names.erase(font.aliases[0]) > 0) {
-      SkString name(font.aliases[0].c_str());
-      // The caller made `typeface` afresh, but a font manager that hands out
-      // a cached typeface would give the shadowable one back.
-      shadowable_faces.remove(name, *typeface);
-      this->registerTypeface(std::move(typeface), name);
+    if (font.aliases.empty() || font.shadowable_names.empty()) {
+      return;
+    }
+    std::vector<sk_sp<SkTypeface>> faces =
+        effing::more_faces(*font_mgr, font.path, font.data);
+    faces.insert(faces.begin(), std::move(typeface));
+    std::set<std::string> promoted;
+    for (auto& face : faces) {
+      SkString name;
+      face->getFamilyName(&name);
+      if (font.shadowable_names.count(name.c_str()) > 0) {
+        promoted.insert(name.c_str());
+        // The caller made `face` afresh, but a font manager that hands out
+        // a cached typeface would give the shadowable one back.
+        shadowable_faces.remove(name, *face);
+        this->registerTypeface(std::move(face), name);
+      }
+    }
+    for (const auto& name : promoted) {
+      font.shadowable_names.erase(name);
+    }
+  }
+
+  // effing: registers the faces after the first of the font collection
+  // (.ttc, .otc) `font` was made from, whose first face the caller
+  // registered, as that face is: each under its own family name and under
+  // the names `font.aliases` lists after the first. A face joins its own
+  // family without shadowing it when `font` is a system font or is
+  // registered under an alias other than that family, or, replaying a
+  // rebuild, where `font.shadowable_names` names its family.
+  void registerMoreFaces(RegisteredFont& font,
+                         bool system,
+                         bool replay = false) {
+    for (auto& face : effing::more_faces(*font_mgr, font.path, font.data)) {
+      SkString own;
+      face->getFamilyName(&own);
+      bool shadowable =
+          replay ? font.shadowable_names.count(own.c_str()) > 0 : system;
+      for (size_t i = 1; i < font.aliases.size(); i++) {
+        if (font.aliases[i] != own.c_str()) {
+          this->registerTypeface(face, SkString(font.aliases[i].c_str()));
+          shadowable = shadowable || !replay;
+        }
+      }
+      if (shadowable) {
+        markShadowable(font, own.c_str(), *face);
+      }
+      this->registerTypeface(std::move(face));
+    }
+  }
+
+  // effing: registers the faces after the first of the font collection
+  // `font` was made from under `alias`, which the caller registered its
+  // first face under, except those of that family, already registered under
+  // it.
+  void registerMoreFacesAs(const RegisteredFont& font, const SkString& alias) {
+    for (auto& face : effing::more_faces(*font_mgr, font.path, font.data)) {
+      SkString own;
+      face->getFamilyName(&own);
+      if (own != alias) {
+        this->registerTypeface(std::move(face), alias);
+      }
     }
   }
 

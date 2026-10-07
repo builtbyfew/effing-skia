@@ -70,10 +70,13 @@ impl Font {
           .get(3)
           .and_then(|m| FontVariant::from_str(m.as_str()).ok())
           .unwrap_or(default_font.variant);
-        let weight = cap
-          .get(4)
-          .and_then(|m| parse_font_weight(m.as_str()))
-          .unwrap_or(default_font.weight);
+        // effing: a font-weight outside 1 to 1000 makes the value invalid, as
+        // in Chrome, rather than taking the default.
+        let weight = match cap.get(4) {
+          Some(m) => parse_font_weight(m.as_str())
+            .ok_or_else(|| SkError::InvalidFontStyle(font_rules.to_owned()))?,
+          None => default_font.weight,
+        };
         // treat stretch as size
         // the `20%` of '20% Arial' is treated as `stretch` but it's size actually
         let stretch = if cap.get(6).is_none() {
@@ -120,7 +123,7 @@ pub(crate) fn init_font_regexp() -> Regex {
     (
       (italic|oblique|normal){0,1}\s+              |  # style
       (small-caps|normal){0,1}\s+                  |  # variant
-      (bold|bolder|lighter|[1-9]00|normal){0,1}\s+ |  # weight
+      (bold|bolder|lighter|normal|[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?){0,1}\s+ |  # weight (effing: any number)
       (ultra-condensed|extra-condensed|condensed|semi-condensed|semi-expanded|expanded|extra-expanded|ultra-expanded|[\d\.]+%){0,1}\s+ # stretch
     ){0,4}
     (
@@ -257,6 +260,14 @@ fn parse_font_weight(weight: &str) -> Option<u32> {
     "500" => Some(500),
     "600" => Some(600),
     "bold" | "bolder" | "700" => Some(700),
+    // effing: a CSS <number>, which has a digit after its dot ("550." and
+    // "5.e2" aren't numbers in CSS, where Rust parses them).
+    _ if weight
+      .split_once('.')
+      .is_some_and(|(_, fraction)| !fraction.starts_with(|c: char| c.is_ascii_digit())) =>
+    {
+      None
+    }
     _ => weight.parse::<f32>().ok().and_then(|w| {
       if (MIN_FONT_WEIGHT..=MAX_FONT_WEIGHT).contains(&w) {
         Some(w as u32)
@@ -382,6 +393,19 @@ fn test_parse_font_weight() {
   assert_eq!(parse_font_weight("0.01"), None);
   assert_eq!(parse_font_weight("-20"), None);
   assert_eq!(parse_font_weight("whatever"), None);
+  // effing: any number from 1 to 1000, as CSS Fonts 4 and Chrome have it.
+  assert_eq!(parse_font_weight("550"), Some(550));
+  assert_eq!(parse_font_weight("1"), Some(1));
+  assert_eq!(parse_font_weight("1000"), Some(1000));
+  assert_eq!(parse_font_weight("550.5"), Some(550));
+  assert_eq!(parse_font_weight("1e3"), Some(1000));
+  assert_eq!(parse_font_weight("+550"), Some(550));
+  assert_eq!(parse_font_weight(".5e3"), Some(500));
+  assert_eq!(parse_font_weight("0"), None);
+  assert_eq!(parse_font_weight("1001"), None);
+  assert_eq!(parse_font_weight("0.5"), None);
+  assert_eq!(parse_font_weight("550."), None);
+  assert_eq!(parse_font_weight("5.e2"), None);
 }
 
 #[allow(clippy::float_cmp)]
@@ -550,6 +574,35 @@ fn test_font_new() {
         ..Default::default()
       },
     ),
+    // effing: any weight from 1 to 1000.
+    (
+      "550 20px Arial",
+      Font {
+        size: 20.0,
+        weight: 550,
+        family: "Arial".to_owned(),
+        ..Default::default()
+      },
+    ),
+    (
+      "italic 725 20px Arial",
+      Font {
+        size: 20.0,
+        weight: 725,
+        style: FontStyle::Italic,
+        family: "Arial".to_owned(),
+        ..Default::default()
+      },
+    ),
+    (
+      "1e3 20px Arial",
+      Font {
+        size: 20.0,
+        weight: 1000,
+        family: "Arial".to_owned(),
+        ..Default::default()
+      },
+    ),
     (
       "400 48px/57.599999999999994px Cascadia",
       Font {
@@ -563,5 +616,18 @@ fn test_font_new() {
 
   for (rule, expect) in fixtures.into_iter() {
     assert_eq!(Font::new(rule).unwrap(), expect);
+  }
+}
+
+#[test]
+fn test_font_new_invalid_weight() {
+  // effing: Chrome rejects these, and keeps the font it had.
+  for rule in [
+    "0 20px Arial",
+    "1001 20px Arial",
+    "-1 20px Arial",
+    "550. 20px Arial",
+  ] {
+    assert!(Font::new(rule).is_err(), "{rule}");
   }
 }
