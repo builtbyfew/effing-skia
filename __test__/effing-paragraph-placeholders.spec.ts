@@ -15,6 +15,7 @@ const STYLE: ParagraphStyle = { fontFamily: 'Iosevka Slab', fontSize: 20, lineHe
 test.before((t) => {
   t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'iosevka-slab-regular.ttf')))
   t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Harmattan-Regular.ttf'), 'WB Harmattan'))
+  t.truthy(GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Lato-Regular.ttf'), 'WB Lato'))
 })
 
 function near(t: import('ava').ExecutionContext, actual: number, expected: number, epsilon = 0.01) {
@@ -481,4 +482,257 @@ test('a hard break at the edge of a window of emoji text', (t) => {
       [144, 148, true],
     ])
   }
+})
+
+// Expected boxes measured in Chrome 154 (headless, macOS) from `<div dir=D
+// style="width: W; font: 20px 'WB Harmattan', 'WB Lato'; line-height: 40px;
+// text-align: A; white-space: pre-line">` with an inline-block of each width
+// and 10px high for each box, with getBoundingClientRect() on each: its left
+// relative to the div's, and its line. Chrome orders the boxes by their bidi
+// levels (UAX #9): one between right-to-left words is right-to-left, so the
+// first of two such boxes is on the right.
+const BIDI: ParagraphStyle = { fontFamily: 'WB Harmattan, WB Lato', fontSize: 20, lineHeight: 40 }
+const ALIGNS = ['left', 'right', 'center', 'justify'] as const
+
+function placed(
+  t: import('ava').ExecutionContext,
+  parts: Array<string | ParagraphPlaceholder>,
+  style: ParagraphStyle,
+  width: number,
+  expected: Record<(typeof ALIGNS)[number], Array<[number, number]>>,
+) {
+  for (const textAlign of ALIGNS) {
+    const layout = new Paragraph(parts, { ...style, textAlign }).layout(width)
+    t.is(layout.placeholders.length, expected[textAlign].length)
+    layout.placeholders.forEach((placeholder, k) => {
+      const [x, line] = expected[textAlign][k]
+      t.is(placeholder!.line, line, `${textAlign} ${k}`)
+      near(t, placeholder!.x, x, 0.1)
+    })
+  }
+}
+
+test('placeholders between right-to-left words are ordered as in Chrome', (t) => {
+  const rtl: ParagraphStyle = { ...BIDI, direction: 'rtl' }
+  // #47: the first two boxes, between Arabic words and the digits '12', on
+  // an unclamped second line; the 13px box is on the right.
+  placed(
+    t,
+    [
+      'سلام سلام شكرا بالعالم ',
+      box({ width: 13, height: 10 }),
+      ' سلام ',
+      box({ width: 24, height: 10 }),
+      ' 12 ',
+      box({ width: 28, height: 10 }),
+    ],
+    { ...rtl, maxLines: 3 },
+    141,
+    {
+      left: [
+        [84.27, 1],
+        [22.02, 1],
+        [0, 2],
+      ],
+      right: [
+        [85.36, 1],
+        [23.11, 1],
+        [113, 2],
+      ],
+      center: [
+        [84.81, 1],
+        [22.56, 1],
+        [56.5, 2],
+      ],
+      justify: [
+        [85.08, 1],
+        [22.28, 1],
+        [113, 2],
+      ],
+    },
+  )
+  // On one line, breaking lines as a box or as an emoji.
+  for (const lineBreak of ['box', 'emoji'] as const) {
+    const parts = [
+      'سلام ',
+      box({ width: 13, height: 10, lineBreak }),
+      ' سلام ',
+      box({ width: 24, height: 10, lineBreak }),
+      ' شكرا ',
+      box({ width: 9, height: 10, lineBreak }),
+    ]
+    const right: Array<[number, number]> = [
+      [213.17, 0],
+      [150.92, 0],
+      [99.45, 0],
+    ]
+    placed(t, parts, rtl, 260, {
+      left: [
+        [113.72, 0],
+        [51.47, 0],
+        [0, 0],
+      ],
+      right,
+      center: [
+        [163.44, 0],
+        [101.19, 0],
+        [49.72, 0],
+      ],
+      justify: right,
+    })
+  }
+})
+
+test('placeholders take their bidi levels among digits and words of either direction', (t) => {
+  // In RTL: the boxes between Arabic and digits are right-to-left, the one
+  // between 'hello' and 'world' left-to-right inside them.
+  const right: Array<[number, number]> = [
+    [213.17, 0],
+    [162.72, 0],
+    [105.8, 0],
+    [46.7, 0],
+  ]
+  placed(
+    t,
+    [
+      'سلام ',
+      box({ width: 13, height: 10 }),
+      ' 12 ',
+      box({ width: 24, height: 10 }),
+      ' hello ',
+      box({ width: 9, height: 10 }),
+      ' world ',
+      box({ width: 17, height: 10 }),
+      ' شكرا',
+    ],
+    { ...BIDI, direction: 'rtl' },
+    260,
+    {
+      left: [
+        [204.52, 0],
+        [154.06, 0],
+        [97.14, 0],
+        [38.05, 0],
+      ],
+      right,
+      center: [
+        [208.84, 0],
+        [158.39, 0],
+        [101.47, 0],
+        [42.38, 0],
+      ],
+      justify: right,
+    },
+  )
+  // In LTR, two boxes between Arabic words, the first on the right.
+  const left: Array<[number, number]> = [
+    [146.77, 0],
+    [80.3, 0],
+  ]
+  placed(
+    t,
+    ['hello سلام ', box({ width: 13, height: 10 }), ' شكرا ', box({ width: 24, height: 10 }), ' بالعالم world'],
+    BIDI,
+    260,
+    {
+      left,
+      right: [
+        [169.69, 0],
+        [103.22, 0],
+      ],
+      center: [
+        [158.22, 0],
+        [91.75, 0],
+      ],
+      justify: left,
+    },
+  )
+})
+
+test('placeholders keep their bidi order on every line, justified or split into pieces', (t) => {
+  const rtl: ParagraphStyle = { ...BIDI, direction: 'rtl' }
+  placed(
+    t,
+    [
+      'بتث بتث بتث ',
+      box({ width: 13, height: 10 }),
+      ' بتث ',
+      box({ width: 24, height: 10 }),
+      ' بتث بتث ',
+      box({ width: 9, height: 10 }),
+      ' بتث ',
+      box({ width: 19, height: 10 }),
+      ' بتث',
+    ],
+    rtl,
+    110,
+    {
+      left: [
+        [96.48, 1],
+        [34.03, 1],
+        [57.45, 2],
+        [0, 2],
+      ],
+      right: [
+        [97, 1],
+        [34.55, 1],
+        [66.97, 2],
+        [9.52, 2],
+      ],
+      center: [
+        [96.73, 1],
+        [34.28, 1],
+        [62.2, 2],
+        [4.75, 2],
+      ],
+      justify: [
+        [97, 1],
+        [34.2, 1],
+        [63.8, 2],
+        [0, 2],
+      ],
+    },
+  )
+  // A word too wide for its line splits the text into pieces.
+  placed(
+    t,
+    [
+      'سلام ',
+      box({ width: 13, height: 10 }),
+      ' سلامسلامسلامسلامسلامسلام ',
+      box({ width: 24, height: 10 }),
+      ' شكرا ',
+      box({ width: 9, height: 10 }),
+      ' بالعالم ',
+      box({ width: 17, height: 10 }),
+    ],
+    { ...rtl, overflowWrap: 'break-word' },
+    90,
+    {
+      left: [
+        [0, 0],
+        [51.47, 3],
+        [0, 3],
+        [0, 4],
+      ],
+      right: [
+        [43.17, 0],
+        [52.67, 3],
+        [1.2, 3],
+        [30.36, 4],
+      ],
+      center: [
+        [21.58, 0],
+        [52.06, 3],
+        [0.59, 3],
+        [15.17, 4],
+      ],
+      justify: [
+        [0, 0],
+        [52.27, 3],
+        [0, 3],
+        [30.36, 4],
+      ],
+    },
+  )
 })
