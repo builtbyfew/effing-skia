@@ -1074,8 +1074,9 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 - Under `justify`, lines spread at Chrome's justification opportunities
   (see justification): a no-break space counts as a space does, CJK text
-  spreads between all its characters, kana, CJK punctuation, fullwidth
-  forms and emoji included, not only between ideographs, each space gets
+  spreads around its kana, bopomofo, CJK symbols and punctuation,
+  fullwidth forms and emoji too, not only around its ideographs (Hangul
+  spreads at spaces alone, as in Chrome), each space gets
   the same share, where SkParagraph gave every gap between words the same
   width, and en spaces and other space separators get none. In Liberation
   Sans 20px, `'aaa\u00A0bb\u00A0c\u00A0dddd eeeeeee'` at 200px now has "dddd"
