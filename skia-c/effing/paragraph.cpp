@@ -15,6 +15,7 @@
 
 #include "include/core/SkFontMetrics.h"
 #include "include/core/SkTypeface.h"
+#include "justify.hpp"
 #include "modules/skunicode/include/SkUnicode_icu.h"
 #include "text.hpp"
 #include "word_break.hpp"
@@ -1163,28 +1164,114 @@ bool justified(const effing_paragraph* p, PieceKind kind) {
          kind != PieceKind::kUnbounded;
 }
 
+// Pointers to the members of a line and a run that SkParagraph keeps
+// private, and that order_placeholders sets right: an explicit
+// instantiation may name a private member, and Member's friend function
+// hands the pointer out.
+template <typename Tag, typename Tag::Type pointer>
+struct Member {
+  friend typename Tag::Type member(Tag) { return pointer; }
+};
+struct LineRunsInVisualOrder {
+  using Type = skia_private::STArray<1, size_t, true> TextLine::*;
+  friend Type member(LineRunsInVisualOrder);
+};
+struct RunBidiLevel {
+  using Type = uint8_t Run::*;
+  friend Type member(RunBidiLevel);
+};
+template struct Member<LineRunsInVisualOrder, &TextLine::fRunsInVisualOrder>;
+template struct Member<RunBidiLevel, &Run::fBidiLevel>;
+
+// The number of placeholders in `paragraph`, not counting the empty one
+// SkParagraph ends its list with.
+size_t placeholder_count(ParagraphImpl* impl) {
+  size_t count = 0;
+  for (const Placeholder& placeholder : impl->placeholders()) {
+    count += placeholder.fRange.width() > 0 ? 1 : 0;
+  }
+  return count;
+}
+
+// Puts the placeholders on each line of `paragraph` where their bidi levels
+// put them, as Chrome (UAX #9) does. SkParagraph orders a line's runs by
+// their levels, then deals its placeholders out to the places it gave
+// placeholders, from the left in their order in the text (TextLine's
+// constructor; Flutter wants placeholders laid out in the order they were
+// added). So between right-to-left words, the first placeholder lands on
+// the left of the second, with each one's width moving the text between
+// them. The runs' order is put back as their levels have it. Justification
+// (the run shifts) follows the order its lines are in, so only lines that
+// are not justified yet can take this.
+void order_placeholders(ParagraphImpl* impl) {
+  if (placeholder_count(impl) < 2) {
+    return;
+  }
+  std::vector<SkUnicode::BidiLevel> levels;
+  std::vector<int32_t> logical;
+  for (TextLine& line : impl->lines()) {
+    auto& runs = line.*member(LineRunsInVisualOrder{});
+    const size_t n = static_cast<size_t>(runs.size());
+    if (n < 2) {
+      continue;
+    }
+    // Its runs are those from the first in the text to the last, in some
+    // order.
+    const auto [first, last] = std::minmax_element(runs.begin(), runs.end());
+    const size_t start = *first;
+    if (*last - start + 1 != n) {
+      continue;
+    }
+    size_t placeholders = 0;
+    levels.resize(n);
+    for (size_t i = 0; i < n; i++) {
+      const Run& run = impl->run(start + i);
+      placeholders += run.isPlaceholder() ? 1 : 0;
+      levels[i] = run.*member(RunBidiLevel{});
+    }
+    if (placeholders < 2) {
+      continue;
+    }
+    logical.resize(n);
+    impl->getUnicode()->reorderVisual(levels.data(), static_cast<int>(n),
+                                      logical.data());
+    for (size_t i = 0; i < n; i++) {
+      runs[i] = start + logical[i];
+    }
+  }
+}
+
 // Lays `paragraph` out at `width`, justified if `justify`, and says whether
-// SkParagraph gave up on its ellipsis (ellipsis_failed). SkParagraph would
-// never return from justifying a line it emptied that way when the line has
-// runs past its first: TextLine::justify walks each run's clusters in the
-// line, and for those runs that range ends before it starts, so the walk
-// wraps around the address space. Line breaking and the ellipsis don't
-// depend on the alignment, so the paragraph is first laid out start-aligned,
-// and justified only when no line was emptied; the caller lays such a line
-// out anew.
+// SkParagraph gave up on its ellipsis (ellipsis_failed). SkParagraph only
+// breaks the lines: it lays them out start-aligned, and effing justifies them
+// (justify_lines), at Chrome's justification opportunities. SkParagraph's own
+// TextLine::justify spreads a line at its spaces and ideographs, where Chrome
+// spreads one at its no-break spaces and kana too, and gives every gap
+// between words the same width, spaces and all, where Chrome adds the same
+// to each space. A layout whose last line SkParagraph emptied for its
+// ellipsis is left unjustified: the caller lays that line out anew, as a
+// piece of its own, after the lines before it, which stay justified.
 //
-// Justifying also changes the lines in place: it moves each cluster by a
-// shift it keeps in the cluster's run, and widens the line to the width.
-// SkParagraph never undoes either for lines it keeps: formatted again at the
-// same width, a line already as wide as that is left as it is
-// (TextLine::format), its shifts gone, so it paints unjustified; and at a new
-// width it breaks the lines before it clears the shifts
-// (ParagraphImpl::layout calls breakShapedTextIntoLines before
-// resetShifts), so its line breaker measures the spaces it trims off a line
-// with the old shifts in, and the lines' widths drift from a fresh
-// paragraph's (#12). So a justified paragraph has its lines broken anew,
-// with no shifts, every time: laid out as a fresh one is, but not shaped
-// again.
+// Under `justify`, Skia's ParagraphStyle is left at TextAlign::kLeft
+// afterwards, so code after this must read the alignment from
+// effing_paragraph (justified(), p->align), never from Skia's
+// ParagraphStyle::getTextAlign().
+//
+// Justifying changes the lines in place: it moves each cluster by a shift it
+// keeps in the cluster's run, and widens the line to the width. SkParagraph
+// never undoes either for lines it keeps: formatted again at the same width,
+// a line already as wide as that is left as it is (TextLine::format), its
+// shifts gone, so it paints unjustified; and at a new width it breaks the
+// lines before it clears the shifts (ParagraphImpl::layout calls
+// breakShapedTextIntoLines before resetShifts), so its line breaker measures
+// the spaces it trims off a line with the old shifts in, and the lines'
+// widths drift from a fresh paragraph's (#12). So a justified paragraph has
+// its lines broken anew, with no shifts, every time: laid out as a fresh one
+// is, but not shaped again.
+//
+// The placeholders are put in their places (order_placeholders) before the
+// lines are justified, which spreads each line in the order its runs are
+// in.
 bool layout_paragraph(Paragraph* paragraph, float width, bool justify) {
   auto* impl = static_cast<ParagraphImpl*>(paragraph);
   if (justify) {
@@ -1192,23 +1279,17 @@ bool layout_paragraph(Paragraph* paragraph, float width, bool justify) {
       impl->setState(InternalState::kShaped);
     }
     impl->resetShifts();
+    // Left at kLeft after this: don't read Skia's alignment (above).
+    impl->updateTextAlign(TextAlign::kLeft);
   }
-  if (!justify || !impl->paragraphStyle().ellipsized()) {
-    if (justify) {
-      impl->updateTextAlign(TextAlign::kJustify);
-    }
-    paragraph->layout(width);
-    return ellipsis_failed(paragraph);
-  }
-  impl->updateTextAlign(TextAlign::kLeft);
   paragraph->layout(width);
+  order_placeholders(impl);
   if (ellipsis_failed(paragraph)) {
     return true;
   }
-  // Keeps the lines, which start-aligning left as they were, and formats
-  // them anew.
-  impl->updateTextAlign(TextAlign::kJustify);
-  paragraph->layout(width);
+  if (justify) {
+    effing::justify_lines(paragraph, width);
+  }
   return false;
 }
 
@@ -1272,14 +1353,16 @@ bool lay_out_piece(const effing_paragraph* p,
 // paragraph's last, then takes grapheme clusters off its end until the
 // ellipsis fits after the rest, which keeps its place and its glyphs: "dd ee
 // ff" becomes "dd ee …" over the width, its spaces as wide as when it was
-// whole. SkParagraph instead truncates a line before it justifies it, and
-// justifies none that ends the text, as the clamped line's piece does.
-// So the line is laid out justified, a sentinel after it keeping it from
-// being the last, and SkParagraph's own ellipsis then cuts it where its
+// whole. SkParagraph's ellipsis cuts a line before it is justified, and a
+// line that ends the text, as the clamped line's piece does, isn't. So the
+// line is laid out justified (justify_lines), a sentinel after it keeping it
+// from being the last, and SkParagraph's own ellipsis then cuts it where its
 // clusters' justified advance, with the ellipsis's, fits the width: taken
 // off its end in logical order, as SkParagraph takes them off any line. Its
 // TextLine::createEllipsis measures what it takes off without the
-// justification, so it is given the width that stops it there. A line with
+// justification, so it is given the width that stops it there. (What is
+// kept is measured without the share of the spread after its last cluster
+// that the cluster after it carries, as after a CJK character.) A line with
 // no gap to spread is left as `last` has it.
 bool justify_clamped_line(const effing_paragraph* p,
                           float w,
@@ -2607,6 +2690,13 @@ effing_paragraph* effing_paragraph_create(
       SkFontStyle(s->weight, SkFontStyle::kNormal_Width,
                   static_cast<SkFontStyle::Slant>(s->slant));
   const auto direction = static_cast<TextDirection>(s->direction);
+  // The text is laid out at the size Chrome lays it out at, floored to
+  // 1/100px, and so are the metrics the line boxes come from (#46).
+  const float font_size = effing::effective_font_size(s->font_size);
+  // Skia lays the glyphs out at that size to the nearest 1/64px, which its
+  // FreeType takes sizes in, as CoreText's advances at the size come closest
+  // to (effing::freetype_font_size).
+  const float skia_font_size = effing::freetype_font_size(font_size);
 
   auto* out = new effing_paragraph();
   out->align = resolve_align(static_cast<TextAlign>(s->align), direction);
@@ -2621,9 +2711,9 @@ effing_paragraph* effing_paragraph_create(
       font_collection->findTypefaces(families, font_style, std::nullopt);
   const sk_sp<SkTypeface> primary =
       typefaces.empty() ? nullptr : typefaces.front();
-  if (!hhea_metrics(primary, s->font_size, &out->ascent, &out->descent,
+  if (!hhea_metrics(primary, font_size, &out->ascent, &out->descent,
                     &out->line_gap)) {
-    SkFont font(primary, s->font_size);
+    SkFont font(primary, font_size);
     SkFontMetrics m;
     font.getMetrics(&m);
     out->ascent = -m.fAscent;
@@ -2638,11 +2728,11 @@ effing_paragraph* effing_paragraph_create(
                          ? to_layout_units(s->line_height)
                          : out->content_ascent + out->content_descent +
                                round_metric(out->line_gap);
-  out->x_height = placeholder_count > 0 ? x_height(primary, s->font_size) : 0;
+  out->x_height = placeholder_count > 0 ? x_height(primary, font_size) : 0;
 
   TextStyle text_style;
   text_style.setFontFamilies(families);
-  text_style.setFontSize(s->font_size);
+  text_style.setFontSize(skia_font_size);
   text_style.setFontStyle(font_style);
   text_style.setLetterSpacing(s->letter_spacing);
   // Unhinted outlines, so layout and placement don't depend on the device.
@@ -2656,8 +2746,8 @@ effing_paragraph* effing_paragraph_create(
   strut.setForceStrutHeight(true);
   strut.setFontFamilies(families);
   strut.setFontStyle(font_style);
-  strut.setFontSize(s->font_size);
-  strut.setHeight(out->line_height / s->font_size);
+  strut.setFontSize(skia_font_size);
+  strut.setHeight(out->line_height / skia_font_size);
   strut.setHeightOverride(true);
   strut.setHalfLeading(true);
   strut.setLeading(0);
@@ -3006,10 +3096,10 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
     } else if (p->align == TextAlign::kCenter) {
       left = slack / 2;
     } else if (p->align == TextAlign::kJustify) {
-      // Skia spread the lines it could justify over the whole width, so
-      // they have no slack; the others start-align. Skia's own left edge is
-      // not used: it includes half the letter spacing, which the painter
-      // cancels for every other alignment.
+      // justify_lines spread the lines it could justify over the whole
+      // width, so they have no slack; the others start-align. Skia's own
+      // left edge is not used: it includes half the letter spacing, which
+      // the painter cancels for every other alignment.
       left = p->rtl ? slack : 0;
     }
     // Kept whitespace ends the line, which in RTL is its left end.
