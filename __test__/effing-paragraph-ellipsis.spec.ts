@@ -31,6 +31,8 @@ test.before((t) => {
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'iosevka-slab-regular.ttf'), 'WB Iosevka'))
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'Harmattan-Regular.ttf'), 'WB Harmattan'))
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'SourceHanSerifCN-Bold.ttf'), 'WB Source Han'))
+  t.truthy(GlobalFonts.registerFromPath(join(fonts, 'NotoSansDevanagari-Regular.ttf'), 'WB Devanagari'))
+  t.truthy(GlobalFonts.registerFromPath(join(fonts, 'LiberationSans-Regular.woff'), 'WB Liberation'))
 })
 
 // A line as [startIndex, endIndex, width, left].
@@ -41,28 +43,30 @@ const lines = (layout: ParagraphLayout): Line[] =>
 
 const round = (x: number) => Math.round(x * 100) / 100
 
-// The columns each line of `paragraph` inks, painted at (0, 0) at its last
-// layout: [first, end) of those with a pixel in the line's band more than
-// ~40% opaque, or null for a line with no ink. Columns, not pixels, so that
-// antialiasing on another platform moves an edge by a pixel at most.
-function inkPerLine(paragraph: Paragraph, layout: ParagraphLayout, width = 300): Array<[number, number] | null> {
+// Which columns each line of `paragraph` inks, painted at (0, 0) at its last
+// layout: those with a pixel in the line's band more than ~40% opaque.
+function inkedColumns(paragraph: Paragraph, layout: ParagraphLayout, width: number): boolean[][] {
   const height = Math.max(1, Math.ceil(layout.height))
   const ctx = createCanvas(width, height).getContext('2d')
   fillParagraph(ctx, paragraph, 0, 0)
   const { data } = ctx.getImageData(0, 0, width, height)
-  return layout.lines.map((_, k) => {
-    let first = -1
-    let end = -1
-    for (let x = 0; x < width; x++) {
+  return layout.lines.map((_, k) =>
+    Array.from({ length: width }, (_, x) => {
       for (let y = Math.round(k * layout.lineHeight); y < Math.round((k + 1) * layout.lineHeight); y++) {
-        if (data[(y * width + x) * 4 + 3] > 96) {
-          if (first < 0) first = x
-          end = x + 1
-          break
-        }
+        if (data[(y * width + x) * 4 + 3] > 96) return true
       }
-    }
-    return first < 0 ? null : [first, end]
+      return false
+    }),
+  )
+}
+
+// The columns each line of `paragraph` inks, [first, end), or null for a
+// line with no ink. Columns, not pixels, so that antialiasing on another
+// platform moves an edge by a pixel at most.
+function inkPerLine(paragraph: Paragraph, layout: ParagraphLayout, width = 300): Array<[number, number] | null> {
+  return inkedColumns(paragraph, layout, width).map((columns) => {
+    const first = columns.indexOf(true)
+    return first < 0 ? null : [first, columns.lastIndexOf(true) + 1]
   })
 }
 
@@ -294,7 +298,7 @@ test('the lines before a clamped line are justified', (t) => {
       { maxLines: 2 },
       [
         [0, 8, 85, 0],
-        [9, 15, 80, 0],
+        [9, 15, 85, 0],
       ],
     ],
     [
@@ -303,7 +307,7 @@ test('the lines before a clamped line are justified', (t) => {
       [
         [0, 8, 85, 0],
         [9, 17, 85, 0],
-        [18, 24, 80, 0],
+        [18, 24, 85, 0],
       ],
     ],
     [
@@ -321,7 +325,7 @@ test('the lines before a clamped line are justified', (t) => {
       [
         [0, 5, 85, 0],
         [6, 11, 85, 0],
-        [12, 18, 80, 0],
+        [12, 18, 85, 0],
       ],
     ],
     [
@@ -329,7 +333,7 @@ test('the lines before a clamped line are justified', (t) => {
       { maxLines: 2, direction: 'rtl' },
       [
         [0, 8, 85, 0],
-        [9, 15, 80, 5],
+        [9, 14, 72.5, 12.5],
       ],
     ],
   ]
@@ -625,4 +629,300 @@ test('the clamped line keeps the bidi levels its text has in the paragraph', (t)
   t.is(at(plain), 68)
   // The clamped line's text is cut short before the digits, logically last.
   t.true(at(clamped) >= 40, `${at(clamped)}`)
+})
+
+// The runs of columns `paragraph`'s line `k` inks, as inkPerLine counts
+// them, runs at most `gap` px apart merged.
+function inkRuns(
+  paragraph: Paragraph,
+  layout: ParagraphLayout,
+  k: number,
+  width = 300,
+  gap = 2,
+): Array<[number, number]> {
+  const runs: Array<[number, number]> = []
+  for (const [x, inked] of inkedColumns(paragraph, layout, width)[k].entries()) {
+    if (!inked) continue
+    const last = runs[runs.length - 1]
+    if (last && x - last[1] <= gap) last[1] = x + 1
+    else runs.push([x, x + 1])
+  }
+  return runs
+}
+
+function nearRuns(
+  t: ExecutionContext,
+  actual: Array<[number, number]>,
+  expected: Array<[number, number]>,
+  name: string,
+) {
+  t.true(
+    actual.length === expected.length &&
+      actual.every(([a, b], i) => Math.abs(a - expected[i][0]) <= 1 && Math.abs(b - expected[i][1]) <= 1),
+    `${name}: inked ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)} within 1px`,
+  )
+}
+
+test('a clamped line is justified, then cut, as Chrome has it', (t) => {
+  // Chrome 154 under `text-align: justify` with `-webkit-line-clamp`,
+  // compared in screenshots, justifies the clamped line as a line that isn't
+  // the paragraph's last, then takes grapheme clusters off its end until the
+  // ellipsis fits after the rest, which keep their places: "aa bb cc"
+  // justified at 85px has "bb" at 32.5px and "cc" at 65px, and clamped is
+  // "aa bb …" with the ellipsis at 65px, after the widened space (#33).
+  // Lines as [startIndex, endIndex, width, left], and the runs of columns
+  // the clamped line inks, as Chrome inks them.
+  const style: ParagraphStyle = { ...IOSEVKA, textAlign: 'justify', ellipsis: '…', maxLines: 1 }
+  const cases: Array<[ParagraphContent, ParagraphStyle, number, Line, Array<[number, number]>]> = [
+    [
+      'aa bb cc dd ee ff gg hh',
+      {},
+      85,
+      [0, 6, 85, 0],
+      [
+        [1, 20],
+        [33, 52],
+        [66, 70],
+        [73, 77],
+        [80, 84],
+      ],
+    ],
+    // Two gaps of 17.5px; the ellipsis after the second.
+    [
+      'aa b cc d eee ff gg hh',
+      {},
+      85,
+      [0, 5, 85, 0],
+      [
+        [1, 20],
+        [37, 47],
+        [66, 70],
+        [73, 77],
+        [80, 84],
+      ],
+    ],
+    // Three gaps of 11.67px; "cc" ends at 73.33px, where the ellipsis goes,
+    // short of the width.
+    [
+      'aa b cc d eee ff gg hh',
+      {},
+      95,
+      [0, 7, 93.33, 0],
+      [
+        [1, 20],
+        [32, 41],
+        [54, 72],
+        [75, 78],
+        [81, 85],
+        [88, 92],
+      ],
+    ],
+    // With letter spacing: "aa bb" is justified, and only "aa " is left.
+    [
+      'aa bb cc dd ee ff gg hh',
+      { letterSpacing: 2 },
+      85,
+      [0, 3, 81, 0],
+      [
+        [1, 10],
+        [13, 22],
+        [62, 66],
+        [69, 73],
+        [76, 80],
+      ],
+    ],
+    // RTL: the ellipsis on the left of what is kept, which stays where it was
+    // (Harmattan; Chrome with `dir=rtl`).
+    [
+      'بتث بت بتث بتث بتث بتث بتث',
+      { ...HARMATTAN, direction: 'rtl' },
+      110,
+      [0, 9, 102.69, 7.31],
+      [
+        [8, 29],
+        [43, 67],
+        [81, 110],
+      ],
+    ],
+    // The last cluster in a font without the ellipsis, Noto Sans Devanagari:
+    // SkParagraph shapes the ellipsis in Iosevka Slab, the first family with
+    // it. "bb" at 34.73px and the ellipsis at 69.46px; the cut never splits
+    // "की", whose vowel sign is a cluster of its own in SkParagraph.
+    [
+      'aa bb की cc dd ee ff',
+      { fontFamily: 'WB Iosevka, WB Devanagari' },
+      90,
+      [0, 6, 89.46, 0],
+      [
+        [1, 20],
+        [35, 54],
+        [71, 75],
+        [78, 81],
+        [84, 88],
+      ],
+    ],
+  ]
+  for (const [parts, extra, width, expected, ink] of cases) {
+    const paragraph = new Paragraph(parts, { ...style, ...extra })
+    const name = JSON.stringify({ parts, extra })
+    const layout = paragraph.layout(width)
+    t.deepEqual(lines(layout), [expected], name)
+    t.true(layout.didExceedMaxLines, name)
+    nearRuns(t, inkRuns(paragraph, layout, 0), ink, name)
+    // Laid out again after other widths, too.
+    paragraph.layout(40)
+    paragraph.layout(200)
+    t.deepEqual(lines(paragraph.layout(width)), [expected], name)
+  }
+  // A placeholder keeps its place too: at 35px, between widened spaces, as
+  // Chrome has the inline-block, and the ellipsis at 65px.
+  const boxed = new Paragraph(['aa ', box, ' cc dd ee'], style)
+  const layout = boxed.layout(85)
+  t.deepEqual(lines(layout), [[0, 5, 85, 0]])
+  t.is(round(layout.placeholders[0]!.x), 35)
+  nearRuns(
+    t,
+    inkRuns(boxed, layout, 0),
+    [
+      [1, 20],
+      [66, 70],
+      [73, 77],
+      [80, 84],
+    ],
+    'placeholder',
+  )
+  // A clamped line that ends at a hard break is no more justified than any
+  // line before one: "aa bb…", as Chrome has it under `white-space: pre-line`.
+  t.deepEqual(lines(new Paragraph('aa bb\ncc dd ee ff', style).layout(85)), [[0, 5, 70, 0]])
+  // Nor is a line with no gap to widen: "aaaaaaa…".
+  t.deepEqual(lines(new Paragraph('aaaaaaaaaaaa bb', style).layout(85)), [[0, 6, 80, 0]])
+})
+
+test('a clamped line is letter-spaced as in the paragraph', (t) => {
+  // A character of no script of its own, the "%" here, takes that of the
+  // text around it, Arabic, which neither Chrome nor SkParagraph letter-
+  // spaces. The clamped line used to end it before the Arabic after it, and
+  // space it: the box after it (on screen, before it) moved by the letter
+  // spacing. Chrome 154 puts the box at 11.17px at any letter spacing, the
+  // clamped line as the paragraph (#24).
+  const parts: ParagraphContent = ['بتث ', { width: 20, height: 20 }, '% بتث بتث بتث']
+  for (const letterSpacing of [0, -0.5, 3]) {
+    const style: ParagraphStyle = { ...HARMATTAN, letterSpacing }
+    const whole = new Paragraph(parts, style).layout(85)
+    const clamped = new Paragraph(parts, { ...style, maxLines: 1, ellipsis: '…' }).layout(85)
+    t.is(round(whole.placeholders[0]!.x), 11.17, `${letterSpacing}`)
+    t.is(round(clamped.placeholders[0]!.x), 11.17, `${letterSpacing}`)
+    t.deepEqual(
+      clamped.lines.map((line) => [line.startIndex, line.endIndex]),
+      [[0, 6]],
+    )
+  }
+  // As in #20: the clamped second line puts its boxes where the paragraph
+  // does, whatever the letter spacing.
+  const emoji = { width: 20, height: 20, lineBreak: 'emoji' } as const
+  const issue: ParagraphContent = [
+    'بتث -بالعالم ',
+    { width: 20, height: 20 },
+    '! 12 مرحبا )بتث شكرا بتث ',
+    emoji,
+    '% بالعالم ',
+    emoji,
+    ' 3.5',
+  ]
+  for (const letterSpacing of [-0.5, 3]) {
+    const style: ParagraphStyle = { ...HARMATTAN, fontFamily: 'WB Harmattan, WB Iosevka', letterSpacing }
+    const whole = new Paragraph(issue, style).layout(200)
+    const clamped = new Paragraph(issue, { ...style, maxLines: 2, ellipsis: '…' }).layout(200)
+    t.deepEqual(
+      clamped.placeholders.slice(0, 2).map((box) => box && [round(box.x), box.line]),
+      whole.placeholders.slice(0, 2).map((box) => box && [round(box.x), box.line]),
+      `${letterSpacing}`,
+    )
+  }
+})
+
+test('a justified clamped line that breaks at a soft hyphen is justified with its hyphen, then cut', (t) => {
+  // Chrome 154 (`hyphens: manual`, Liberation Sans, whose hyphen is "-")
+  // justifies the clamped line with the hyphen it ends with, then cuts it
+  // from the end, the hyphen first: "aa bb super­cali-" over 150px is
+  // "aa bb superc…", the words where justifying put them. Without the hyphen
+  // in the justified line, its gaps would be wider. Lines as [startIndex,
+  // endIndex, width, left], and the runs of columns the clamped line inks,
+  // as Chrome inks them, runs less than 6px apart (within a word, or the
+  // ellipsis and what it follows) merged.
+  const text = 'aa bb super\u00ADcali\u00ADfragilistic dd ee ff'
+  const arabic = 'بتث aa super\u00ADcali\u00ADfragilistic dd ee ff'
+  const style: ParagraphStyle = {
+    fontFamily: 'WB Liberation',
+    fontSize: 20,
+    lineHeight: 40,
+    textAlign: 'justify',
+    ellipsis: '…',
+  }
+  const cases: Array<[string, ParagraphStyle, number, Line[], Array<[number, number]>]> = [
+    [
+      text,
+      { maxLines: 1 },
+      150,
+      [[0, 13, 143.33, 0]],
+      [
+        [0, 22],
+        [33, 53],
+        [64, 141],
+      ],
+    ],
+    [
+      text,
+      { maxLines: 1 },
+      125,
+      [[0, 9, 120.56, 0]],
+      [
+        [0, 22],
+        [35, 56],
+        [69, 118],
+      ],
+    ],
+    // Two lines: the first ends at a soft hyphen, and is justified with the
+    // hyphen as any line before the clamped line is; the second is cut.
+    [
+      text,
+      { maxLines: 2 },
+      120,
+      [
+        [0, 12, 120, 0],
+        [12, 27, 117.8, 0],
+      ],
+      [[0, 115]],
+    ],
+    // With letter spacing, after an RTL word.
+    [
+      arabic,
+      { maxLines: 1, fontFamily: 'WB Liberation, WB Harmattan', letterSpacing: 1.5 },
+      150,
+      [[0, 10, 142.56, 0]],
+      [
+        [0, 29],
+        [45, 69],
+        [86, 140],
+      ],
+    ],
+    [
+      arabic,
+      { maxLines: 1, fontFamily: 'WB Liberation, WB Harmattan' },
+      150,
+      [[0, 14, 143.33, 0]],
+      [
+        [0, 29],
+        [36, 58],
+        [64, 141],
+      ],
+    ],
+  ]
+  for (const [parts, extra, width, expected, ink] of cases) {
+    const paragraph = new Paragraph(parts, { ...style, ...extra })
+    const name = JSON.stringify({ parts, extra, width })
+    const layout = paragraph.layout(width)
+    t.deepEqual(lines(layout), expected, name)
+    nearRuns(t, inkRuns(paragraph, layout, expected.length - 1, 300, 5), ink, name)
+  }
 })

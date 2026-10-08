@@ -245,15 +245,17 @@ top:
     where Chrome hides it, and the fork clips nothing.
   - The cluster kept is the first in the text, which in a line of mixed
     directions need not be the one Chrome keeps, the first on screen.
-  - SkParagraph takes grapheme clusters off the end of the line's text, in
-    logical order, until the ellipsis fits. Chrome truncates the line on
-    screen, at the ellipsis, so where an LTR line ends in an RTL word the
-    two keep different parts of that word: `'ab بتثبتث بتث'` clamped to one
-    line at 70px shows "ab بتثبت…" here, and more of the word in Chrome.
-  - Under `justify`, Chrome justifies the clamped line as it laid it out
-    before truncating it, the ellipsis taking the place of what it cut
-    ("dd ee …" spread over the width); the fork start-aligns it, as a line
-    ending in the ellipsis.
+  - An ellipsis cuts a run in the other direction than the paragraph's in
+    reading order, on purpose (#38): grapheme clusters come off the end of
+    the line's text, in logical order, until the ellipsis fits, so the run
+    keeps its logical start. Chrome 154 keeps such a run's logical end, the
+    part farthest from the ellipsis, in either direction:
+    `'ab بتثبتث بتث'` clamped to one line at 70px shows "ab بتثبت…" here,
+    and the end of that word in Chrome, and `'aa bbbb c dddd eeee f gg'` in
+    an RTL paragraph, justified at 85px, "…aa bb" here and "…bbbb" in
+    Chrome. For text entirely in an RTL script, the fork's result is what
+    Chrome shows once the base direction is RTL (effing#198). The same
+    holds for `noWrap` lines with an ellipsis.
   - A line of nothing but spaces keeps none of them: it is the ellipsis
     alone, at the line's start, where Chrome keeps the spaces before it.
     Wrapped text has such lines only with `keepTrailingWhitespace`, or from
@@ -261,6 +263,56 @@ top:
   - `text-overflow` clips the line, ellipsis included, to the box; the fork
     clips nothing, so a `noWrap` line's kept cluster and ellipsis show past
     the width, as a clamped line's do in Chrome.
+  - SkParagraph shapes the ellipsis in the font of the last cluster kept,
+    where that has "…" (Harmattan after an Arabic word), and only otherwise
+    in the first of `fontFamily` that has it; Chrome takes the first of
+    `fontFamily` that has it (Liberation Sans, say). In a clamped line of
+    mixed fonts the two ellipses can differ in width (at 20px, 12.63px in
+    Harmattan and 20px in Liberation Sans), the words staying where they
+    are.
+- Under `justify`, a clamped line that ends at a soft break is justified
+  as a line that isn't the paragraph's last, then cut, as Chrome does it
+  (`__test__/effing-paragraph-ellipsis.spec.ts`): grapheme clusters come off
+  its end until the ellipsis fits after the rest, which keep the places and
+  the glyphs justifying gave them, so `'aa bb cc dd'` at 85px in Iosevka
+  Slab is "aa bb …", "bb" at 32.5px and the ellipsis after the widened space
+  at 65px, and the line can end short of the width (`'aa b cc d eee'` at
+  95px is "aa b cc…", 93.33px wide). SkParagraph's own ellipsis cuts a
+  line before any justification, and a line that ends the text, as the
+  clamped line's own piece does, isn't justified at all: so the line is
+  laid out with a sentinel after it, justified as any line that isn't the
+  last (see justification), and SkParagraph's `TextLine::createEllipsis`
+  then cuts that line, made to stop where the clusters' justified advance
+  and the ellipsis's fit. As elsewhere, the clusters come off in logical
+  order, so which part of a run in the other
+  direction stays is as above; spaces of that other direction don't end
+  what is kept, as the ellipsis wouldn't follow them on screen, and what is
+  kept ends at a grapheme cluster's end. A line that breaks at a soft
+  hyphen is justified with its hyphen, which is then the first thing cut:
+  `'aa bb super\u00ADcali\u00ADfragilistic dd'` in Liberation Sans over
+  150px is "aa bb superc…", the words where justifying "aa bb supercali-"
+  put them, as in Chrome. The ellipsis is measured in the font SkParagraph
+  shapes it in: that of the last cluster kept, or else the first of
+  `fontFamily` that has it. A clamped line with no gap to widen, or
+  that ends at a hard break, is start-aligned with its ellipsis, as in
+  Chrome. Where this differs from Chrome: what is kept fits with the
+  ellipsis when SkParagraph's line breaker would take it to, up to 0.25px
+  over the width (rounded down to 0.01px), so at an exact fit the fork can
+  keep one more cluster than Chrome: in Iosevka Slab at 162px,
+  `['x brown ', box, ' brown x a gimme']` with a box 20px wide is
+  "x brown [box] bro…" here, 162px wide, and "x brown [box] br…" in Chrome.
+  And where what is kept ends in a CJK character, the ellipsis comes up to
+  about 2px left of Chrome's: the share of the line's spread after that
+  character moves the cluster after it, which the measure of what is kept
+  leaves out.
+- A clamped line is letter-spaced as the paragraph is. A character of no
+  script of its own, such as `%` or a space, takes that of the text around
+  it in its bidi run, and SkParagraph, like Chrome, letter-spaces no run of
+  a cursive script such as Arabic; laid out alone, the clamped line could
+  end such a run before the text that gave it its script, and space the
+  characters left at its end, moving what came after them on screen by
+  the letter spacing. Where it does, they get a style without letter
+  spacing, as in the paragraph.
 - The hard breaks are SkParagraph's: LF, VT, FF, CRLF, LS (U+2028) and PS
   (U+2029). A lone CR and NEL (U+0085) are not breaks. Chrome's
   `white-space: pre` breaks at LF and CRLF only and draws VT, FF, LS and PS
@@ -462,9 +514,10 @@ Where the fork still differs from Chrome, as before:
 Under `justify`, each line that ends at a soft break spreads over the width
 as Chrome spreads it under `text-align: justify` (and `text-justify: auto`,
 Blink's `JustificationContext` and `ShapeResultSpacing`;
-`__test__/effing-paragraph-justify.spec.ts`). The paragraph's last line, a
-line before a hard break and a clamped line ending in the ellipsis stay
-start-aligned.
+`__test__/effing-paragraph-justify.spec.ts`). The paragraph's last line and
+a line before a hard break stay start-aligned. A line `maxLines` clamps
+with an `ellipsis` is justified when it ends at a soft break, then cut
+(see `Paragraph` above).
 
 - A line expands at its justification opportunities, each by an equal share
   of the space it lacks: after each space, tab and no-break space (U+00A0),
@@ -1242,6 +1295,18 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   `' 12 '` and a 28px box in Harmattan at 20px, justified at 141px, the
   second line has the 13px box at x 85.08 and the 24px one at 22.28, as in
   Chrome, where they were at 22.28 and 74.08 (#47).
+- Under `textAlign: 'justify'`, a line `maxLines` clamps with an `ellipsis`
+  is justified, then cut, as Chrome does: what is left of it keeps its
+  justified place, with the ellipsis after it ("aa bb …" over 85px, where
+  it was "aa bb…" start-aligned). Its `width` is that of what is left and
+  the ellipsis, so it can end short of the layout width. Only a line that
+  ends at a soft break, and has a gap between words to widen, is.
+- A clamped line is letter-spaced as the paragraph is: punctuation or a
+  space that the paragraph lays out in a run of Arabic (or another cursive
+  script), with no letter spacing, no longer gets it when the clamped line
+  ends that run, which moved what came after it on screen by the letter
+  spacing (a box at 10.67px or 14.17px at a letter spacing of -0.5px or
+  3px, where the paragraph and Chrome have it at 11.17px).
 
 ### 1.0.10-effing.5
 
