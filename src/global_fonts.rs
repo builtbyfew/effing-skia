@@ -238,7 +238,9 @@ fn load_fonts_from_dir<P: AsRef<path::Path>>(dir: P, system: bool) -> napi::Resu
             .map(|s| s.to_ascii_lowercase());
 
           match ext.as_deref() {
-            Some("ttf") | Some("ttc") | Some("otf") | Some("pfb") | Some("woff2")
+            // effing: and OpenType collections (.otc), every face of which
+            // loads, as of a .ttc.
+            Some("ttf") | Some("ttc") | Some("otc") | Some("otf") | Some("pfb") | Some("woff2")
             | Some("woff") => {
               if let Some(p) = p.into_os_string().to_str() {
                 let font_collection = get_font().map_err(into_napi_error)?;
