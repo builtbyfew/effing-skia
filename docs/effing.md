@@ -26,7 +26,7 @@ upstream file has at most a few marked hook lines.
 | C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer,fonts}.{hpp,cpp}`   | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs` | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
 | Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`     | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
-| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                          | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`)                                                                                                                                                                                                                                    |
+| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                          | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`), `src/font.rs` (any `font-weight`)                                                                                                                                                                                                 |
 | Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                          | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
 | Build                  |                                                                                  | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
 | JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                          | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                                                                       |
@@ -807,9 +807,8 @@ as Chrome implements it, wherever a family is resolved: `ctx.font` for `fillText
 `strokeText` and `measureText`, a `Paragraph`, each family of a
 `font-family` list, SVG text, and the default style `setAlias` takes, for
 registered and system families alike (`__test__/effing-font-matching.spec.ts`),
-among the faces the fork loads: `loadSystemFonts()` loads only the first face
-of a font collection (`.ttc`), so a system family such as Helvetica Neue,
-Avenir Next or Didot has only that face to match among (#51).
+among the faces the fork loads, every face of a font collection included
+(see font collections).
 Of a family's faces it narrows down by one property after the other, each
 checked in CSS's order:
 
@@ -855,13 +854,66 @@ whose `matchStyle` is `effing::match_css` (`effing::with_css_matching`).
   which few fonts do. SkParagraph slants any face that isn't italic for
   italic, an oblique one too, and none for oblique, where Chrome slants an
   upright face for either and a slanted one for neither.
-- `ctx.font` and SVG's `font-weight` take weights in hundreds only, as
-  before; a `Paragraph` takes any weight.
+- `ctx.font` takes any weight from 1 to 1000, as CSS Fonts 4 and Chrome's
+  canvas do (`550 20px X`, `725`, `550.5`, `1e3`), and a weight outside
+  that range (`0`, `1001`), or a number CSS doesn't read (`550.`), makes
+  the value invalid: the assignment throws, as upstream's does for any value
+  it can't read, and the font stays as it was, where Chrome ignores it.
+  `550 20px X` used to be a 550px font of the family "20px X". A
+  `Paragraph` takes any weight too. SVG's `font-weight` still takes weights
+  in hundreds only: Skia's SVG module reads it, into an enum of the nine.
 - A variable font is one face, of its default instance's style; its axes
-  don't follow the requested weight or width.
+  don't follow the requested weight or width, and its named instances are
+  not faces of their own, where CoreText lists those of a system font.
 - Fallback for characters no family of the list has is unchanged.
 - Lottie text keeps Skia's matching: `skiac_skottie_animation_make` gives
   Skottie a font manager of its own, which isn't wrapped.
+
+### Font collections
+
+A font collection (`.ttc`, `.otc`, or a WOFF2 of one) is every face in it,
+wherever a font file is loaded: `loadSystemFonts()` and the user font
+directories `index.js` loads, `loadFontsFromDir` (which now takes `.otc`
+files too), `register` and `registerFromPath` (`effing::more_faces`). Each
+face joins its own family, as CoreText and Chrome have it, and the names a
+collection is registered under: `registerFromPath('Helvetica.ttc',
+'Heading')` makes all six faces of Helvetica faces of "Heading". A
+collection is one registered font, under one key: `remove` removes every
+face of it, and the `setAlias` mappings of each face's family, as it does
+those of a font's own family. The rebuild `remove` does registers every
+face of the other collections again as it was, a system face shadowable,
+reusing the faces after the first rather than opening the file again. A
+family registered under the name of a collection's family shadows every
+face of it there (see registered fonts over system fonts). A system
+collection registered again from its path, or a collection registered
+under the name of one of its faces' families, is a registered font of
+each of its families from then on, every face of it, as a single font is
+of its own family.
+
+Upstream registered the first face of a collection alone, so `Helvetica.ttc`
+was a family of one regular face, and every weight and style of Helvetica,
+Helvetica Neue, Avenir Next or Didot was that face, emboldened or slanted.
+With the system's collections loaded whole, the face `ctx.font` takes for
+each of 18 styles (100 to 900, normal and italic) of 48 families on macOS 26
+is the one Chrome 154's canvas draws in 698 of 864 cases, from 342 before;
+all of Didot (192.68px for "The quick brown fox" at 20px at 600 to 900,
+172.86px italic), Helvetica, Optima, Futura and Gill Sans among them. Most
+of the rest are faces whose OS/2 table says something other than CoreText,
+which Chrome on macOS goes by: the italic faces of Avenir Next Condensed,
+Avenir Next UltraLight Italic and Helvetica Neue's Thin Italic and Medium
+Italic aren't flagged italic, CoreText ranks Avenir's Heavy and Black the
+other way round from their OS/2 weights, and weighs Hiragino Sans's faces
+from W3 up differently from theirs. Families without Latin letters (Damascus, Kailasa,
+Arial Hebrew) draw them in another fallback font than Chrome, collection or
+not.
+
+Loading every face costs `loadSystemFonts()` about 10ms more on macOS 26
+(about 75ms instead of 65ms for 372 files, 128 of them collections, which
+give 792 faces instead of 375), and memory: the process's RSS after it is
+118MB instead of 72MB. Each `GlobalFonts.remove` still adds about 25MB, as
+before, since its rebuild opens only the first face of each font again and
+keeps the old provider alive. A file is told to be a collection by its
+first eight bytes, so other fonts are opened no further than before.
 
 ## Releasing
 
@@ -917,6 +969,22 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- A font collection (`.ttc`, `.otc`) loads every face in it, for
+  `loadSystemFonts()`, the user font directories, `loadFontsFromDir`,
+  `register` and `registerFromPath`, where only its first face loaded: on
+  macOS, Helvetica, Helvetica Neue, Avenir Next, Didot and the other system
+  families in collections now have their weights and italics, as in Chrome,
+  rather than one face emboldened or slanted (Didot bold, "The quick brown
+  fox" at 20px, is 192.68px wide, Chrome's, where it was 187.34). Each face
+  joins its own family and every name the file is registered under, and
+  `GlobalFonts.remove` of the file's key removes all of them.
+  `GlobalFonts.families` lists more styles (792 instead of 375 on macOS 26),
+  and `loadSystemFonts()` takes about 10ms and 46MB more there (RSS 118MB
+  instead of 72MB). `loadFontsFromDir` loads `.otc` files too.
+- `ctx.font` takes any `font-weight` from 1 to 1000 (`550 20px X`), as
+  Chrome does; it read `550 20px X` as a 550px font of the family "20px X".
+  A weight outside that range (`0`, `1001`) makes the value invalid, so the
+  assignment throws, as for any value `ctx.font` can't read.
 - A family's face for a style is the one CSS font matching picks: of the
   faces nearest in font-stretch, those nearest in font-style, and of those
   the one nearest in font-weight (see font matching). Bold italic in a
