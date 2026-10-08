@@ -1058,9 +1058,13 @@ would miss a mutator added later. These change it:
   every font they load, including the system fonts `index.js` loads at
   startup.
 
-Nothing else does: `families`, `has`, `getVariationAxes`, measuring, laying
-out and drawing text, a call that fails or finds nothing to change, and
-`loadSystemFonts()` after its first call. It is upstream's generation
+Reads don't change it: `families`, `has`, `getVariationAxes`, measuring,
+laying out and drawing text. Nor does a call that fails (returns `null`,
+`false` or 0), or `loadSystemFonts()` after its first call. A call that
+succeeds but turns out to change nothing may still bump it: registering the
+same buffer or path again, `loadFontsFromDir` of the same directory again
+(once per file), or repeating a `setAlias`. For a cache key that is harmless,
+a needless miss and never a stale hit. It is upstream's generation
 counter for the font collection, which the deferred recording keys the
 typefaces it charges for on, read atomically without the collection's lock: about 11ns a call on an
 Apple M-series Mac, where `GlobalFonts.families`, which lists every family,
@@ -1128,7 +1132,7 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 - `fontRevision()` in `@effing/skia/extensions` is a number that grows with
   every change to the fonts `GlobalFonts` holds (`register`,
   `registerFromPath`, `remove`, `removeBatch`, `removeAll`, `setAlias`,
-  `loadFontsFromDir`, `loadSystemFonts`), and with nothing else, cheap enough
+  `loadFontsFromDir`, `loadSystemFonts`), and not with reads, cheap enough
   to read per layout (see font revision). `@effing/canvas` can key its
   font-dependent caches on it rather than wrapping those methods.
   `index.d.ts` now declares `GlobalFonts.loadSystemFonts()`, which `index.js`
