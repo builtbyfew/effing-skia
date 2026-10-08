@@ -54,6 +54,12 @@ canvas is drawn at 1x or any other scale, which is what a video renderer
 producing several resolutions needs. Runs with glyphs that have no outline
 (color or bitmap emoji) fall back to masks with baseline snapping off.
 
+Under `geometricPrecision`, `fillText`, `strokeText` and `measureText` lay
+the text out at the font size floored to 1/100px, as Chrome's canvas does,
+to the nearest 1/64px, as a `Paragraph` does (see the font size under
+`Paragraph`): at 17.3px the text is as wide as at 17.29px. The other `textRendering` values keep
+upstream's exact size.
+
 Under `geometricPrecision`, `fillText`, `strokeText` and `measureText` also
 leave out the letter spacing Chrome doesn't add, after default-ignorable code
 points, as a `Paragraph` does (see letter spacing under `Paragraph`).
@@ -141,6 +147,39 @@ top:
   `fontFamily` there is, whatever the text, so an empty paragraph or one of
   placeholders only reports them too. A font without a hhea table falls back
   to `SkFontMetrics` (`fLeading` for the gap).
+- The text is laid out at the font size Chrome lays it out at: `fontSize`
+  floored to 1/100px, in float arithmetic, as Blink's
+  `FontDescription::EffectiveFontSize` computes it, so 17.3 (17.2999992 as
+  a float, which times 100 is 1729.99988) is 17.29, 17.305 is 17.30 and
+  13.333 is 13.33. A size that floors to 0 keeps its size. The metrics
+  above, the line boxes and the advances are those of that size: Noto Sans
+  Devanagari at 17.3px has an ascent of 15.49, which rounds to 15, so its
+  lines are 22px with the baseline at 15, as in Chrome, where the exact
+  size gave 15.50, 23px lines and a baseline at 16.
+  `__test__/effing-font-size.spec.ts` checks Chrome's line height and
+  baseline at the 188 sizes from 8 to 40px where the floor changes them in
+  five fonts. Where the fork still differs from Chrome:
+  - Chrome caches a face's font data under `unsigned(size × 100)`, which for
+    some floored sizes is the 1/100px below (17.30 × 100 is 1729.99988 in
+    float), so in a page that used 17.29 first it lays 17.30 out at 17.29,
+    and the other way round. The fork takes the floored size, as Chrome
+    does with a face it hasn't used at the size below.
+  - Skia's FreeType takes a size in 1/64px, truncated, and lays the glyphs
+    out at that size, where Chrome on macOS, effing's reference, takes them
+    from CoreText at the floored size exactly. So the fork gives Skia the
+    floored size to the nearest 1/64px (`effing::freetype_font_size`), whose
+    advances and outlines come closest to CoreText's; the metrics above, the
+    x-height and the line boxes are the floored size's. Noto Sans
+    Devanagari text Chrome measures 78.7732px wide at 17.3px (17.29) is
+    78.8042px here (17.296875). Over 16 fonts at 26 fractional sizes, the
+    widths are 0.041px off Chrome's on average and 0.14px at most, where
+    the exact size truncated to 1/64px was 0.053px and 0.27px off (0.063px
+    and 0.27px for the floored size truncated). Chrome on Linux, which
+    uses FreeType too, truncates as plain FreeType does, so the fork's
+    widths are a little further from its own.
+  - A metric within 0.0001px below a half pixel can round the other way:
+    Chrome rounds Noto Sans Devanagari's descent at 37.99px, 15.49992, up
+    to 16 (3 of the 622 sizes measured).
 - `textAlign` is applied per line relative to the layout width. A line wider
   than the box is start-aligned and overflows the end edge, as in CSS, for
   every alignment. `justify` is Skia's, for wrapped text only: the lines of
@@ -969,6 +1008,17 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- A `Paragraph`, and `fillText`, `strokeText` and `measureText` under
+  `geometricPrecision`, lay text out at the font size floored to 1/100px,
+  as Chrome does: 17.3 is 17.29. A paragraph's `ascent`, `descent`,
+  `lineGap`, `normal` line height and baselines are those of that size,
+  which changes them where the exact size rounded the other way: Noto Sans
+  Devanagari at 17.3px has 22px lines with the baseline at 15, as in
+  Chrome, where it had 23px lines with the baseline at 16. The glyphs are
+  laid out at that size to the nearest 1/64px, which Skia's FreeType takes
+  sizes in and used to truncate to, so widths at a fractional size change,
+  closer to Chrome's on macOS: 0.041px off on average in the cases
+  measured, where they were 0.053px off.
 - A font collection (`.ttc`, `.otc`) loads every face in it, for
   `loadSystemFonts()`, the user font directories, `loadFontsFromDir`,
   `register` and `registerFromPath`, where only its first face loaded: on
