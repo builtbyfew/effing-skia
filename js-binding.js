@@ -455,6 +455,7 @@ module.exports.loadSystemFontsFromDir = nativeBinding.loadSystemFontsFromDir
 module.exports.beginGroup = nativeBinding.beginGroup
 module.exports.endGroup = nativeBinding.endGroup
 module.exports.fillParagraph = nativeBinding.fillParagraph
+module.exports.fontRevision = nativeBinding.fontRevision
 module.exports.strokeParagraph = nativeBinding.strokeParagraph
 module.exports.PdfDocument = nativeBinding.PdfDocument
 module.exports.SVGCanvas = nativeBinding.SVGCanvas
