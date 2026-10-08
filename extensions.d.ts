@@ -188,3 +188,13 @@ export class Paragraph {
 export function fillParagraph(ctx: SKRSContext2D, paragraph: Paragraph, x: number, y: number): void
 /** Strokes a laid-out paragraph's glyph outlines on `ctx` with its current stroke style, the paragraph's top-left corner at (x, y). */
 export function strokeParagraph(ctx: SKRSContext2D, paragraph: Paragraph, x: number, y: number): void
+
+/**
+ * The revision of the global font collection: a number that grows with every
+ * call that changes the fonts `GlobalFonts` holds (`register`,
+ * `registerFromPath`, `remove`, `removeBatch`, `removeAll`, `setAlias`,
+ * `loadFontsFromDir`, `loadSystemFonts`), for keying caches of font-dependent
+ * results. Reads (`families`, `has`, measuring or drawing text) leave it as it
+ * is. A plain read itself, cheap enough to call per layout.
+ */
+export function fontRevision(): number

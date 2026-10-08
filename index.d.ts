@@ -876,6 +876,13 @@ interface IGlobalFonts {
   has(name: string): boolean
   loadFontsFromDir(path: string): number
   /**
+   * Load the fonts in the system's font directory. `index.js` calls it at
+   * startup; the directory loads once, and later calls return the number of
+   * fonts that first call loaded.
+   * @returns Number of fonts loaded
+   */
+  loadSystemFonts(): number
+  /**
    * Set an alias for a font family.
    * @param fontName The original font family name
    * @param alias The alias name to set

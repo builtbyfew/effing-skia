@@ -26,7 +26,7 @@ upstream file has at most a few marked hook lines.
 | C++ bridge to Skia     | `skia-c/effing/{text,paragraph,justify,word_break,group,filter_layer,fonts}.{hpp,cpp}` | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs`       | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
 | Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`           | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
-| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                                | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`), `src/font.rs` (any `font-weight`)                                                                                                                                                                                                 |
+| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `fontRevision`)                | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`), `src/font.rs` (any `font-weight`)                                                                                                                                                                                                 |
 | Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                                | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
 | Build                  |                                                                                        | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
 | JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                                | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                                                                       |
@@ -1084,6 +1084,50 @@ before, since its rebuild opens only the first face of each font again and
 keeps the old provider alive. A file is told to be a collection by its
 first eight bytes, so other fonts are opened no further than before.
 
+## Font revision
+
+```ts
+import { GlobalFonts } from '@effing/skia'
+import { fontRevision } from '@effing/skia/extensions'
+
+const revision = fontRevision() // a whole number
+GlobalFonts.registerFromPath('Inter.ttf')
+fontRevision() > revision // true
+```
+
+`fontRevision()` is the revision of the fonts `GlobalFonts` holds: a number
+that grows with every call that changes them, for keying caches of results
+that depend on what a family name resolves to (`__test__/effing-font-revision.spec.ts`).
+A cache keyed on it needs no wrapping of `GlobalFonts`'s methods, which
+would miss a mutator added later. These change it:
+
+- `register` and `registerFromPath` that return a key, a font collection
+  or a font already registered too (which can still change the names it is
+  registered under);
+- `setAlias` that returns `true`;
+- `remove`, `removeBatch` and `removeAll` that remove a font, and with them
+  the rebuild of the collection they do;
+- `loadFontsFromDir`, `loadSystemFonts()` and `loadSystemFontsFromDir`, at
+  every font they load, including the system fonts `index.js` loads at
+  startup.
+
+Reads don't change it: `families`, `has`, `getVariationAxes`, measuring,
+laying out and drawing text. Nor does a call that fails (returns `null`,
+`false` or 0), or `loadSystemFonts()` after its first call. A call that
+succeeds but turns out to change nothing may still bump it: registering the
+same buffer or path again, `loadFontsFromDir` of the same directory again
+(once per file), or repeating a `setAlias`. For a cache key that is harmless,
+a needless miss and never a stale hit. It is upstream's generation
+counter for the font collection, which the deferred recording keys the
+typefaces it charges for on, read atomically without the collection's lock: about 11ns a call on an
+Apple M-series Mac, where `GlobalFonts.families`, which lists every family,
+takes 0.3ms with the 381 families there. It starts at 0 in each process and
+only grows, by one or more at each change (by one at each font
+`loadSystemFonts()` loads, so it is in the hundreds after startup).
+
+It is a function in `@effing/skia/extensions` rather than a property of
+`GlobalFonts`, so that `GlobalFonts` and its type stay upstream's.
+
 ## Releasing
 
 Versions are upstream's version with an `-effing.N` suffix, so the lineage
@@ -1138,6 +1182,14 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- `fontRevision()` in `@effing/skia/extensions` is a number that grows with
+  every change to the fonts `GlobalFonts` holds (`register`,
+  `registerFromPath`, `remove`, `removeBatch`, `removeAll`, `setAlias`,
+  `loadFontsFromDir`, `loadSystemFonts`), and not with reads, cheap enough
+  to read per layout (see font revision). `@effing/canvas` can key its
+  font-dependent caches on it rather than wrapping those methods.
+  `index.d.ts` now declares `GlobalFonts.loadSystemFonts()`, which `index.js`
+  calls and which was missing from it.
 - Under `justify`, lines spread at Chrome's justification opportunities
   (see justification): a no-break space counts as a space does, CJK text
   spreads around its kana, bopomofo, CJK symbols and punctuation,
