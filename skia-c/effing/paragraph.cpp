@@ -1084,12 +1084,14 @@ bool justified(const effing_paragraph* p, PieceKind kind) {
 // TextLine::justify spreads a line at its spaces and ideographs, where Chrome
 // spreads one at its no-break spaces and kana too, and gives every gap
 // between words the same width, spaces and all, where Chrome adds the same
-// to each space. It would also never return from justifying a line it
-// emptied for its ellipsis when the line has runs past its first: it walks
-// each run's clusters in the line, and for those runs that range ends before
-// it starts, so the walk wraps around the address space. Line breaking and
-// the ellipsis don't depend on the alignment, and a line emptied that way
-// is left unjustified; the caller lays it out anew.
+// to each space. A layout whose last line SkParagraph emptied for its
+// ellipsis is left unjustified: the caller lays that line out anew, as a
+// piece of its own, after the lines before it, which stay justified.
+//
+// Under `justify`, Skia's ParagraphStyle is left at TextAlign::kLeft
+// afterwards, so code after this must read the alignment from
+// effing_paragraph (justified(), p->align), never from Skia's
+// ParagraphStyle::getTextAlign().
 //
 // Justifying changes the lines in place: it moves each cluster by a shift it
 // keeps in the cluster's run, and widens the line to the width. SkParagraph
@@ -1109,6 +1111,7 @@ bool layout_paragraph(Paragraph* paragraph, float width, bool justify) {
       impl->setState(InternalState::kShaped);
     }
     impl->resetShifts();
+    // Left at kLeft after this: don't read Skia's alignment (above).
     impl->updateTextAlign(TextAlign::kLeft);
   }
   paragraph->layout(width);
@@ -2706,10 +2709,10 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
     } else if (p->align == TextAlign::kCenter) {
       left = slack / 2;
     } else if (p->align == TextAlign::kJustify) {
-      // Skia spread the lines it could justify over the whole width, so
-      // they have no slack; the others start-align. Skia's own left edge is
-      // not used: it includes half the letter spacing, which the painter
-      // cancels for every other alignment.
+      // justify_lines spread the lines it could justify over the whole
+      // width, so they have no slack; the others start-align. Skia's own
+      // left edge is not used: it includes half the letter spacing, which
+      // the painter cancels for every other alignment.
       left = p->rtl ? slack : 0;
     }
     // Kept whitespace ends the line, which in RTL is its left end.

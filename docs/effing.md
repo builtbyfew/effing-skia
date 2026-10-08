@@ -188,15 +188,11 @@ top:
   text, with any spaces before it), with the `ellipsis` after it, both overflowing the line when
   not even they fit, as Chrome's `-webkit-line-clamp` and `text-overflow`
   do (`__test__/effing-paragraph-ellipsis.spec.ts`). SkParagraph would
-  instead empty the line and drop the ellipsis, and, under `justify`, never
-  return from laying out such a line when it has more than one run (a
-  placeholder, a fallback font or another direction), or crash:
-  `TextLine::createEllipsis` never tries keeping no cluster at all, and
-  `TextLine::justify` then walks the runs of the emptied line over a cluster
-  range that ends before it starts. So the fork lays out an ellipsized
-  paragraph start-aligned first, justifies it only when no line was emptied,
-  and lays an emptied line out anew, as a piece of its own, after the lines
-  before it, which stay justified. Where this differs from Chrome:
+  instead empty the line and drop the ellipsis: `TextLine::createEllipsis`
+  never tries keeping no cluster at all. So the fork lays an emptied line
+  out anew, as a piece of its own, after the lines before it, which stay
+  justified, and justifies a layout only when no line was emptied. Where
+  this differs from Chrome:
   - Chrome aligns a clamped line by its own text, before it puts the
     ellipsis after that text and truncates the two to fit the width, so
     under `right` and `center` the ellipsis can end up past the end edge.
