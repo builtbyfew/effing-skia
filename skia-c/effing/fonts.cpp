@@ -2,12 +2,15 @@
 
 #include "../skia_c.hpp"
 
+#include <cstring>
 #include <memory>
 #include <tuple>
 
 #include "include/core/SkData.h"
 #include "include/core/SkFontArguments.h"
+#include "include/core/SkFontScanner.h"
 #include "include/core/SkStream.h"
+#include "include/ports/SkFontScanner_FreeType.h"
 #include "modules/skparagraph/include/TypefaceFontProvider.h"
 
 extern "C" {
@@ -31,6 +34,40 @@ uint32_t effing_font_collection_register_system_font(
 }  // extern "C"
 
 namespace effing {
+
+std::vector<sk_sp<SkTypeface>> more_faces(SkFontMgr& font_mgr,
+                                          const std::string& path,
+                                          const sk_sp<SkData>& data) {
+  std::unique_ptr<SkStreamAsset> stream =
+      path.empty() ? (data ? SkMemoryStream::Make(data) : nullptr)
+                   : SkStream::MakeFromFile(path.c_str());
+  uint8_t tag[8];
+  if (!stream || stream->read(tag, sizeof(tag)) != sizeof(tag)) {
+    return {};
+  }
+  // An OpenType collection starts with 'ttcf'; a WOFF2 file of one has it
+  // as its flavor, after 'wOF2'.
+  const bool collection =
+      memcmp(tag, "ttcf", 4) == 0 ||
+      (memcmp(tag, "wOF2", 4) == 0 && memcmp(tag + 4, "ttcf", 4) == 0);
+  int count = 0;
+  // FreeType's scanner locks its library around each scan.
+  static const SkFontScanner* scanner = SkFontScanner_Make_FreeType().release();
+  if (!collection || !stream->rewind() ||
+      !scanner->scanFile(stream.get(), &count)) {
+    return {};
+  }
+  std::vector<sk_sp<SkTypeface>> faces;
+  for (int i = 1; i < count; i++) {
+    sk_sp<SkTypeface> face = path.empty()
+                                 ? font_mgr.makeFromData(data, i)
+                                 : font_mgr.makeFromFile(path.c_str(), i);
+    if (face != nullptr) {
+      faces.push_back(std::move(face));
+    }
+  }
+  return faces;
+}
 
 bool has_face(const sk_sp<SkFontStyleSet>& faces, const SkTypeface& typeface) {
   if (faces == nullptr) {

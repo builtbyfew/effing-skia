@@ -10,9 +10,10 @@ fn main() {
   println!("cargo:rerun-if-changed=skia-c/skia_c.cpp");
   println!("cargo:rerun-if-changed=skia-c/skia_c.hpp");
   // Effing's additions to the bridge (docs/effing.md); each .cpp has a .hpp.
-  const EFFING_SOURCES: [&str; 6] = [
+  const EFFING_SOURCES: [&str; 7] = [
     "skia-c/effing/text.cpp",
     "skia-c/effing/paragraph.cpp",
+    "skia-c/effing/justify.cpp",
     "skia-c/effing/word_break.cpp",
     "skia-c/effing/group.cpp",
     "skia-c/effing/filter_layer.cpp",
