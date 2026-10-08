@@ -21,16 +21,16 @@ Fork code is kept out of upstream files so that upstream merges stay trivial.
 Each layer has an `effing` directory with one file per feature, and each
 upstream file has at most a few marked hook lines.
 
-| Layer                  | Fork code                                                                        | Upstream hooks                                                                                                                                                                                                                                                                                            |
-| ---------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,word_break,group,filter_layer,fonts}.{hpp,cpp}`   | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
-| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs` | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`     | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
-| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                          | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`), `src/font.rs` (any `font-weight`)                                                                                                                                                                                                 |
-| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                          | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
-| Build                  |                                                                                  | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
-| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                          | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                                                                       |
-| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                                                               |
+| Layer                  | Fork code                                                                              | Upstream hooks                                                                                                                                                                                                                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,justify,word_break,group,filter_layer,fonts}.{hpp,cpp}` | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
+| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs`       | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`           | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
+| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`)                                | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`), `src/font.rs` (any `font-weight`)                                                                                                                                                                                                 |
+| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                                | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
+| Build                  |                                                                                        | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                                | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                                                                       |
+| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                      | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                                                               |
 
 C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
 napi bindings are functions that take the context as their first argument
@@ -182,7 +182,7 @@ top:
     to 16 (3 of the 622 sizes measured).
 - `textAlign` is applied per line relative to the layout width. A line wider
   than the box is start-aligned and overflows the end edge, as in CSS, for
-  every alignment. `justify` is Skia's, for wrapped text only: the lines of
+  every alignment. `justify` is for wrapped text only: the lines of
   `noWrap` text all end at a hard break or the text, which CSS never
   justifies. A justified paragraph laid out again, at any width, gets the
   lines a fresh one gets and paints as one does
@@ -227,15 +227,11 @@ top:
   text, with any spaces before it), with the `ellipsis` after it, both overflowing the line when
   not even they fit, as Chrome's `-webkit-line-clamp` and `text-overflow`
   do (`__test__/effing-paragraph-ellipsis.spec.ts`). SkParagraph would
-  instead empty the line and drop the ellipsis, and, under `justify`, never
-  return from laying out such a line when it has more than one run (a
-  placeholder, a fallback font or another direction), or crash:
-  `TextLine::createEllipsis` never tries keeping no cluster at all, and
-  `TextLine::justify` then walks the runs of the emptied line over a cluster
-  range that ends before it starts. So the fork lays out an ellipsized
-  paragraph start-aligned first, justifies it only when no line was emptied,
-  and lays an emptied line out anew, as a piece of its own, after the lines
-  before it, which stay justified. Where this differs from Chrome:
+  instead empty the line and drop the ellipsis: `TextLine::createEllipsis`
+  never tries keeping no cluster at all. So the fork lays an emptied line
+  out anew, as a piece of its own, after the lines before it, which stay
+  justified, and justifies a layout only when no line was emptied. Where
+  this differs from Chrome:
   - Chrome aligns a clamped line by its own text, before it puts the
     ellipsis after that text and truncates the two to fit the width, so
     under `right` and `center` the ellipsis can end up past the end edge.
@@ -331,6 +327,8 @@ top:
   that space, as in Chrome (below).
 - A line that breaks at a soft hyphen (U+00AD) ends with a hyphen, as CSS
   `hyphens: manual`, the default, has it (below).
+- Under `justify`, a line spreads at Chrome's justification opportunities
+  (below).
 
 #### Kerning at a line's start
 
@@ -458,6 +456,72 @@ Where the fork still differs from Chrome, as before:
   (`ParagraphCache::isPossiblyTextEditing`), so two long captions that
   share their start or end, laid out in turn each frame, are shaped anew
   every time.
+
+#### Justification
+
+Under `justify`, each line that ends at a soft break spreads over the width
+as Chrome spreads it under `text-align: justify` (and `text-justify: auto`,
+Blink's `JustificationContext` and `ShapeResultSpacing`;
+`__test__/effing-paragraph-justify.spec.ts`). The paragraph's last line, a
+line before a hard break and a clamped line ending in the ellipsis stay
+start-aligned.
+
+- A line expands at its justification opportunities, each by an equal share
+  of the space it lacks: after each space, tab and no-break space (U+00A0),
+  and after each CJK character, and before one too unless the character
+  before it has an opportunity after it. The CJK characters are Blink's
+  (`IsCjkIdeographOrSymbol`): ideographs, radicals and strokes, kana,
+  bopomofo, the CJK Symbols and Punctuation block (the ideographic space
+  and `、。「」` included), the halfwidth and fullwidth forms, enclosed and
+  compatibility CJK, a list of symbols CJK text uses, and emoji (the
+  Emoji_Presentation characters, and the pictographs of emoji ZWJ and
+  modifier sequences, such as ♀ and ❤). Hangul isn't, so Korean spreads at
+  its spaces alone, as Arabic does.
+- The line's last character, before the spaces that hang, has no
+  opportunity after it: a no-break space or an ideograph that ends a line
+  gets nothing, and a line whose only opportunity is that one is
+  start-aligned, as is any line with none. A no-break space that starts a
+  line (which doesn't collapse) gets its share.
+- No other character is an opportunity: not the other space separators (the
+  en, em and thin spaces, U+202F, U+2007, ...), whose width stays as it is,
+  nor a default-ignorable character such as a ZWSP, which leaves the
+  opportunity before it where it is: a ZWSP between two ideographs makes no
+  second gap.
+- An en space, or another space separator but the ideographic space, that
+  ends a line counts in the line's width, as in Chrome, where SkParagraph
+  lets it hang as it lets spaces hang; the ideographic space hangs in both.
+- Letter spacing goes first; justification spreads what is left.
+
+SkParagraph's own justification (`TextLine::justify`) spreads a line at its
+spaces and Unicode ideographs alone, so a line whose words are joined by
+no-break spaces stayed start-aligned (`'aaa\u00A0bb\u00A0c\u00A0dddd eeeeeee'`
+at 200px in Liberation Sans 20px had "dddd" at 82.31 where Chrome has it at
+155.5), and kana, CJK punctuation and fullwidth forms took no share (a
+placeholder after "ひらがなと" at 175px in Source Han Serif Bold 20px was at
+100, Chrome's 103.13). It also gave every gap between words the same width,
+the spaces in it included, where Chrome adds the same to each space, and
+spread a line at its en spaces. So SkParagraph only breaks the lines: the
+fork lays them out start-aligned and justifies them itself, writing the
+state SkParagraph's justification leaves (the shifts of each cluster, which
+SkParagraph paints and measures with, and the line's width).
+
+Where the fork still differs from Chrome:
+
+- Chrome trims the spacing of fullwidth punctuation next to other
+  punctuation (`text-spacing-trim: normal`: a closing bracket before a
+  comma is half its width), which the fork doesn't, so CJK lines with such
+  pairs break and spread differently. With `text-spacing-trim: space-all`
+  they agree.
+- An ideograph right before a placeholder moves right by its share, where
+  Chrome puts the share after it, since SkParagraph places a placeholder by
+  the advances before it, which a cluster's shift doesn't change. The
+  placeholder is where Chrome has it.
+- Chrome counts a line's opportunities in the order of its text, backwards
+  in an RTL paragraph; the fork walks the line on screen. The two agree on
+  a line of one direction; on a line of both, which side of a CJK character
+  next to a run of the other direction has the opportunity can differ.
+- An en space that doesn't fit at the end of a line goes to the next line in
+  Chrome, with the word before it; SkParagraph lets it hang.
 
 `layout(width)` must be called before painting, which throws otherwise. It
 returns the paragraph's
@@ -1008,6 +1072,17 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- Under `justify`, lines spread at Chrome's justification opportunities
+  (see justification): a no-break space counts as a space does, CJK text
+  spreads around its kana, bopomofo, CJK symbols and punctuation,
+  fullwidth forms and emoji too, not only around its ideographs (Hangul
+  spreads at spaces alone, as in Chrome), each space gets
+  the same share, where SkParagraph gave every gap between words the same
+  width, and en spaces and other space separators get none. In Liberation
+  Sans 20px, `'aaa\u00A0bb\u00A0c\u00A0dddd eeeeeee'` at 200px now has "dddd"
+  at 155.5, as in Chrome, where its first line was start-aligned with
+  "dddd" at 82.31. Justified text with such characters lays out
+  differently.
 - A `Paragraph`, and `fillText`, `strokeText` and `measureText` under
   `geometricPrecision`, lay text out at the font size floored to 1/100px,
   as Chrome does: 17.3 is 17.29. A paragraph's `ascent`, `descent`,
