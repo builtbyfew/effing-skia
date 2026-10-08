@@ -1180,7 +1180,7 @@ the CI matrix.
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
-### Unreleased
+### 1.0.10-effing.6
 
 - `fontRevision()` in `@effing/skia/extensions` is a number that grows with
   every change to the fonts `GlobalFonts` holds (`register`,

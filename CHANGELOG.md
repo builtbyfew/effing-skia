@@ -1,3 +1,39 @@
+## [1.0.10-effing.6](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.5...v1.0.10-effing.6) (2026-10-08)
+
+
+### Bug Fixes
+
+* **filter:** read drop-shadow() and filter lists as Chrome does ([#40](https://github.com/builtbyfew/effing-skia/issues/40)) ([d9b2864](https://github.com/builtbyfew/effing-skia/commit/d9b2864f4be991c95d9b14998165aca9b5d021d4)), closes [#39](https://github.com/builtbyfew/effing-skia/issues/39)
+* **font:** accept any font-weight and load every face of a font collection ([#54](https://github.com/builtbyfew/effing-skia/issues/54)) ([da78835](https://github.com/builtbyfew/effing-skia/commit/da7883530cbdbbca944a309eec75992a0b8a3cf3)), closes [#51](https://github.com/builtbyfew/effing-skia/issues/51)
+* **font:** let registered fonts take precedence over system fonts of the same family ([#30](https://github.com/builtbyfew/effing-skia/issues/30)) ([d6849db](https://github.com/builtbyfew/effing-skia/commit/d6849db10b326bbd7d67cea2ea473945eb52268f)), closes [#29](https://github.com/builtbyfew/effing-skia/issues/29)
+* **font:** match font-style before font-weight, as CSS does ([#49](https://github.com/builtbyfew/effing-skia/issues/49)) ([bd4dc18](https://github.com/builtbyfew/effing-skia/commit/bd4dc18347187db797ba50718b9011ee12e857c1)), closes [#37](https://github.com/builtbyfew/effing-skia/issues/37)
+* **paragraph:** don't kern a line's first glyph against the wrapped space ([#43](https://github.com/builtbyfew/effing-skia/issues/43)) ([4d07e25](https://github.com/builtbyfew/effing-skia/commit/4d07e258a05aa1132a10ec09d78576b482853f77)), closes [#32](https://github.com/builtbyfew/effing-skia/issues/32)
+* **paragraph:** draw a hyphen at a soft-hyphen break ([#42](https://github.com/builtbyfew/effing-skia/issues/42)) ([a91fbff](https://github.com/builtbyfew/effing-skia/commit/a91fbff0a5596f4f8094cd5bfc865b212c494e11)), closes [#31](https://github.com/builtbyfew/effing-skia/issues/31)
+* **paragraph:** justify at NBSP and between CJK characters as Chrome does ([#57](https://github.com/builtbyfew/effing-skia/issues/57)) ([cd7b0b2](https://github.com/builtbyfew/effing-skia/commit/cd7b0b246c2c83ee4a558491c73d31eb18c6e559)), closes [#48](https://github.com/builtbyfew/effing-skia/issues/48)
+* **paragraph:** justify clamped lines and letter-space them as the paragraph ([#44](https://github.com/builtbyfew/effing-skia/issues/44)) ([aff5a76](https://github.com/builtbyfew/effing-skia/commit/aff5a76319ac6f489a1a7548f1903f1c2699eb57)), closes [#20](https://github.com/builtbyfew/effing-skia/issues/20) [#24](https://github.com/builtbyfew/effing-skia/issues/24) [#33](https://github.com/builtbyfew/effing-skia/issues/33)
+* **paragraph:** lay text out at the font size floored to 1/100px, as Chrome does ([#52](https://github.com/builtbyfew/effing-skia/issues/52)) ([116c6b0](https://github.com/builtbyfew/effing-skia/commit/116c6b0d44c41967ec133e6b257b85b9ea5a570a)), closes [#46](https://github.com/builtbyfew/effing-skia/issues/46)
+* **paragraph:** order placeholders between right-to-left words as Chrome does ([#53](https://github.com/builtbyfew/effing-skia/issues/53)) ([8f051eb](https://github.com/builtbyfew/effing-skia/commit/8f051eb8e67e0635e6c44f88b21136b523eb94f3)), closes [#47](https://github.com/builtbyfew/effing-skia/issues/47)
+* **paragraph:** round ascent and descent before splitting a set line height ([#41](https://github.com/builtbyfew/effing-skia/issues/41)) ([f2409b1](https://github.com/builtbyfew/effing-skia/commit/f2409b108fff2e4cf08d47aa9535ddcdd2bc5aa9)), closes [#34](https://github.com/builtbyfew/effing-skia/issues/34)
+
+
+### Features
+
+* **font:** expose a revision counter for the font collection ([#61](https://github.com/builtbyfew/effing-skia/issues/61)) ([8c42cc9](https://github.com/builtbyfew/effing-skia/commit/8c42cc99a7756a7104a4bbf2970c88a2d57256bf)), closes [#26](https://github.com/builtbyfew/effing-skia/issues/26)
+
+
+### Performance Improvements
+
+* **ctx:** bound the filter layer to the drawn area ([#28](https://github.com/builtbyfew/effing-skia/issues/28)) ([83cebf9](https://github.com/builtbyfew/effing-skia/commit/83cebf999d98df7b861e5f9acb14ea4523738593)), closes [#27](https://github.com/builtbyfew/effing-skia/issues/27)
+
+
+### BREAKING CHANGES
+
+* **font:** a family registered with `GlobalFonts` (`register`, `registerFromPath`, `loadFontsFromDir`, `setAlias`) now replaces the system's family of the same name whole, in every style, as `@font-face` does in a browser. Styles you don't register are synthesized from the ones you do (bold from a regular, italic by slanting), not taken from the installed font, so register every style you use; `GlobalFonts.families` lists only the registered styles of such a family. A font registered under an alias only counts as registered under the alias: under its own family name it joins an installed family without replacing it. ([#30](https://github.com/builtbyfew/effing-skia/issues/30))
+* **filter:** `drop-shadow()` in `ctx.filter` (and group filters) blurs with the given length as the standard deviation, as CSS defines it, so drop shadows are twice as blurry as before; halve the blur length for the old look. `shadowBlur` is unchanged. Negative or non-finite filter amounts and lengths, an unreadable `drop-shadow()`, and unitless `hue-rotate(90)` now make the whole filter invalid (the previous value is kept) instead of being clamped or drawn in black. ([#40](https://github.com/builtbyfew/effing-skia/issues/40))
+* **paragraph:** with a set line height, baselines are placed by Chrome's half-leading rule (rounded ascent and descent; up to about 1px different), `ParagraphLayout.lineHeight`/`height` report the line height rounded to 1/64px, and an omitted `lineHeight` (`normal`) is now `round(ascent) + round(descent) + round(lineGap)`, i.e. it includes the font's line gap. ([#41](https://github.com/builtbyfew/effing-skia/issues/41))
+* **font:** `ctx.font` accepts any weight from 1 to 1000; a weight outside that range (e.g. `"0 20px Arial"`), which used to be read as a font size, now makes the value invalid and the setter throws. ([#54](https://github.com/builtbyfew/effing-skia/issues/54))
+
+
 ## [1.0.10-effing.5](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.4...v1.0.10-effing.5) (2026-10-06)
 
 
