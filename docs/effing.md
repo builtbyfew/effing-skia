@@ -27,6 +27,7 @@ upstream file has at most a few marked hook lines.
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs`       | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
 | Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`           | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
 | Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `fontRevision`)                | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`), `src/font.rs` (any `font-weight`)                                                                                                                                                                                                 |
+| Encode pool (napi)     | `src/encode_pool.rs` (the pool, `getEncodeThreads`)                                    | `src/lib.rs` (`mod encode_pool`; `encode`, `toDataURLAsync`, `toBlob` and `convertToBlob` spawn on it; `AsyncBlob::encode`, `BlobBytes`, `blob_slice`)                                                                                                                                                    |
 | Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                                | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
 | Build                  |                                                                                        | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
 | JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                                | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                                                                       |
@@ -1128,6 +1129,45 @@ only grows, by one or more at each change (by one at each font
 It is a function in `@effing/skia/extensions` rather than a property of
 `GlobalFonts`, so that `GlobalFonts` and its type stay upstream's.
 
+## Encode pool
+
+```ts
+import { getEncodeThreads } from '@effing/skia/extensions'
+
+getEncodeThreads() // one per core, e.g. 18
+```
+
+Upstream runs async encodes (`encode()`, `toDataURLAsync()`, `toBlob()` and
+`convertToBlob()`) as napi `AsyncTask`s, on libuv's threadpool. That pool is
+shared by every JS thread in the process, and by `fs`, `dns.lookup`, `zlib`
+and `crypto`. It has 4 threads unless `UV_THREADPOOL_SIZE` says otherwise,
+and only before the process first uses the pool, which in practice means in
+the environment Node starts with. So at most 4 frames encode at once on any
+machine, however many JS threads draw them, and other I/O waits behind the
+encodes.
+
+The fork runs them on a pool of its own instead (`src/encode_pool.rs`), as
+skia-canvas does with rayon: one native thread per core, or as many as the
+`EFFING_SKIA_THREADS` environment variable says when the first async encode
+starts the pool. Each promise settles through a napi thread-safe deferred on
+the JS thread that called the method, worker threads included; a worker
+terminated with encodes in flight drops their results. A panic in an encoder
+rejects the promise instead of taking a thread down. Everything else is
+unchanged: the canvas is still flushed and snapshotted when the method is
+called, the bytes are the sync encoders' (`__test__/effing-encode-pool.spec.ts`),
+and the sync methods still encode on the calling thread.
+
+48 concurrent 1080×1920 PNG encodes on an 18-core Apple M-series Mac, with
+Node's defaults:
+
+|                             | 48 encodes | an `fs.stat` meanwhile |
+| --------------------------- | ---------- | ---------------------- |
+| libuv threadpool (upstream) | ~575 ms    | ~565 ms                |
+| encode pool                 | ~195 ms    | 6–10 ms                |
+
+`getEncodeThreads()` returns the pool's size, starting the pool if no encode
+has yet.
+
 ## Releasing
 
 Versions are upstream's version with an `-effing.N` suffix, so the lineage
@@ -1179,6 +1219,16 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### Unreleased
+
+- Async encodes (`encode()`, `toDataURLAsync()`, `toBlob()`,
+  `convertToBlob()`) run on the addon's own threads, one per core or
+  `EFFING_SKIA_THREADS`, rather than libuv's threadpool (see encode pool).
+  As many frames encode at once as there are cores, without
+  `UV_THREADPOOL_SIZE`, and `fs`, `dns.lookup`, `zlib` and `crypto` no
+  longer wait behind them. Results are unchanged. `getEncodeThreads()` in
+  `@effing/skia/extensions` returns the pool's size.
 
 ### 1.0.10-effing.6
 
