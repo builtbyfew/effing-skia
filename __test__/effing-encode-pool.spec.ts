@@ -56,9 +56,28 @@ test('many concurrent encodes all resolve, each with its own bytes', async (t) =
   encoded.forEach((buffer, i) => t.true(buffer.equals(canvases[i].encodeSync('png')), `canvas ${i}`))
 })
 
-test('an encode rejects instead of resolving when it fails', async (t) => {
-  // @ts-expect-error -- not a format
-  await t.throwsAsync(async () => drawn().encode('bogus'))
+// WebP can't encode an image over 16383px wide, so these fail on the pool
+// (an unknown format fails before the encode is queued, and throws).
+const tooWideForWebp = () => createCanvas(16400, 10)
+
+test('a failed encode rejects with the encoder error', async (t) => {
+  const error = await t.throwsAsync(tooWideForWebp().encode('webp'))
+  t.is(error?.message, 'Get webp data from surface failed')
+  t.is((error as Error & { code?: string })?.code, 'GenericFailure')
+  await t.throwsAsync(tooWideForWebp().toDataURLAsync('image/webp'), {
+    message: 'encode image/webp output failed',
+  })
+  await t.throwsAsync(tooWideForWebp().convertToBlob({ mime: 'image/webp' }), {
+    message: 'encode image/webp output failed',
+  })
+})
+
+test('toBlob calls back with the bytes, or with null when the encode fails', async (t) => {
+  const canvas = drawn()
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+  t.true(Buffer.from(await blob!.arrayBuffer()).equals(canvas.encodeSync('png')))
+  const failed = await new Promise<Blob | null>((resolve) => tooWideForWebp().toBlob(resolve, 'image/webp'))
+  t.is(failed, null)
 })
 
 test('the pool has a thread per core unless EFFING_SKIA_THREADS sets it', (t) => {

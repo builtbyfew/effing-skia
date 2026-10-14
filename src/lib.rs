@@ -10,9 +10,7 @@ extern crate serde_derive;
 
 use std::{
   ffi::{CString, c_void},
-  mem,
-  rc::Rc,
-  slice,
+  mem, slice,
   str::FromStr,
 };
 
@@ -361,7 +359,8 @@ impl<'c> CanvasElement<'c> {
   pub fn to_blob(
     &mut self,
     env: &Env,
-    callback: Function<Either<Uint8ArraySlice, Null>, Unknown>,
+    // Called with a Uint8Array (see `BlobBytes`) or null.
+    callback: Function<Either<BlobBytes, Null>, Unknown<'static>>,
     mime: Option<String>,
     quality: Option<f64>,
   ) -> Result<()> {
@@ -390,8 +389,7 @@ impl<'c> CanvasElement<'c> {
     };
     let width = self.ctx.context.width;
     let height = self.ctx.context.height;
-    let callback_ref = Rc::new(callback.create_ref()?);
-    let callback_ref_in_catch = callback_ref.clone();
+    let callback_ref = callback.create_ref()?;
     let async_blob_task = AsyncBlob {
       image,
       mime,
@@ -400,24 +398,22 @@ impl<'c> CanvasElement<'c> {
       height,
     };
 
-    let promise = encode_pool::spawn(
+    // A failed encode calls back with null, as browsers do, so the encode
+    // always resolves and the callback is called from the resolver, on the
+    // JS thread. (Upstream chained `.then` and `.catch` on the task's
+    // promise instead, which crashed the process when the encode failed.)
+    encode_pool::spawn(
       env,
-      move || async_blob_task.encode(),
-      |_, output| Ok(BlobBytes(output)),
+      move || Ok(async_blob_task.encode().ok()),
+      move |env, output| {
+        let callback = callback_ref.borrow_back(&env)?;
+        match output {
+          Some(output) => callback.call(Either::A(BlobBytes(output)))?,
+          None => callback.call(Either::B(Null))?,
+        };
+        Ok(())
+      },
     )?;
-    let promise =
-      unsafe { PromiseRaw::<Uint8ArraySlice>::from_napi_value(env.raw(), promise.raw())? };
-    promise
-      .then(move |ctx| {
-        let callback = callback_ref.borrow_back(&ctx.env)?;
-        callback.call(Either::A(ctx.value))?;
-        Ok(())
-      })?
-      .catch(|ctx: CallbackContext<Unknown>| {
-        let callback = callback_ref_in_catch.borrow_back(&ctx.env)?;
-        callback.call(Either::B(Null))?;
-        Ok(())
-      })?;
 
     Ok(())
   }
@@ -733,7 +729,7 @@ impl AsyncBlob {
 
 /// Encoded blob bytes, turned into a `Uint8Array` over the native buffer once
 /// they're back on the JS thread.
-struct BlobBytes(ContextOutputData);
+pub struct BlobBytes(ContextOutputData);
 
 impl ToNapiValue for BlobBytes {
   unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {

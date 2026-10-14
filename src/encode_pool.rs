@@ -2,8 +2,8 @@
 //!
 //! `AsyncTask` runs on libuv's threadpool, which every JS thread in the
 //! process shares with fs, dns.lookup, zlib and crypto, and which has 4
-//! threads unless `UV_THREADPOOL_SIZE` (read once, at process start) says
-//! otherwise. Encoding is CPU-heavy, so on that pool it both caps how many
+//! threads unless `UV_THREADPOOL_SIZE` (read once, when libuv first uses the
+//! pool) says otherwise. Encoding is CPU-heavy, so on that pool it both caps how many
 //! frames encode at once and makes unrelated I/O queue behind it. This pool
 //! has one thread per core by default (`EFFING_SKIA_THREADS` overrides it),
 //! and settles each promise on the JS thread that asked for the encode, which
@@ -19,6 +19,12 @@ use napi::bindgen_prelude::*;
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
 const THREADS_ENV: &str = "EFFING_SKIA_THREADS";
+
+// libuv's threadpool threads, which these encodes ran on before, get 8 MiB of
+// stack; Rust's default is 2 MiB. Encoders (libaom's partition search in
+// particular) recurse, so keep what they've always had. It's address space
+// reserved, not memory used, until a thread touches it.
+const STACK_SIZE: usize = 8 << 20;
 
 struct Pool {
   sender: Mutex<Sender<Job>>,
@@ -44,16 +50,19 @@ fn pool() -> &'static Pool {
       let receiver = receiver.clone();
       thread::Builder::new()
         .name(format!("skia-encode-{i}"))
+        .stack_size(STACK_SIZE)
         .spawn(move || {
           loop {
             // Hold the lock only while taking a job, not while running it.
+            // Neither error can happen: the sender lives in a static, and a
+            // job's panic is caught inside it, not while the lock is held.
             let job = match receiver.lock() {
               Ok(r) => r.recv(),
               Err(_) => return,
             };
             match job {
               Ok(job) => job(),
-              Err(_) => return, // sender dropped: the process is exiting
+              Err(_) => return,
             }
           }
         })
@@ -106,6 +115,9 @@ where
       ));
     }
   });
+  // Unreachable errors, like the pool threads' (they never exit, so the
+  // channel never closes); reported rather than unwrapped, but a job that
+  // can't be queued leaves its promise pending.
   pool()
     .sender
     .lock()
