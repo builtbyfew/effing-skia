@@ -67,7 +67,16 @@ if ('Blob' in globalThis) {
       this,
       function (/** @type {Uint8Array | null} */ imageBuffer) {
         // null when the encode failed, as in browsers (effing: see docs/effing.md)
-        callback(imageBuffer === null ? null : new Blob([imageBuffer.buffer], { type: mimeType }))
+        const blob = imageBuffer === null ? null : new Blob([imageBuffer.buffer], { type: mimeType })
+        try {
+          callback(blob)
+        } catch (error) {
+          // Report a throwing callback as an uncaught exception, as browsers
+          // do, not as the rejection of a promise nobody holds.
+          process.nextTick(() => {
+            throw error
+          })
+        }
       },
       mimeType,
       quality,

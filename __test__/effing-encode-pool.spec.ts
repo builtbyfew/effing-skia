@@ -80,6 +80,16 @@ test('toBlob calls back with the bytes, or with null when the encode fails', asy
   t.is(failed, null)
 })
 
+test('a toBlob callback that throws is an uncaught exception, not an unhandled rejection', (t) => {
+  const script = `
+    process.on('uncaughtException', (e) => console.log('uncaughtException:', e.message))
+    process.on('unhandledRejection', (e) => console.log('unhandledRejection:', e.message))
+    const { createCanvas } = require('@effing/skia')
+    createCanvas(10, 10).toBlob(() => { throw new Error('callback threw') }, 'image/png')
+  `
+  t.is(node(script), 'uncaughtException: callback threw')
+})
+
 test('the pool has a thread per core unless EFFING_SKIA_THREADS sets it', (t) => {
   t.true(getEncodeThreads() >= 1)
   const script = `console.log(require('@effing/skia/extensions').getEncodeThreads())`

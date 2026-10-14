@@ -1165,7 +1165,8 @@ and the sync methods still encode on the calling thread.
 Upstream chained `.then` and `.catch` on the task's promise and crashed the
 process (a segmentation fault) instead; it now calls back from the pool's
 resolver, and `index.js` passes `null` on rather than wrapping it in a
-`Blob`.
+`Blob`. A callback that throws is reported as an uncaught exception, as in
+browsers (upstream crashed there too).
 
 48 concurrent 1080×1920 PNG encodes on an 18-core Apple M-series Mac, with
 Node's defaults:
