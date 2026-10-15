@@ -1231,7 +1231,7 @@ the CI matrix.
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
-### Unreleased
+### 1.0.10-effing.7
 
 - Async encodes (`encode()`, `toDataURLAsync()`, `toBlob()`,
   `convertToBlob()`) run on the addon's own threads, one per core or

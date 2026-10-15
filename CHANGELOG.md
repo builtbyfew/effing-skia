@@ -1,3 +1,16 @@
+## [1.0.10-effing.7](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.6...v1.0.10-effing.7) (2026-10-15)
+
+
+### Features
+
+* **encode:** run async encodes on the addon's own thread pool ([#62](https://github.com/builtbyfew/effing-skia/issues/62)) ([d185af2](https://github.com/builtbyfew/effing-skia/commit/d185af2f6d9a493c93a1f7d55ae01b2b8a3fb7af)). `encode()`, `toDataURLAsync()`, `toBlob()` and `convertToBlob()` run on native threads, one per core or `EFFING_SKIA_THREADS`, instead of libuv's threadpool, so as many frames encode at once as there are cores and `fs`, `dns.lookup`, `zlib` and `crypto` no longer wait behind them. `getEncodeThreads()` in `@effing/skia/extensions` returns the pool's size.
+
+
+### Bug Fixes
+
+* **encode:** `toBlob()` calls back with `null` when the encode fails, and reports a callback that throws as an uncaught exception, as browsers do; both crashed the process (a segmentation fault) before ([#62](https://github.com/builtbyfew/effing-skia/issues/62))
+
+
 ## [1.0.10-effing.6](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.5...v1.0.10-effing.6) (2026-10-08)
 
 

@@ -1,6 +1,6 @@
 {
   "name": "@effing/skia-darwin-arm64",
-  "version": "1.0.10-effing.6",
+  "version": "1.0.10-effing.7",
   "cpu": [
     "arm64"
   ],
