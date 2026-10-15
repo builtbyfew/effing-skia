@@ -10,14 +10,12 @@ extern crate serde_derive;
 
 use std::{
   ffi::{CString, c_void},
-  mem,
-  rc::Rc,
-  slice,
+  mem, slice,
   str::FromStr,
 };
 
 use napi::{
-  Property, ScopedTask,
+  Property,
   bindgen_prelude::*,
   tokio::sync::mpsc::{channel, error::TrySendError},
   tokio_stream::wrappers::ReceiverStream,
@@ -37,6 +35,7 @@ static ALLOC: mimalloc_safe::MiMalloc = mimalloc_safe::MiMalloc;
 
 mod avif;
 mod ctx;
+mod encode_pool;
 mod error;
 mod filter;
 mod font;
@@ -215,17 +214,25 @@ impl<'c> CanvasElement<'c> {
     this.get_named_property("ctx")
   }
 
-  #[napi]
-  pub fn encode(
+  #[napi(ts_return_type = "Promise<Buffer>")]
+  pub fn encode<'env>(
     &mut self,
+    env: &'env Env,
     format: String,
     quality_or_config: Either3<u32, AvifConfig, Unknown>,
-  ) -> Result<AsyncTask<ContextData>> {
+  ) -> Result<Object<'env>> {
     // Flush deferred rendering before encoding
     self.ctx.context.flush();
-    Ok(AsyncTask::new(
-      self.encode_inner(format, quality_or_config)?,
-    ))
+    let data = self.encode_inner(format, quality_or_config)?;
+    encode_pool::spawn(
+      env,
+      move || encode_surface(&data),
+      |env, output| {
+        output
+          .into_buffer_slice(env)
+          .and_then(|slice| slice.into_buffer(&env))
+      },
+    )
   }
 
   #[napi]
@@ -324,17 +331,17 @@ impl<'c> CanvasElement<'c> {
     Ok(unsafe { slice::from_raw_parts(ptr, size) }.to_vec().into())
   }
 
-  #[napi(js_name = "toDataURLAsync")]
-  pub fn to_data_url_async(
+  #[napi(js_name = "toDataURLAsync", ts_return_type = "Promise<string>")]
+  pub fn to_data_url_async<'env>(
     &mut self,
+    env: &'env Env,
     mime: Option<String>,
     quality_or_config: Either3<f64, AvifConfig, Unknown>,
-  ) -> Result<AsyncTask<AsyncDataUrl>> {
+  ) -> Result<Object<'env>> {
     // Flush deferred rendering before encoding
     self.ctx.context.flush();
-    Ok(AsyncTask::new(
-      self.to_data_url_inner(mime.as_deref(), quality_or_config)?,
-    ))
+    let mut task = self.to_data_url_inner(mime.as_deref(), quality_or_config)?;
+    encode_pool::spawn(env, move || Task::compute(&mut task), |_, url| Ok(url))
   }
 
   #[napi(js_name = "toDataURL")]
@@ -352,7 +359,8 @@ impl<'c> CanvasElement<'c> {
   pub fn to_blob(
     &mut self,
     env: &Env,
-    callback: Function<Either<Uint8ArraySlice, Null>, Unknown>,
+    // Called with a Uint8Array (see `BlobBytes`) or null.
+    callback: Function<Either<BlobBytes, Null>, Unknown<'static>>,
     mime: Option<String>,
     quality: Option<f64>,
   ) -> Result<()> {
@@ -381,8 +389,7 @@ impl<'c> CanvasElement<'c> {
     };
     let width = self.ctx.context.width;
     let height = self.ctx.context.height;
-    let callback_ref = Rc::new(callback.create_ref()?);
-    let callback_ref_in_catch = callback_ref.clone();
+    let callback_ref = callback.create_ref()?;
     let async_blob_task = AsyncBlob {
       image,
       mime,
@@ -391,28 +398,32 @@ impl<'c> CanvasElement<'c> {
       height,
     };
 
-    env
-      .spawn(async_blob_task)?
-      .promise_object()
-      .then(move |ctx| {
-        let callback = callback_ref.borrow_back(&ctx.env)?;
-        callback.call(Either::A(ctx.value))?;
+    // A failed encode calls back with null, as browsers do, so the encode
+    // always resolves and the callback is called from the resolver, on the
+    // JS thread. (Upstream chained `.then` and `.catch` on the task's
+    // promise instead, which crashed the process when the encode failed.)
+    encode_pool::spawn(
+      env,
+      move || Ok(async_blob_task.encode().ok()),
+      move |env, output| {
+        let callback = callback_ref.borrow_back(&env)?;
+        match output {
+          Some(output) => callback.call(Either::A(BlobBytes(output)))?,
+          None => callback.call(Either::B(Null))?,
+        };
         Ok(())
-      })?
-      .catch(|ctx: CallbackContext<Unknown>| {
-        let callback = callback_ref_in_catch.borrow_back(&ctx.env)?;
-        callback.call(Either::B(Null))?;
-        Ok(())
-      })?;
+      },
+    )?;
 
     Ok(())
   }
 
-  #[napi]
-  pub fn convert_to_blob(
+  #[napi(ts_return_type = "Promise<Uint8Array>")]
+  pub fn convert_to_blob<'env>(
     &mut self,
+    env: &'env Env,
     options: Option<ConvertToBlobOptions>,
-  ) -> Result<AsyncTask<AsyncBlob>> {
+  ) -> Result<Object<'env>> {
     // Flush deferred rendering before encoding
     self.ctx.context.flush();
     let image = self
@@ -437,13 +448,18 @@ impl<'c> CanvasElement<'c> {
     } else {
       Either::A((quality * 100.0) as u32)
     };
-    Ok(AsyncTask::new(AsyncBlob {
+    let blob = AsyncBlob {
       image,
       mime,
       quality_or_config,
       width: self.ctx.context.width,
       height: self.ctx.context.height,
-    }))
+    };
+    encode_pool::spawn(
+      env,
+      move || blob.encode(),
+      |_, output| Ok(BlobBytes(output)),
+    )
   }
 
   #[napi]
@@ -699,12 +715,8 @@ pub struct AsyncBlob {
   height: u32,
 }
 
-#[napi]
-impl<'env> ScopedTask<'env> for AsyncBlob {
-  type Output = ContextOutputData;
-  type JsValue = Uint8ArraySlice<'env>;
-
-  fn compute(&mut self) -> Result<Self::Output> {
+impl AsyncBlob {
+  fn encode(&self) -> Result<ContextOutputData> {
     get_data_ref(
       &self.image,
       &self.mime,
@@ -713,34 +725,46 @@ impl<'env> ScopedTask<'env> for AsyncBlob {
       self.height,
     )
   }
+}
 
-  fn resolve(&mut self, env: &'env Env, output: Self::Output) -> Result<Self::JsValue> {
-    match output {
-      ContextOutputData::Skia(data_ref) => unsafe {
-        Uint8ArraySlice::from_external(env, data_ref.0.ptr, data_ref.0.size, data_ref, |_, d| {
-          mem::drop(d)
-        })
-      },
-      ContextOutputData::Avif(data_ref) => unsafe {
-        let data_slice = data_ref.as_slice();
-        Uint8ArraySlice::from_external(
-          env,
-          data_slice.as_ptr().cast_mut(),
-          data_slice.len(),
-          data_ref,
-          |_, d| mem::drop(d),
-        )
-      },
-      ContextOutputData::Gif(data_ref) => unsafe {
-        Uint8ArraySlice::from_external(
-          env,
-          data_ref.as_ptr().cast_mut(),
-          data_ref.len(),
-          data_ref,
-          |_, d| mem::drop(d),
-        )
-      },
-    }
+/// Encoded blob bytes, turned into a `Uint8Array` over the native buffer once
+/// they're back on the JS thread.
+pub struct BlobBytes(ContextOutputData);
+
+impl ToNapiValue for BlobBytes {
+  unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+    let env = Env::from_raw(raw_env);
+    let slice = blob_slice(&env, val.0)?;
+    unsafe { Uint8ArraySlice::to_napi_value(raw_env, slice) }
+  }
+}
+
+fn blob_slice(env: &Env, output: ContextOutputData) -> Result<Uint8ArraySlice<'_>> {
+  match output {
+    ContextOutputData::Skia(data_ref) => unsafe {
+      Uint8ArraySlice::from_external(env, data_ref.0.ptr, data_ref.0.size, data_ref, |_, d| {
+        mem::drop(d)
+      })
+    },
+    ContextOutputData::Avif(data_ref) => unsafe {
+      let data_slice = data_ref.as_slice();
+      Uint8ArraySlice::from_external(
+        env,
+        data_slice.as_ptr().cast_mut(),
+        data_slice.len(),
+        data_ref,
+        |_, d| mem::drop(d),
+      )
+    },
+    ContextOutputData::Gif(data_ref) => unsafe {
+      Uint8ArraySlice::from_external(
+        env,
+        data_ref.as_ptr().cast_mut(),
+        data_ref.len(),
+        data_ref,
+        |_, d| mem::drop(d),
+      )
+    },
   }
 }
 

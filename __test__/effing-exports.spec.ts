@@ -17,7 +17,7 @@ function node(...args: string[]) {
   }).trim()
 }
 
-const EXTENSIONS = 'Paragraph beginGroup endGroup fillParagraph fontRevision strokeParagraph'
+const EXTENSIONS = 'Paragraph beginGroup endGroup fillParagraph fontRevision getEncodeThreads strokeParagraph'
 
 test('the extensions entry resolves from ESM with named imports', (t) => {
   const names = EXTENSIONS.split(' ')

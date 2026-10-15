@@ -198,3 +198,13 @@ export function strokeParagraph(ctx: SKRSContext2D, paragraph: Paragraph, x: num
  * is. A plain read itself, cheap enough to call per layout.
  */
 export function fontRevision(): number
+
+/**
+ * The number of native threads that run async encodes (`encode()`,
+ * `toDataURLAsync()`, `toBlob()` and `convertToBlob()`): one per core, unless
+ * the `EFFING_SKIA_THREADS` environment variable sets another number before
+ * the first async encode. These threads are the addon's own, shared by every
+ * thread in the process; libuv's threadpool and `UV_THREADPOOL_SIZE` play no
+ * part. Calling it starts the threads if no encode has yet.
+ */
+export function getEncodeThreads(): number

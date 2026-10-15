@@ -65,9 +65,18 @@ if ('Blob' in globalThis) {
   CanvasElement.prototype.toBlob = function toBlob(callback, mimeType, quality) {
     _toBlob.call(
       this,
-      function (/** @type {Uint8Array} */ imageBuffer) {
-        const blob = new Blob([imageBuffer.buffer], { type: mimeType })
-        callback(blob)
+      function (/** @type {Uint8Array | null} */ imageBuffer) {
+        // null when the encode failed, as in browsers (effing: see docs/effing.md)
+        const blob = imageBuffer === null ? null : new Blob([imageBuffer.buffer], { type: mimeType })
+        try {
+          callback(blob)
+        } catch (error) {
+          // Report a throwing callback as an uncaught exception, as browsers
+          // do, not as the rejection of a promise nobody holds.
+          process.nextTick(() => {
+            throw error
+          })
+        }
       },
       mimeType,
       quality,
