@@ -88,6 +88,7 @@ const MIME_FORMAT_MAP = {
   'image/webp': 'webp',
   'image/avif': 'avif',
   'image/gif': 'gif',
+  'image/qoi': 'qoi', // effing
 }
 
 /**

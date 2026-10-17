@@ -8,7 +8,9 @@ Some behaviours are changed: text rendering under
 `textRendering = 'geometricPrecision'`, only behind that opt-in; registered
 fonts taking precedence over system fonts of the same family (see registered
 fonts over system fonts); and CSS filters, `drop-shadow()`'s blur among them,
-read and drawn as in Chrome (see filtered draws).
+read and drawn as in Chrome (see filtered draws). One format is added:
+`encode('qoi')`, and `image/qoi` wherever a mime type is taken (see QOI
+encoding).
 
 ```ts
 import { createCanvas } from '@effing/skia' // upstream's API, unchanged
@@ -21,17 +23,18 @@ Fork code is kept out of upstream files so that upstream merges stay trivial.
 Each layer has an `effing` directory with one file per feature, and each
 upstream file has at most a few marked hook lines.
 
-| Layer                  | Fork code                                                                              | Upstream hooks                                                                                                                                                                                                                                                                                            |
-| ---------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,justify,word_break,group,filter_layer,fonts}.{hpp,cpp}` | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
-| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts}.rs`       | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`           | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
-| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `fontRevision`)                | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`), `src/font.rs` (any `font-weight`)                                                                                                                                                                                                 |
-| Encode pool (napi)     | `src/encode_pool.rs` (the pool, `getEncodeThreads`)                                    | `src/lib.rs` (`mod encode_pool`; `encode`, `toDataURLAsync`, `toBlob` and `convertToBlob` spawn on it; `AsyncBlob::encode`, `BlobBytes`, `blob_slice`), `index.js` (`toBlob` passes `null` on)                                                                                                            |
-| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                                | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
-| Build                  |                                                                                        | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
-| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                                | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                                                                       |
-| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                      | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                                                               |
+| Layer                  | Fork code                                                                                     | Upstream hooks                                                                                                                                                                                                                                                                                            |
+| ---------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,justify,word_break,group,filter_layer,fonts,pixels}.{hpp,cpp}` | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
+| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts,pixels}.rs`       | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`                  | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
+| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `fontRevision`)                       | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`), `src/font.rs` (any `font-weight`)                                                                                                                                                                                                 |
+| Encode pool (napi)     | `src/encode_pool.rs` (the pool, `getEncodeThreads`)                                           | `src/lib.rs` (`mod encode_pool`; `encode`, `toDataURLAsync`, `toBlob` and `convertToBlob` spawn on it; `AsyncBlob::encode`, `BlobBytes`, `blob_slice`), `index.js` (`toBlob` passes `null` on)                                                                                                            |
+| QOI encoding           | `src/qoi.rs` (the encoder)                                                                    | `src/lib.rs` (`mod qoi`, `qoi` in `encode`, `image/qoi` in `get_data_ref`, `ContextOutputData::Qoi` arms), `src/ctx.rs` (`ContextData::Qoi`, `ContextOutputData::Qoi`), `index.d.ts` (the `qoi` overloads), `node-canvas.{js,d.ts}` (`image/qoi` in `toBuffer`)                                           |
+| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                                       | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
+| Build                  |                                                                                               | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                                       | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                                                                       |
+| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                             | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                                                               |
 
 C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
 napi bindings are functions that take the context as their first argument
@@ -1179,6 +1182,74 @@ Node's defaults:
 `getEncodeThreads()` returns the pool's size, starting the pool if no encode
 has yet.
 
+## QOI encoding
+
+```ts
+const frame = await canvas.encode('qoi') // or encodeSync('qoi'), toBuffer('image/qoi'), ...
+```
+
+`encode('qoi')` encodes the canvas as [QOI](https://qoiformat.org), a
+lossless format that encodes in one pass over the pixels with no entropy
+coding. Every method that takes a mime type takes `image/qoi` too
+(`toBuffer`, `toDataURL`, `toDataURLAsync`, `toBlob`, `convertToBlob`, and
+the node-canvas layer's `toBuffer`), all with the same bytes;
+`encodeStream` doesn't. A QOI frame holds exactly the pixels
+`encode('png')` does, unpremultiplied RGBA as `getImageData()` reads them,
+in a four-channel sRGB image (the header's `channels` 4 and `colorspace`
+0), even for a canvas without alpha. The encoder is the fork's own
+(`src/qoi.rs`), from the spec, and writes the same bytes as the reference
+`qoi.h`.
+
+It is for frames another process decodes right away, such as ffmpeg (which
+reads a pipe of QOI frames with `-f qoi_pipe -i -`), where PNG's deflate
+costs more time than its smaller output saves. Browsers don't decode it.
+
+The encoder reads the snapshot's premultiplied pixels in place
+(`effing_image_peek_premul_rgba`, `skia-c/effing/pixels.cpp`) and
+unpremultiplies them a row at a time into a buffer that stays in cache,
+with the conversion `getImageData()` uses (`src/unpremul.rs`), rather than
+reading the whole image into an unpremultiplied copy first. Measured on
+its own, with the two paths interleaved in one process on the VM below
+(not in the run the table comes from), that took a 1080p photo from 17.9
+to 14.2 ms on one thread and from 195 to 254 frames/s on the pool. An
+image the peek doesn't cover, one not stored as premultiplied RGBA 8888,
+or a CPU without the SIMD conversion, falls back to Skia's `readPixels`,
+with the same bytes (unit tests in `src/qoi.rs` compare the two). The
+output is reserved at the raw pixels' size at once rather than grown row
+by row, which copies it into fresh memory at each step; a frame that
+encodes to under a quarter of that gives the rest back, since the Buffer
+holds its whole allocation until it is collected.
+
+1920×1080 frames on a 4-core Linux x64 VM, from `benchmark/encode.ts`
+(`node --import @oxc-node/core/register benchmark/encode.ts`), two runs:
+`encodeSync` is the median of 30 encodes on the calling thread, the pool
+column 48 frames encoded at once with `encode()`.
+
+| Frame                       | Format  | `encodeSync` | Pool (frames/s) | Size     |
+| --------------------------- | ------- | ------------ | --------------- | -------- |
+| Graphics (gradient, text)   | PNG     | 182–208 ms   | 20              | 387 KiB  |
+|                             | JPEG 92 | 25–26 ms     | 138–146         | 105 KiB  |
+|                             | QOI     | 6–9 ms       | 477–564         | 739 KiB  |
+| Illustration (`tiger.json`) | PNG     | 90–98 ms     | 36–41           | 492 KiB  |
+|                             | JPEG 92 | 30–34 ms     | 96–118          | 301 KiB  |
+|                             | QOI     | 6–7 ms       | 502–586         | 386 KiB  |
+| Photo (tiled, at 1:1)       | PNG     | 158–174 ms   | 20–22           | 1151 KiB |
+|                             | JPEG 92 | 51–52 ms     | 58–67           | 868 KiB  |
+|                             | QOI     | 16 ms        | 141–164         | 4410 KiB |
+| Noise (incompressible)      | PNG     | 242–268 ms   | 16              | 4290 KiB |
+|                             | JPEG 92 | 81–82 ms     | 48–50           | 1777 KiB |
+|                             | QOI     | 14–27 ms     | 130–151         | 8097 KiB |
+
+Comparing within each run, QOI encodes 9 to 29 times faster than PNG on
+one thread and 6 to 28 times on the pool, losslessly, and 2.7 to 5.7 times
+faster than JPEG at quality 92 on one thread. Its output is larger than
+PNG's: twice the size for flat graphics, under it for the illustration,
+and about four times it for a photo, half the raw pixels. That suits a
+pipe to a local process; it doesn't suit storage or the network. (The
+script also measures JPEG at quality 75.) Timings on a VM vary between
+sessions with its page faults, which weigh on QOI more than on the others
+because it writes more bytes; compare within a run.
+
 ## Releasing
 
 Versions are upstream's version with an `-effing.N` suffix, so the lineage
@@ -1230,6 +1301,14 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### Unreleased
+
+- `encode('qoi')` and `encodeSync('qoi')` encode a canvas as QOI, lossless
+  with the same pixels as PNG, and `toBuffer`, `toDataURL`,
+  `toDataURLAsync`, `toBlob`, `convertToBlob` and the node-canvas layer's
+  `toBuffer` take `image/qoi` (see QOI encoding). 9 to 29 times faster than PNG on 1080p frames on one thread,
+  with larger output.
 
 ### 1.0.10-effing.7
 

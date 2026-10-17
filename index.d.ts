@@ -814,16 +814,19 @@ export class Canvas {
   encodeSync(format: 'png'): Buffer
   encodeSync(format: 'avif', cfg?: AvifConfig): Buffer
   encodeSync(format: 'gif', quality?: number): Buffer
+  encodeSync(format: 'qoi'): Buffer // effing: lossless, see docs/effing.md
   encode(format: 'webp' | 'jpeg', quality?: number): Promise<Buffer>
   encode(format: 'png'): Promise<Buffer>
   encode(format: 'avif', cfg?: AvifConfig): Promise<Buffer>
   encode(format: 'gif', quality?: number): Promise<Buffer>
+  encode(format: 'qoi'): Promise<Buffer> // effing
   encodeStream(format: 'webp' | 'jpeg', quality?: number): ReadableStream<Buffer>
   encodeStream(format: 'png'): ReadableStream<Buffer>
   toBuffer(mime: 'image/png'): Buffer
   toBuffer(mime: 'image/jpeg' | 'image/webp', quality?: number): Buffer
   toBuffer(mime: 'image/avif', cfg?: AvifConfig): Buffer
   toBuffer(mime: 'image/gif', quality?: number): Buffer
+  toBuffer(mime: 'image/qoi'): Buffer // effing
   // raw pixels
   data(): Buffer
   toDataURL(mime?: 'image/png'): string
@@ -831,12 +834,14 @@ export class Canvas {
   toDataURL(mime: 'image/gif', quality?: number): string
   toDataURL(mime?: 'image/jpeg' | 'image/webp' | 'image/png' | 'image/gif', quality?: number): string
   toDataURL(mime?: 'image/avif', cfg?: AvifConfig): string
+  toDataURL(mime: 'image/qoi'): string // effing
 
   toDataURLAsync(mime?: 'image/png'): Promise<string>
   toDataURLAsync(mime: 'image/jpeg' | 'image/webp', quality?: number): Promise<string>
   toDataURLAsync(mime: 'image/gif', quality?: number): Promise<string>
   toDataURLAsync(mime?: 'image/jpeg' | 'image/webp' | 'image/png' | 'image/gif', quality?: number): Promise<string>
   toDataURLAsync(mime?: 'image/avif', cfg?: AvifConfig): Promise<string>
+  toDataURLAsync(mime: 'image/qoi'): Promise<string> // effing
 
   toBlob(callback: (blob: Blob | null) => void, mime?: string, quality?: number): void
   convertToBlob(options?: ConvertToBlobOptions): Promise<Blob>

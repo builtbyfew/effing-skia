@@ -48,6 +48,7 @@ mod page_recorder;
 pub mod path;
 mod pattern;
 pub mod picture_recorder;
+mod qoi;
 #[allow(dead_code)]
 mod sk;
 mod state;
@@ -59,6 +60,7 @@ const MIME_PNG: &str = "image/png";
 const MIME_JPEG: &str = "image/jpeg";
 const MIME_AVIF: &str = "image/avif";
 const MIME_GIF: &str = "image/gif";
+const MIME_QOI: &str = "image/qoi"; // effing
 
 // Consistent with the default value of JPEG quality in Blink
 // https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/platform/image-encoders/image_encoder.cc;l=85;drc=81c6f843fdfd8ef660d733289a7a32abe68e247a
@@ -300,7 +302,8 @@ impl<'c> CanvasElement<'c> {
           |_, data| mem::drop(data),
         )
       },
-      ContextOutputData::Gif(output) => unsafe {
+      ContextOutputData::Gif(output) | ContextOutputData::Qoi(output) => unsafe {
+        // effing: QOI output is plain bytes, as GIF's is
         BufferSlice::from_external(
           &env,
           output.as_ptr().cast_mut(),
@@ -544,6 +547,7 @@ impl<'c> CanvasElement<'c> {
       "webp" => ContextData::Webp(image, quality),
       "jpeg" => ContextData::Jpeg(image, quality),
       "png" => ContextData::Png(image),
+      "qoi" => ContextData::Qoi(image), // effing
       "avif" => {
         let cfg = AvifConfig::from(&quality_or_config);
         ContextData::Avif(image, cfg.into(), ctx2d.width, ctx2d.height)
@@ -631,6 +635,7 @@ fn get_data_ref(
         .map_err(|e| Error::new(Status::GenericFailure, format!("{e}")))?;
       return Ok(ContextOutputData::Avif(output));
     }
+    MIME_QOI => return qoi::encode_image(image).map(ContextOutputData::Qoi), // effing
     MIME_GIF => {
       let config = gif::GifConfig {
         quality: match quality_or_config {
@@ -695,7 +700,8 @@ impl Task for AsyncDataUrl {
       ContextOutputData::Avif(data_ref) => {
         base64_simd::STANDARD.encode_append(data_ref.as_ref(), &mut output);
       }
-      ContextOutputData::Gif(data_ref) => {
+      ContextOutputData::Gif(data_ref) | ContextOutputData::Qoi(data_ref) => {
+        // effing: QOI output is plain bytes, as GIF's is
         base64_simd::STANDARD.encode_append(&data_ref, &mut output);
       }
     }
@@ -756,7 +762,8 @@ fn blob_slice(env: &Env, output: ContextOutputData) -> Result<Uint8ArraySlice<'_
         |_, d| mem::drop(d),
       )
     },
-    ContextOutputData::Gif(data_ref) => unsafe {
+    ContextOutputData::Gif(data_ref) | ContextOutputData::Qoi(data_ref) => unsafe {
+      // effing: QOI output is plain bytes, as GIF's is
       Uint8ArraySlice::from_external(
         env,
         data_ref.as_ptr().cast_mut(),
