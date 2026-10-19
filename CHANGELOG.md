@@ -1,3 +1,11 @@
+## [1.0.10-effing.8](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.7...v1.0.10-effing.8) (2026-10-19)
+
+
+### Features
+
+* **encode:** add QOI as an encode() format, and benchmark it against PNG and JPEG ([#63](https://github.com/builtbyfew/effing-skia/issues/63)) ([0627789](https://github.com/builtbyfew/effing-skia/commit/0627789d2f363bdc5cbf696c8a71548a30cf1fe3)). `encode('qoi')` and `encodeSync('qoi')` encode a canvas as [QOI](https://qoiformat.org), lossless with the same pixels as PNG, and `toBuffer`, `toDataURL`, `toDataURLAsync`, `toBlob`, `convertToBlob` and the node-canvas layer's `toBuffer` take `image/qoi`. It is meant for frames another process decodes right away, such as ffmpeg with `-f qoi_pipe`: 9 to 29 times faster than PNG on 1080p frames on one thread, with larger output. `encodeStream` doesn't take it.
+
+
 ## [1.0.10-effing.7](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.6...v1.0.10-effing.7) (2026-10-15)
 
 

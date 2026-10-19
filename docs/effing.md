@@ -1302,7 +1302,7 @@ the CI matrix.
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
-### Unreleased
+### 1.0.10-effing.8
 
 - `encode('qoi')` and `encodeSync('qoi')` encode a canvas as QOI, lossless
   with the same pixels as PNG, and `toBuffer`, `toDataURL`,
