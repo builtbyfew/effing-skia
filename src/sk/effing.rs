@@ -5,4 +5,5 @@ pub mod filter_layer;
 pub mod fonts;
 pub mod group;
 pub mod paragraph;
+pub mod pixels;
 pub mod text;

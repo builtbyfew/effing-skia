@@ -4298,12 +4298,14 @@ pub enum ContextData {
   Webp(SkImage, u8),
   Avif(SkImage, Config, u32, u32),
   Gif(SkImage, GifConfig, u32, u32),
+  Qoi(SkImage), // effing: src/qoi.rs
 }
 
 pub enum ContextOutputData {
   Skia(SkiaDataRef),
   Avif(AvifData<'static>),
   Gif(Vec<u8>),
+  Qoi(Vec<u8>), // effing
 }
 
 impl ContextOutputData {
@@ -4323,7 +4325,8 @@ impl ContextOutputData {
           |_, data_ref| mem::drop(data_ref),
         )
       },
-      ContextOutputData::Gif(output) => unsafe {
+      ContextOutputData::Gif(output) | ContextOutputData::Qoi(output) => unsafe {
+        // effing: QOI output is plain bytes, as GIF's is
         BufferSlice::from_external(
           &env,
           output.as_ptr().cast_mut(),
@@ -4392,6 +4395,7 @@ pub(crate) fn encode_surface(data: &ContextData) -> Result<ContextOutputData> {
           .map(ContextOutputData::Gif)
           .map_err(|e| Error::new(Status::GenericFailure, format!("{e}")))
       }),
+    ContextData::Qoi(image) => crate::qoi::encode_image(image).map(ContextOutputData::Qoi), // effing
   }
 }
 

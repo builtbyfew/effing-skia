@@ -84,12 +84,16 @@ export interface Canvas extends Omit<NapiCanvas, 'toBuffer' | 'toDataURL'> {
   toBuffer(mimeType: 'image/jpeg', config?: JpegConfig): Buffer
   /** Get raw unencoded pixel data. */
   toBuffer(mimeType: 'raw'): Buffer
+  /** Encode as QOI (effing, see docs/effing.md). */
+  toBuffer(mimeType: 'image/qoi'): Buffer
 
   /** Async: encode as PNG (default) via callback. */
   toBuffer(cb: (err: Error | null, result: Buffer) => void): void
   toBuffer(cb: (err: Error | null, result: Buffer) => void, mimeType: 'image/png', config?: PngConfig): void
   /** Async: encode as JPEG via callback. Quality in config is 0-1 (default 0.75). */
   toBuffer(cb: (err: Error | null, result: Buffer) => void, mimeType: 'image/jpeg', config?: JpegConfig): void
+  /** Async: encode as QOI via callback (effing). */
+  toBuffer(cb: (err: Error | null, result: Buffer) => void, mimeType: 'image/qoi'): void
 
   // --- toDataURL overloads (node-canvas conventions) ---
 

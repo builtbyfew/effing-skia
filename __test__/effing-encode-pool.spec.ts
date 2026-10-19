@@ -34,7 +34,7 @@ function drawn() {
 
 test('async encodes match their sync counterparts', async (t) => {
   const canvas = drawn()
-  for (const [format, quality] of [['png'], ['jpeg', 80], ['webp', 80], ['gif']] as const) {
+  for (const [format, quality] of [['png'], ['jpeg', 80], ['webp', 80], ['gif'], ['qoi']] as const) {
     // @ts-expect-error -- overloads don't take a union of formats
     const encoded = await canvas.encode(format, quality)
     // @ts-expect-error -- overloads don't take a union of formats
