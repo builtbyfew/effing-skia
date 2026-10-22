@@ -28,7 +28,7 @@ upstream file has at most a few marked hook lines.
 | C++ bridge to Skia     | `skia-c/effing/{text,paragraph,justify,word_break,group,filter_layer,fonts,pixels,surface}.{hpp,cpp}`                                       | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts,pixels,surface}.rs`                                             | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
 | Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`                                                                | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
-| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `fontRevision`)                                                                     | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`), `src/font.rs` (any `font-weight`)                                                                                                                                                                                                 |
+| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `loadSystemFontsInBackground`, `fontRevision`)                                      | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`, `get_font` waits for the startup fonts), `src/font.rs` (any `font-weight`)                                                                                                                                                         |
 | Encode pool (napi)     | `src/encode_pool.rs` (the pool, `getEncodeThreads`)                                                                                         | `src/lib.rs` (`mod encode_pool`; `encode`, `toDataURLAsync`, `toBlob` and `convertToBlob` spawn on it; `AsyncBlob::encode`, `BlobBytes`, `blob_slice`), `index.js` (`toBlob` passes `null` on)                                                                                                            |
 | Async raster (napi)    | `src/ctx/effing/raster.rs` (`EncodeFormat`, `EncodeSource`, `encode_source`), `src/page_recorder/effing.rs` (`unflushed_layers_for_replay`) | `src/lib.rs` (`encode`, `encode_format`), `src/ctx.rs` (`blank_generation`, `note_surface_cleared` after the whole-canvas clears, the `EncodeFormat` re-export), `src/page_recorder.rs` (`replayed_off_thread`)                                                                                           |
 | QOI encoding           | `src/qoi.rs` (the encoder)                                                                                                                  | `src/lib.rs` (`mod qoi`, `qoi` in `encode`, `image/qoi` in `get_data_ref`, `ContextOutputData::Qoi` arms), `src/ctx.rs` (`ContextData::Qoi`, `ContextOutputData::Qoi`), `index.d.ts` (the `qoi` overloads), `node-canvas.{js,d.ts}` (`image/qoi` in `toBuffer`)                                           |
@@ -910,10 +910,11 @@ the same name, as an `@font-face` family does over a locally installed one in
 a browser (`__test__/effing-font-precedence.spec.ts`). That holds wherever a
 family name is resolved: `ctx.font` for `fillText`, `strokeText` and
 `measureText`, a `Paragraph`, each family of a `font-family` list, and SVG
-text. The system's fonts are the ones `index.js` loads at startup:
-`GlobalFonts.loadSystemFonts()` (the system font directory) and the user's
-font directories (`~/Library/Fonts`, `~/.fonts`, ...), which it loads with
-`loadSystemFontsFromDir` from `js-binding.js` instead of `loadFontsFromDir`.
+text. The system's fonts are the ones `index.js` loads at startup: the
+system font directory, as `GlobalFonts.loadSystemFonts()` loads it, and the
+user's font directories (`~/Library/Fonts`, `~/.fonts`, ...), as
+`loadSystemFontsFromDir` from `js-binding.js` loads them rather than
+`loadFontsFromDir` (see [Loading the system fonts](#loading-the-system-fonts)).
 
 Upstream puts the system's fonts and the registered ones in one
 `TypefaceFontProvider`, the font manager SkParagraph's `FontCollection` asks
@@ -972,6 +973,39 @@ registered faces.
 - Fallback for characters no family of the list has is unchanged: it comes
   from the system font directory's font manager, whichever fonts are
   registered.
+
+### Loading the system fonts
+
+`index.js` loads the system's fonts with `loadSystemFontsInBackground` from
+`js-binding.js`: once per process, on a thread of its own. Upstream loaded
+them synchronously, every time a JS thread loaded `index.js`. The font
+collection is one per process, so a worker thread found the system font
+directory loaded already (`loadSystemFonts()` loads it once), or waited for
+the thread loading it, and loaded the user's font directories again, which
+changed nothing. Scanning the system font directory takes about 70 ms on an
+Apple M-series Mac (372 files), so every JS thread that loaded `index.js`
+in the first 70 ms of the process, as the worker threads an app starts at
+once do, waited that long in `require`.
+
+Now `require` returns at once, and everything that reads or changes the
+font collection waits until the fonts are loaded, from any thread: every
+`GlobalFonts` call (`register`, `families`, `loadSystemFonts()`, ...),
+`fontRevision()`, and drawing, measuring or laying out text, SVG text
+included. So whatever runs after `index.js` sees the same fonts, and the same
+font revision, as when `index.js` loaded them synchronously
+(`__test__/effing-system-fonts.spec.ts`). A thread that needs the fonts before
+the background thread has started loads them itself. What a thread does
+meanwhile, such as loading other modules, overlaps the load, and one that
+never uses fonts doesn't wait at all.
+
+- The user's font directories load once per process too, with the system
+  font directory. A font added to them while the process runs is no longer
+  picked up by the next worker thread to load `index.js`; call
+  `loadSystemFontsFromDir` for that.
+- Loading `index.js` again no longer bumps the font revision (it bumped it
+  for every font in the user's font directories) or invalidates the text
+  layout caches.
+- `DISABLE_SYSTEM_FONTS_LOAD` still loads no fonts.
 
 ## Font matching
 
@@ -1114,7 +1148,7 @@ would miss a mutator added later. These change it:
   the rebuild of the collection they do;
 - `loadFontsFromDir`, `loadSystemFonts()` and `loadSystemFontsFromDir`, at
   every font they load, including the system fonts `index.js` loads at
-  startup.
+  startup, which `fontRevision()` waits for.
 
 Reads don't change it: `families`, `has`, `getVariationAxes`, measuring,
 laying out and drawing text. Nor does a call that fails (returns `null`,

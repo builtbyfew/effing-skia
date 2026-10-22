@@ -38,6 +38,14 @@ fn note_font_collection_mutation() {
 
 #[inline]
 pub(crate) fn get_font<'a>() -> LockResult<MutexGuard<'a, FontCollection>> {
+  effing::wait_for_startup_fonts(); // effing: the system fonts come first
+  lock_font_collection()
+}
+
+// effing: the collection without waiting for the system fonts, for loading
+// them.
+#[inline]
+fn lock_font_collection<'a>() -> LockResult<MutexGuard<'a, FontCollection>> {
   GLOBAL_FONT_COLLECTION.lock()
 }
 
@@ -57,7 +65,7 @@ pub struct FontKey {
 pub mod global_fonts {
   use napi::bindgen_prelude::*;
 
-  use super::{FONT_DIR, FONT_PATH, FontKey, get_font, into_napi_error};
+  use super::{FontKey, get_font, into_napi_error};
 
   #[napi]
   pub fn register(font_data: &[u8], name_alias: Option<String>) -> Result<Option<FontKey>> {
@@ -117,16 +125,13 @@ pub mod global_fonts {
 
   #[napi]
   pub fn load_system_fonts() -> Result<u32> {
-    FONT_DIR
-      // effing: as system fonts, which registered fonts shadow.
-      .get_or_init(move || super::load_fonts_from_dir(FONT_PATH, true))
-      .as_ref()
-      .map(|s| *s)
-      .map_err(|e| Error::new(e.status, e.reason.clone()))
+    super::effing::wait_for_startup_fonts(); // effing
+    super::load_system_font_dir()
   }
 
   #[napi]
   pub fn load_fonts_from_dir(dir: String) -> Result<u32> {
+    super::effing::wait_for_startup_fonts(); // effing
     super::load_fonts_from_dir(dir.as_str(), false) // effing: registered fonts
   }
 
@@ -220,8 +225,19 @@ pub mod global_fonts {
   }
 }
 
+// The system font directory, once per process.
+fn load_system_font_dir() -> napi::Result<u32> {
+  FONT_DIR
+    // effing: as system fonts, which registered fonts shadow.
+    .get_or_init(move || load_fonts_from_dir(FONT_PATH, true))
+    .as_ref()
+    .map(|s| *s)
+    .map_err(|e| napi::Error::new(e.status, e.reason.clone()))
+}
+
 // effing: `system` loads the fonts as system fonts, which registered fonts
-// shadow (docs/effing.md).
+// shadow (docs/effing.md). The caller waits for the startup fonts, which this
+// loads.
 fn load_fonts_from_dir<P: AsRef<path::Path>>(dir: P, system: bool) -> napi::Result<u32> {
   let mut count = 0u32;
   if let Ok(dir) = read_dir(dir) {
@@ -243,7 +259,7 @@ fn load_fonts_from_dir<P: AsRef<path::Path>>(dir: P, system: bool) -> napi::Resu
             Some("ttf") | Some("ttc") | Some("otc") | Some("otf") | Some("pfb") | Some("woff2")
             | Some("woff") => {
               if let Some(p) = p.into_os_string().to_str() {
-                let font_collection = get_font().map_err(into_napi_error)?;
+                let font_collection = lock_font_collection().map_err(into_napi_error)?; // effing
                 let registered = if system {
                   font_collection.register_system_font(p) // effing
                 } else {
