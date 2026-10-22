@@ -6,4 +6,5 @@ pub mod fonts;
 pub mod group;
 pub mod paragraph;
 pub mod pixels;
+pub mod surface;
 pub mod text;

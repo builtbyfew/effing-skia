@@ -105,6 +105,9 @@ pub struct PageRecorder {
   current_clip: Option<SkPath>,      // Clip path to restore after layer promotion
   save_count: usize,                 // Track save stack depth to restore after layer promotion
   groups: Vec<effing::OpenGroup>,    // effing: the groups open in the recording
+  // effing: whether an encode has played the unflushed layers back off the
+  // JS thread since the last reset (src/ctx/effing/raster.rs)
+  replayed_off_thread: bool,
   // Byte cap that trips flush_if_recording_limit_exceeded. A field rather
   // than MAX_RECORDED_BYTES so tests can shrink it and exercise the flush
   // path in a handful of ops instead of filling 32 MiB.
@@ -137,6 +140,7 @@ impl PageRecorder {
       current_clip: None,
       save_count: 0,
       groups: Vec::new(),
+      replayed_off_thread: false,
       recording_limit: MAX_RECORDED_BYTES,
       consolidations: 0,
     }
@@ -360,6 +364,7 @@ impl PageRecorder {
     // Reset save count
     self.save_count = 0;
     self.groups.clear();
+    self.replayed_off_thread = false; // effing
   }
 
   /// Write pixel data as a separate layer, bypassing clip and transform.

@@ -14,8 +14,8 @@
 
 use super::PageRecorder;
 use crate::picture_recorder::PictureRecorder;
-use crate::sk::Canvas;
 use crate::sk::effing::group::GroupLayer;
+use crate::sk::{Canvas, SkPicture};
 
 /// A group open in the recording.
 pub(super) struct OpenGroup {
@@ -147,5 +147,27 @@ impl PageRecorder {
       return;
     };
     canvas.composite_group(&picture, paint, &layer.transform);
+  }
+}
+
+// Encodes that rasterise off the JS thread (`src/ctx/effing/raster.rs`).
+impl PageRecorder {
+  /// The recording's layers that no flush has played onto the surface yet,
+  /// after promoting the current recording to one, as a flush would. They
+  /// stay unflushed: a later flush still plays them onto the surface.
+  ///
+  /// `None` once an earlier call has handed them out since the last reset:
+  /// each call would play every unflushed layer again, so a canvas encoded
+  /// over and over without a clear flushes, which consolidates them, instead.
+  pub(crate) fn unflushed_layers_for_replay(&mut self) -> Option<Vec<SkPicture>> {
+    if self.replayed_off_thread {
+      return None;
+    }
+    self.promote_layer();
+    let layers: Vec<SkPicture> = self.layers.iter().skip(self.depth).cloned().collect();
+    if !layers.is_empty() {
+      self.replayed_off_thread = true;
+    }
+    Some(layers)
   }
 }

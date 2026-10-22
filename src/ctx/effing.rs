@@ -5,4 +5,5 @@
 mod filter_layer;
 mod group;
 mod paragraph;
+pub(crate) mod raster;
 mod text;
