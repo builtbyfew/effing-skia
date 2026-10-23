@@ -26,7 +26,7 @@ const report = `{
   console.log(JSON.stringify({ revision: fontRevision(), families: GlobalFonts.families }))
 }`
 
-// What index.js loaded synchronously before.
+// What index.js loads, done synchronously, as before.
 const synchronousLoad = `{
   const { platform, homedir } = require('os')
   const { join } = require('path')
@@ -41,7 +41,7 @@ const synchronousLoad = `{
       loadSystemFontsFromDir(join(homedir(), 'Library', 'Fonts'))
       break
     case 'linux':
-      loadSystemFontsFromDir(join('usr', 'local', 'share', 'fonts'))
+      loadSystemFontsFromDir('/usr/local/share/fonts')
       loadSystemFontsFromDir(join(homedir(), '.fonts'))
       break
   }

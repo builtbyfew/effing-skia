@@ -173,7 +173,7 @@ if (!process.env.DISABLE_SYSTEM_FONTS_LOAD) {
       userFontDirs.push(join(homedirPath, 'Library', 'Fonts'))
       break
     case 'linux':
-      userFontDirs.push(join('usr', 'local', 'share', 'fonts'))
+      userFontDirs.push('/usr/local/share/fonts')
       userFontDirs.push(join(homedirPath, '.fonts'))
       break
   }

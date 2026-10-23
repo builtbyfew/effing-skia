@@ -1425,6 +1425,9 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   package; font operations wait for that load. A later `require` in another
   worker no longer rescans the user's font directories, and a process that
   exits while the fonts load waits for them (see Loading the system fonts).
+- On Linux, `/usr/local/share/fonts` loads with the user's font directories.
+  It was meant to before, but the path was relative to the working
+  directory, so it never did.
 
 ### 1.0.10-effing.8
 
