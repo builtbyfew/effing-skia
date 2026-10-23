@@ -201,6 +201,7 @@ impl Context {
       return None;
     }
     let surface = self.surface.make_like()?;
+    recorder.note_replayed_off_thread();
     let consolidate = recorder.should_consolidate().then(|| CanvasState {
       generation,
       content_version: recorder.content_version(),

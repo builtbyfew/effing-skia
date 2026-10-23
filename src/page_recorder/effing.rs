@@ -156,19 +156,22 @@ impl PageRecorder {
   /// after promoting the current recording to one, as a flush would. They
   /// stay unflushed: a later flush still plays them onto the surface.
   ///
-  /// `None` once an earlier call has handed them out since the last reset:
-  /// each call would play every unflushed layer again, so a canvas encoded
-  /// over and over without a clear flushes, which consolidates them, instead.
+  /// `None` once an encode has played them off the JS thread since the last
+  /// reset (`note_replayed_off_thread`): each would play every unflushed
+  /// layer again, so a canvas encoded over and over without a clear flushes,
+  /// which consolidates them, instead.
   pub(crate) fn unflushed_layers_for_replay(&mut self) -> Option<Vec<SkPicture>> {
     if self.replayed_off_thread {
       return None;
     }
     self.promote_layer();
-    let layers: Vec<SkPicture> = self.layers.iter().skip(self.depth).cloned().collect();
-    if !layers.is_empty() {
-      self.replayed_off_thread = true;
-    }
-    Some(layers)
+    Some(self.layers.iter().skip(self.depth).cloned().collect())
+  }
+
+  /// An encode plays the unflushed layers off the JS thread: once it has its
+  /// surface, so an encode that falls back to a flush doesn't count.
+  pub(crate) fn note_replayed_off_thread(&mut self) {
+    self.replayed_off_thread = true;
   }
 
   /// Replaces the layers with one picture of `image`, as
