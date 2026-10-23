@@ -1408,7 +1408,7 @@ the CI matrix.
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
-### Unreleased
+### 1.0.10-effing.9
 
 - `encode()` of a canvas whose surface hasn't been written or flushed since
   it was created or last cleared whole plays its recording on the encode

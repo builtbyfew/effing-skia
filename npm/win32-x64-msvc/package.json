@@ -1,6 +1,6 @@
 {
   "name": "@effing/skia-win32-x64-msvc",
-  "version": "1.0.10-effing.8",
+  "version": "1.0.10-effing.9",
   "cpu": [
     "x64"
   ],

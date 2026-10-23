@@ -1,3 +1,16 @@
+## [1.0.10-effing.9](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.8...v1.0.10-effing.9) (2026-10-23)
+
+
+### Performance Improvements
+
+* rasterise async encodes on the encode pool, and load system fonts off the JS thread ([#64](https://github.com/builtbyfew/effing-skia/issues/64)) ([af1ba16](https://github.com/builtbyfew/effing-skia/commit/af1ba1667b83a923a7595238f0c32f32fdef6c05)). `encode()` of a canvas whose surface is still blank plays its recording on the encode pool, so rasterising no longer blocks the JS thread and frames in flight rasterise in parallel, with the same bytes as before. The system fonts and the user's font directories load once per process on a thread of their own; font operations wait for that load, and a later `require` in another worker no longer rescans the user's font directories.
+
+
+### Bug Fixes
+
+* **fonts:** load `/usr/local/share/fonts` on Linux ([#64](https://github.com/builtbyfew/effing-skia/issues/64)). The path was relative to the working directory, so the directory was never loaded.
+
+
 ## [1.0.10-effing.8](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.7...v1.0.10-effing.8) (2026-10-19)
 
 
