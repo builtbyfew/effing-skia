@@ -67,7 +67,7 @@ test('worker threads that load index.js at once share one load', (t) => {
       let out = ''
       worker.stdout.on('data', (d) => (out += d))
       worker.on('error', reject)
-      worker.on('exit', () => resolve(JSON.parse(out)))
+      worker.stdout.on('end', () => resolve(JSON.parse(out)))
     }))
     Promise.all(workers).then((reports) => {
       ${report}
