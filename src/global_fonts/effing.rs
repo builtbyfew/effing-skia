@@ -2,6 +2,7 @@
 //! `@font-face` fonts shadow local ones in a browser, and the font
 //! collection's revision. See `docs/effing.md`.
 
+use std::panic;
 use std::sync::OnceLock;
 use std::thread;
 
@@ -67,12 +68,18 @@ pub(super) fn wait_for_startup_fonts() {
     return;
   };
   STARTUP_FONTS.get_or_init(|| {
-    // Errors are a poisoned collection lock only, which the next call
-    // reports; loadSystemFonts() keeps its own result for its callers.
-    let _ = super::load_system_font_dir();
-    for dir in dirs {
-      let _ = super::load_fonts_from_dir(dir.as_str(), true);
-    }
+    // Errors are a poisoned collection lock only, which every later use of
+    // the collection reports; loadSystemFonts() keeps its own result for its
+    // callers. A panic is printed by the panic hook; it's caught so that the
+    // load counts as done rather than running again on the next caller's
+    // thread (a JS thread), and if it poisoned the collection's lock, every
+    // later use reports that.
+    let _ = panic::catch_unwind(|| {
+      let _ = super::load_system_font_dir();
+      for dir in dirs {
+        let _ = super::load_fonts_from_dir(dir.as_str(), true);
+      }
+    });
   });
 }
 
