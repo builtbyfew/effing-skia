@@ -453,6 +453,7 @@ module.exports.Path = nativeBinding.Path
 module.exports.Paragraph = nativeBinding.Paragraph
 module.exports.loadSystemFontsFromDir = nativeBinding.loadSystemFontsFromDir
 module.exports.loadSystemFontsInBackground = nativeBinding.loadSystemFontsInBackground
+module.exports.waitForSystemFonts = nativeBinding.waitForSystemFonts
 module.exports.beginGroup = nativeBinding.beginGroup
 module.exports.endGroup = nativeBinding.endGroup
 module.exports.fillParagraph = nativeBinding.fillParagraph

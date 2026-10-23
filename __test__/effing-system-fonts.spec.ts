@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -119,10 +119,69 @@ test('a font registered while the system fonts load still shadows a system famil
   t.is(width(true), lato)
 })
 
-test('a process can exit while the system fonts load', (t) => {
-  for (let i = 0; i < 10; i++) {
-    node(`require('./index.js')`)
-    node(`require('./index.js'); process.exit(0)`)
+// Runs `script` in a child process, for its exit code and signal.
+function exitOf(script: string) {
+  return new Promise<{ script: string; code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', script], {
+      cwd: root,
+      stdio: 'ignore',
+      env: { ...process.env, NODE_OPTIONS: '', DISABLE_SYSTEM_FONTS_LOAD: '' },
+    })
+    child.on('error', reject)
+    child.on('exit', (code, signal) => resolve({ script, code, signal }))
+  })
+}
+
+// The process mustn't exit while the system fonts load: `exit()` runs the
+// static destructors while the loading thread is in Skia's font code, which
+// then crashes. Exits at many points across the load, every way a process
+// can exit, from the main thread and from a worker.
+test('a process can exit at any point while the system fonts load', async (t) => {
+  t.timeout(180_000)
+  // How long the load takes after index.js is loaded (fontRevision() waits
+  // for it). The sweep goes well past it, as the load takes longer when
+  // children run side by side.
+  const durations = Array.from({ length: 3 }, () =>
+    Number(
+      node(`
+        const { performance } = require('node:perf_hooks')
+        require('./index.js')
+        const start = performance.now()
+        require('./extensions.js').fontRevision()
+        console.log(performance.now() - start)
+      `),
+    ),
+  )
+  const end = Math.ceil(Math.max(...durations) * 2.5) + 40
+  const step = Math.max(1, Math.round(end / 40))
+  const scripts: string[] = []
+  for (let delay = 0; delay <= end; delay += step) {
+    const worker = (script: string) =>
+      `new (require('node:worker_threads').Worker)(${JSON.stringify(script)}, { eval: true })`
+    scripts.push(
+      // The event loop drains.
+      `require('./index.js'); setTimeout(() => {}, ${delay})`,
+      `require('./index.js'); setTimeout(() => process.exit(0), ${delay})`,
+      `require('./index.js'); setTimeout(() => { throw new Error('uncaught') }, ${delay})`,
+      // Only a worker loads index.js: it finishes at once, or exits, or the
+      // main thread exits while it runs.
+      `${worker(`require('./index.js')`)}.unref(); setTimeout(() => {}, ${delay})`,
+      `${worker(`require('./index.js'); setTimeout(() => process.exit(0), ${delay})`)}`,
+      `${worker(`require('./index.js'); setInterval(() => {}, 1000)`)}; setTimeout(() => process.exit(0), ${delay})`,
+    )
   }
-  t.pass()
+  const crashes: string[] = []
+  let next = 0
+  await Promise.all(
+    Array.from({ length: 4 }, async () => {
+      while (next < scripts.length) {
+        const { script, code, signal } = await exitOf(scripts[next++])
+        const expected = script.includes('uncaught') ? 1 : 0
+        if (signal !== null || code !== expected) {
+          crashes.push(`${signal ?? code}: ${script}`)
+        }
+      }
+    }),
+  )
+  t.deepEqual(crashes, [], `${crashes.length} of ${scripts.length} exits crashed`)
 })

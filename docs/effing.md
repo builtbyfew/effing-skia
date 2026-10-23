@@ -28,13 +28,13 @@ upstream file has at most a few marked hook lines.
 | C++ bridge to Skia     | `skia-c/effing/{text,paragraph,justify,word_break,group,filter_layer,fonts,pixels,surface}.{hpp,cpp}`                                       | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts,pixels,surface}.rs`                                             | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
 | Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`                                                                | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
-| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `loadSystemFontsInBackground`, `fontRevision`)                                      | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`, `get_font` waits for the startup fonts), `src/font.rs` (any `font-weight`)                                                                                                                                                         |
+| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `loadSystemFontsInBackground`, `waitForSystemFonts`, `fontRevision`)                | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`, `get_font` waits for the startup fonts), `src/font.rs` (any `font-weight`)                                                                                                                                                         |
 | Encode pool (napi)     | `src/encode_pool.rs` (the pool, `getEncodeThreads`)                                                                                         | `src/lib.rs` (`mod encode_pool`; `encode`, `toDataURLAsync`, `toBlob` and `convertToBlob` spawn on it; `AsyncBlob::encode`, `BlobBytes`, `blob_slice`), `index.js` (`toBlob` passes `null` on)                                                                                                            |
 | Async raster (napi)    | `src/ctx/effing/raster.rs` (`EncodeFormat`, `EncodeSource`, `encode_source`), `src/page_recorder/effing.rs` (`unflushed_layers_for_replay`) | `src/lib.rs` (`encode`, `encode_format`), `src/ctx.rs` (`blank_generation`, `note_surface_cleared` after the whole-canvas clears, the `EncodeFormat` re-export), `src/page_recorder.rs` (`replayed_off_thread`)                                                                                           |
 | QOI encoding           | `src/qoi.rs` (the encoder)                                                                                                                  | `src/lib.rs` (`mod qoi`, `qoi` in `encode`, `image/qoi` in `get_data_ref`, `ContextOutputData::Qoi` arms), `src/ctx.rs` (`ContextData::Qoi`, `ContextOutputData::Qoi`), `index.d.ts` (the `qoi` overloads), `node-canvas.{js,d.ts}` (`image/qoi` in `toBuffer`)                                           |
 | Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                                                                                     | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
 | Build                  |                                                                                                                                             | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
-| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                                                                                     | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                                                                       |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                                                                                     | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories, waiting for them on `exit`)                                                                                                                                                                           |
 | Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                                                                           | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                                                               |
 
 C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
@@ -1006,6 +1006,18 @@ never uses fonts doesn't wait at all.
   for every font in the user's font directories) or invalidates the text
   layout caches.
 - `DISABLE_SYSTEM_FONTS_LOAD` still loads no fonts.
+- A process doesn't exit while the fonts load: the loading thread would crash
+  in the static destructors `exit()` runs. Every JS environment that loaded
+  `index.js` waits for the load before it's torn down (a napi env cleanup
+  hook: a worker that ends, exits or is terminated, and the main thread when
+  its event loop drains), and `index.js` waits for it on `process.on('exit')`
+  too, for `process.exit()` and an uncaught exception, which skip the cleanup
+  hooks. The main thread's exit stops the workers first, so this covers a
+  process where only a worker loaded `index.js` as well. So a process that
+  would have exited within the load's first ~70 ms exits when it ends. (Not
+  covered: calling the internal `process.reallyExit()` directly, which skips
+  the `exit` event. A signal's default action ends the process without
+  running the destructors, so it is safe.)
 
 ## Font matching
 
@@ -1386,8 +1398,8 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 - The system fonts and the user's font directories load once per process,
   on a thread of their own, instead of on every JS thread that requires the
   package; font operations wait for that load. A later `require` in another
-  worker no longer rescans the user's font directories (see Loading the
-  system fonts).
+  worker no longer rescans the user's font directories, and a process that
+  exits while the fonts load waits for them (see Loading the system fonts).
 
 ### 1.0.10-effing.8
 

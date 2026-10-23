@@ -21,6 +21,7 @@ const {
   GifDisposal,
   LottieAnimation,
   loadSystemFontsInBackground, // effing: once per process, off the JS thread
+  waitForSystemFonts, // effing: the process mustn't exit while they load
 } = require('./js-binding')
 
 const { DOMPoint, DOMMatrix, DOMRect } = require('./geometry')
@@ -177,6 +178,10 @@ if (!process.env.DISABLE_SYSTEM_FONTS_LOAD) {
       break
   }
   loadSystemFontsInBackground(userFontDirs)
+  // The process mustn't exit while the fonts load (the loader would crash in
+  // the static destructors). Tearing down a JS environment waits for them,
+  // but process.exit() and an uncaught exception skip that, so wait here too.
+  process.once('exit', () => waitForSystemFonts())
 }
 
 module.exports = {

@@ -22,10 +22,23 @@ static STARTUP_FONTS: OnceLock<()> = OnceLock::new();
 /// `GlobalFonts` call and every text draw, measure or layout that comes
 /// after the first call waits for the load to finish, so they see the fonts
 /// as if `index.js` had loaded them synchronously, as it did before.
+///
+/// The process mustn't exit while the load runs: `exit()` runs the static
+/// destructors while the thread is in Skia's font code, which then crashes.
+/// So every JS environment that calls this waits for the load before it's
+/// torn down (an env cleanup hook: a worker that's terminated or exits, and
+/// the main thread when its event loop drains), and `index.js` waits for it
+/// on `process.on('exit')` too, for a `process.exit()` and an uncaught
+/// exception on the main thread, which skip the cleanup hooks. The main
+/// thread's exit stops the workers, and so runs their hooks, before it calls
+/// `exit()`, so a process where only a worker loaded `index.js` waits as
+/// well. Joining the thread in an `atexit` handler wouldn't do: the
+/// destructors of the statics Skia creates during the load run before it.
 #[napi]
-pub fn load_system_fonts_in_background(user_dirs: Vec<String>) {
+pub fn load_system_fonts_in_background(env: Env, user_dirs: Vec<String>) -> Result<()> {
+  env.add_env_cleanup_hook((), |()| wait_for_startup_fonts())?;
   if STARTUP_DIRS.set(user_dirs).is_err() {
-    return;
+    return Ok(());
   }
   let spawned = thread::Builder::new()
     .name("effing-system-fonts".to_owned())
@@ -33,6 +46,15 @@ pub fn load_system_fonts_in_background(user_dirs: Vec<String>) {
   if spawned.is_err() {
     wait_for_startup_fonts();
   }
+  Ok(())
+}
+
+/// Waits until the fonts `loadSystemFontsInBackground` asked for are loaded,
+/// for `index.js` to call before the process exits. Returns at once if they
+/// are, or if nothing asked for them.
+#[napi]
+pub fn wait_for_system_fonts() {
+  wait_for_startup_fonts();
 }
 
 /// Waits until the fonts `loadSystemFontsInBackground` asked for are loaded,
