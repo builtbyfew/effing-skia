@@ -85,16 +85,16 @@ test('worker threads that load index.js at once share one load', (t) => {
   t.deepEqual(main, synchronous)
 })
 
-test('a font registered while the system fonts load still shadows a system family', (t) => {
+test('a font registered right after import still shadows a system family', (t) => {
   const families: { family: string }[] = JSON.parse(node(report)).families
   const system = families.map(({ family }) => family).find((family) => family !== 'Lato')
   if (!system) {
     t.pass('no system fonts here')
     return
   }
-  // Registered at once, while the system fonts are most likely still loading,
-  // under the name of a system family, which it must shadow, as when it's
-  // registered after they've loaded.
+  // Registered right after import, under the name of a system family, which
+  // it must shadow, as when it's registered once they've loaded. Registering
+  // waits for the system fonts, so the font can't land underneath them.
   const width = (wait: boolean) =>
     Number(
       node(`

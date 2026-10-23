@@ -1415,10 +1415,11 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   pool, so rasterising no longer blocks the JS thread and frames in flight
   rasterise in parallel. Any other canvas (one read since, such as by
   `getImageData` or `toBuffer`, one with `alpha: false` or a Lottie frame,
-  or one whose recording was played on the pool by an earlier `encode()`)
-  is flushed on the JS thread as before. Same bytes as before, and a canvas
-  kept after the encode lets go of what its recording pinned, as after a
-  flush (see Rasterising async encodes on the pool).
+  or one whose recording an earlier `encode()` played on the pool, unless
+  that encode's image has since taken its layers' place) is flushed on the
+  JS thread as before. Same bytes as before, and a canvas kept after the
+  encode lets go of what its recording pinned, as after a flush (see
+  Rasterising async encodes on the pool).
 - The system fonts and the user's font directories load once per process,
   on a thread of their own, instead of on every JS thread that requires the
   package; font operations wait for that load. A later `require` in another
