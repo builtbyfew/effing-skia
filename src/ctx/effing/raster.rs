@@ -339,6 +339,23 @@ mod tests {
     assert_eq!((image[corner], image[middle]), (255, 0));
   }
 
+  // A direct write to the surface, such as the `alpha: false` base fill or
+  // a Lottie frame, isn't in the recording: a new surface would miss it.
+  #[test]
+  fn a_canvas_written_to_directly_encodes_a_snapshot() {
+    let mut ctx = Context::new(8, 8, ColorSpace::default()).expect("raster context");
+    let mut base = ctx.fill_paint().unwrap();
+    base.set_color(255, 255, 255, 255);
+    ctx.with_surface_canvas(|canvas| canvas.draw_rect(0.0, 0.0, 8.0, 8.0, &base));
+    ctx.fill_rect(1.0, 1.0, 4.0, 4.0).unwrap();
+    let source = ctx.encode_source().unwrap();
+    assert!(matches!(source, EncodeSource::Snapshot(_)));
+    let image = pixels(source.into_image().unwrap().0);
+    let (corner, middle) = ((6 * 8 + 6) * 4, (2 * 8 + 2) * 4);
+    assert_eq!(&image[corner..corner + 4], &[255, 255, 255, 255]);
+    assert_eq!(&image[middle..middle + 4], &[0, 0, 0, 255]);
+  }
+
   #[test]
   fn a_canvas_with_nothing_recorded_encodes_a_snapshot() {
     let mut ctx = Context::new(8, 8, ColorSpace::default()).expect("raster context");
