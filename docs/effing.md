@@ -1207,7 +1207,10 @@ in flight doesn't wait for them, as it did for libuv's: they run to
 completion on the pool, behind which later encodes queue, and their results
 are dropped. A panic in an encoder rejects the promise instead of taking a
 thread down. Everything else is unchanged: the canvas is still flushed and
-snapshotted when the method is called, the bytes are the sync encoders',
+snapshotted when the method is called (except by `encode()` of a blank
+canvas, which leaves the rasterising to the pool too; see
+[Rasterising async encodes on the pool](#rasterising-async-encodes-on-the-pool)),
+the bytes are the sync encoders',
 failures reject with the same errors (`__test__/effing-encode-pool.spec.ts`),
 and the sync methods still encode on the calling thread.
 
