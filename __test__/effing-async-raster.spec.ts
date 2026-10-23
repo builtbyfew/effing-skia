@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 import test from 'ava'
 
-import { GlobalFonts, createCanvas, loadImage, type Image, type SKRSContext2D } from '../index'
+import { GlobalFonts, ImageData, createCanvas, loadImage, type Image, type SKRSContext2D } from '../index'
 import { beginGroup, endGroup } from '../extensions'
 
 // encode() on a canvas whose surface is still blank rasterises the recording
@@ -91,6 +91,39 @@ test('encoding the same canvas again, with and without more draws', async (t) =>
     c.fillRect(0, 0, 40, 40)
   })
   t.true((await canvas.encode('png')).equals(reference.encodeSync('png')))
+})
+
+// putImageData splits the recording into layers, which a flush consolidates
+// into a snapshot. An unchanged canvas takes the encoded image in their place
+// when the encode resolves, and must go on to encode, draw and be drawn the
+// same.
+test('a canvas that takes the encoded image in place of its layers', async (t) => {
+  const layered = (c: SKRSContext2D) => {
+    scene(c)
+    c.putImageData(new ImageData(new Uint8ClampedArray(16 * 16 * 4).fill(200), 16, 16), 280, 160)
+    c.fillStyle = 'rgba(0, 128, 255, 0.5)'
+    c.fillRect(250, 150, 50, 40)
+  }
+  const canvas = drawn(layered)
+  const reference = drawn(layered)
+  const encoded = reference.encodeSync('png') // flushes and consolidates
+  t.true((await canvas.encode('png')).equals(encoded))
+  t.true((await canvas.encode('png')).equals(encoded))
+  const drawnInto = (source: ReturnType<typeof createCanvas>) => {
+    const into = createCanvas(320, 200)
+    into.getContext('2d').drawImage(source, 10, 10, 160, 100)
+    return into.encodeSync('png')
+  }
+  t.true(drawnInto(canvas).equals(drawnInto(reference)))
+  for (const c of [canvas, reference]) {
+    c.getContext('2d').fillStyle = 'black'
+    c.getContext('2d').fillRect(0, 0, 40, 40)
+  }
+  t.true((await canvas.encode('png')).equals(reference.encodeSync('png')))
+  t.deepEqual(
+    canvas.getContext('2d').getImageData(0, 0, 320, 200).data,
+    reference.getContext('2d').getImageData(0, 0, 320, 200).data,
+  )
 })
 
 test('a canvas reused frame after frame with a clear', async (t) => {

@@ -15,7 +15,7 @@
 use super::PageRecorder;
 use crate::picture_recorder::PictureRecorder;
 use crate::sk::effing::group::GroupLayer;
-use crate::sk::{Canvas, SkPicture};
+use crate::sk::{Canvas, SkImage, SkPicture};
 
 /// A group open in the recording.
 pub(super) struct OpenGroup {
@@ -169,5 +169,20 @@ impl PageRecorder {
       self.replayed_off_thread = true;
     }
     Some(layers)
+  }
+
+  /// Replaces the layers with one picture of `image`, as
+  /// `consolidate_with_snapshot` does after a flush, but leaves it unflushed:
+  /// `image` is what the unflushed layers render onto the blank surface (an
+  /// encode rendered it off the JS thread), and the surface is still blank.
+  /// Playing it is a blit, so the next encode may play it off the JS thread
+  /// again.
+  pub(crate) fn consolidate_unflushed_with_snapshot(&mut self, image: SkImage) {
+    let consolidations = self.consolidations;
+    self.consolidate_with_snapshot(image);
+    if self.consolidations != consolidations {
+      self.depth = 0;
+      self.replayed_off_thread = false;
+    }
   }
 }

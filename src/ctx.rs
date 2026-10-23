@@ -41,7 +41,7 @@ use crate::{
 };
 
 mod effing;
-pub(crate) use effing::raster::EncodeFormat; // effing
+pub(crate) use effing::raster::{EncodeFormat, EncodedCanvas}; // effing
 
 static CSS_SIZE_REGEXP: LazyLock<Regex> =
   LazyLock::new(|| Regex::new(r#"(-?[\d\.]+)(%|px|pt|pc|in|cm|mm|%|em|ex|ch|rem|q)?\s*"#).unwrap());

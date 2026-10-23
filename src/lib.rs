@@ -22,7 +22,7 @@ use napi::{
 };
 
 use ctx::{
-  CanvasRenderingContext2D, Context, ContextData, ContextOutputData, EncodeFormat,
+  CanvasRenderingContext2D, Context, ContextData, ContextOutputData, EncodeFormat, EncodedCanvas,
   FILL_STYLE_HIDDEN_NAME, STROKE_STYLE_HIDDEN_NAME, SvgExportFlag, encode_surface,
 };
 use font::{FONT_REGEXP, init_font_regexp};
@@ -224,13 +224,24 @@ impl<'c> CanvasElement<'c> {
     quality_or_config: Either3<u32, AvifConfig, Unknown>,
   ) -> Result<Object<'env>> {
     // effing: the recording is rasterised on the pool when the surface is
-    // still blank, else flushed here (src/ctx/effing/raster.rs)
+    // still blank, else flushed here; the canvas may take the rendered image
+    // back (src/ctx/effing/raster.rs)
     let format = self.encode_format(format, quality_or_config)?;
     let source = self.ctx.context.encode_source()?;
+    let canvas = source
+      .consolidates()
+      .then(|| EncodedCanvas::new(env, &self.ctx))
+      .flatten();
     encode_pool::spawn(
       env,
-      move || encode_surface(&format.with_image(source.into_image()?)),
-      |env, output| {
+      move || {
+        let (image, replayed) = source.into_image()?;
+        Ok((encode_surface(&format.with_image(image))?, replayed))
+      },
+      move |env, (output, replayed)| {
+        if let (Some(canvas), Some(replayed)) = (canvas, replayed) {
+          canvas.adopt(replayed);
+        }
         output
           .into_buffer_slice(env)
           .and_then(|slice| slice.into_buffer(&env))
