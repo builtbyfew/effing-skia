@@ -55,8 +55,11 @@ pub(crate) enum EncodeSource {
 pub(crate) struct Replay {
   surface: Surface,
   layers: Vec<SkPicture>,
-  /// Set when a flush would have consolidated the layers, for the canvas to
-  /// take the rendered image in their place (`Context::adopt_replayed`).
+  /// Set when a flush at the time of the encode would have consolidated the
+  /// layers, for the canvas to take the rendered image in their place
+  /// (`Context::adopt_replayed`). Decided when the encode takes the layers: a
+  /// recording that changes afterwards also changes its content version, so
+  /// the canvas then declines the image.
   consolidate: Option<CanvasState>,
 }
 
