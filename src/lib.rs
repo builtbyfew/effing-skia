@@ -22,8 +22,8 @@ use napi::{
 };
 
 use ctx::{
-  CanvasRenderingContext2D, Context, ContextData, ContextOutputData, FILL_STYLE_HIDDEN_NAME,
-  STROKE_STYLE_HIDDEN_NAME, SvgExportFlag, encode_surface,
+  CanvasRenderingContext2D, Context, ContextData, ContextOutputData, EncodeFormat, EncodedCanvas,
+  FILL_STYLE_HIDDEN_NAME, STROKE_STYLE_HIDDEN_NAME, SvgExportFlag, encode_surface,
 };
 use font::{FONT_REGEXP, init_font_regexp};
 use sk::{AlphaType, ColorSpace, SkImage, SkiaDataRef};
@@ -223,13 +223,25 @@ impl<'c> CanvasElement<'c> {
     format: String,
     quality_or_config: Either3<u32, AvifConfig, Unknown>,
   ) -> Result<Object<'env>> {
-    // Flush deferred rendering before encoding
-    self.ctx.context.flush();
-    let data = self.encode_inner(format, quality_or_config)?;
+    // effing: the recording is rasterised on the pool when the surface is
+    // still blank, else flushed here; the canvas may take the rendered image
+    // back (src/ctx/effing/raster.rs)
+    let format = self.encode_format(format, quality_or_config)?;
+    let source = self.ctx.context.encode_source()?;
+    let canvas = source
+      .consolidates()
+      .then(|| EncodedCanvas::new(env, &self.ctx))
+      .flatten();
     encode_pool::spawn(
       env,
-      move || encode_surface(&data),
-      |env, output| {
+      move || {
+        let (image, replayed) = source.into_image()?;
+        Ok((encode_surface(&format.with_image(image))?, replayed))
+      },
+      move |env, (output, replayed)| {
+        if let (Some(canvas), Some(replayed)) = (canvas, replayed) {
+          canvas.adopt(replayed);
+        }
         output
           .into_buffer_slice(env)
           .and_then(|slice| slice.into_buffer(&env))
@@ -529,6 +541,26 @@ impl<'c> CanvasElement<'c> {
     format: String,
     quality_or_config: Either3<u32, AvifConfig, Unknown>,
   ) -> Result<ContextData> {
+    let format = self.encode_format(format, quality_or_config)?;
+    let image = self
+      .ctx
+      .context
+      .surface
+      .make_image_snapshot()
+      .ok_or_else(|| {
+        Error::new(
+          Status::GenericFailure,
+          "Create image snapshot failed".to_owned(),
+        )
+      })?;
+    Ok(format.with_image(image))
+  }
+
+  fn encode_format(
+    &self,
+    format: String,
+    quality_or_config: Either3<u32, AvifConfig, Unknown>,
+  ) -> Result<EncodeFormat> {
     let format_str = format.as_str();
     let quality = match &quality_or_config {
       Either3::A(q) => (*q) as u8,
@@ -536,21 +568,15 @@ impl<'c> CanvasElement<'c> {
       Either3::C(_) => DEFAULT_JPEG_QUALITY,
     };
     let ctx2d = &self.ctx.context;
-    let image = ctx2d.surface.make_image_snapshot().ok_or_else(|| {
-      Error::new(
-        Status::GenericFailure,
-        "Create image snapshot failed".to_owned(),
-      )
-    })?;
 
     let task = match format_str {
-      "webp" => ContextData::Webp(image, quality),
-      "jpeg" => ContextData::Jpeg(image, quality),
-      "png" => ContextData::Png(image),
-      "qoi" => ContextData::Qoi(image), // effing
+      "webp" => EncodeFormat::Webp(quality),
+      "jpeg" => EncodeFormat::Jpeg(quality),
+      "png" => EncodeFormat::Png,
+      "qoi" => EncodeFormat::Qoi, // effing
       "avif" => {
         let cfg = AvifConfig::from(&quality_or_config);
-        ContextData::Avif(image, cfg.into(), ctx2d.width, ctx2d.height)
+        EncodeFormat::Avif(cfg.into(), ctx2d.width, ctx2d.height)
       }
       "gif" => {
         let cfg = gif::GifConfig {
@@ -559,7 +585,7 @@ impl<'c> CanvasElement<'c> {
             _ => None,
           },
         };
-        ContextData::Gif(image, cfg, ctx2d.width, ctx2d.height)
+        EncodeFormat::Gif(cfg, ctx2d.width, ctx2d.height)
       }
       _ => {
         return Err(Error::new(

@@ -41,6 +41,7 @@ use crate::{
 };
 
 mod effing;
+pub(crate) use effing::raster::{EncodeFormat, EncodedCanvas}; // effing
 
 static CSS_SIZE_REGEXP: LazyLock<Regex> =
   LazyLock::new(|| Regex::new(r#"(-?[\d\.]+)(%|px|pt|pc|in|cm|mm|%|em|ex|ch|rem|q)?\s*"#).unwrap());
@@ -153,6 +154,10 @@ pub struct Context {
   /// Context::content_version when no recorder exists. Cell so `&self`
   /// surface writers (annotate_*) can still bump it.
   direct_content_version: Cell<u64>,
+  /// effing: the surface's generation while its pixels are still all
+  /// transparent black, for encodes that rasterise off the JS thread
+  /// (`src/ctx/effing/raster.rs`). `None` for backends without a recorder.
+  pub(crate) blank_generation: Option<u32>,
 }
 
 impl Context {
@@ -185,12 +190,14 @@ impl Context {
       color_space,
       stream: Some(stream),
       direct_content_version: Cell::new(0),
+      blank_generation: None,
     })
   }
 
   pub fn new(width: u32, height: u32, color_space: ColorSpace) -> Result<Self> {
     let surface = Surface::new_rgba_premultiplied(width, height, color_space)
       .ok_or_else(|| Error::from_reason("Create skia surface failed".to_owned()))?;
+    let blank_generation = Some(surface.generation_id()); // effing
     Ok(Context {
       surface,
       resource_id: next_resource_id(),
@@ -206,6 +213,7 @@ impl Context {
       color_space,
       stream: None,
       direct_content_version: Cell::new(0),
+      blank_generation,
     })
   }
 
@@ -226,6 +234,7 @@ impl Context {
       color_space: ColorSpace::default(),
       stream: None,
       direct_content_version: Cell::new(0),
+      blank_generation: None,
     }
   }
 
@@ -758,6 +767,7 @@ impl Context {
       }
       // Also clear the main surface
       self.surface.canvas.clear();
+      self.note_surface_cleared(); // effing
       return Ok(());
     }
 
@@ -879,6 +889,7 @@ impl Context {
         .reset(self.width as f32, self.height as f32);
       // Also clear main surface which accumulates content from flush() calls
       self.surface.canvas.clear();
+      self.note_surface_cleared(); // effing
     }
 
     // Clear the current path

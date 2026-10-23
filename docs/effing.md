@@ -23,18 +23,19 @@ Fork code is kept out of upstream files so that upstream merges stay trivial.
 Each layer has an `effing` directory with one file per feature, and each
 upstream file has at most a few marked hook lines.
 
-| Layer                  | Fork code                                                                                     | Upstream hooks                                                                                                                                                                                                                                                                                            |
-| ---------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,justify,word_break,group,filter_layer,fonts,pixels}.{hpp,cpp}` | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
-| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts,pixels}.rs`       | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`                  | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
-| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `fontRevision`)                       | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`), `src/font.rs` (any `font-weight`)                                                                                                                                                                                                 |
-| Encode pool (napi)     | `src/encode_pool.rs` (the pool, `getEncodeThreads`)                                           | `src/lib.rs` (`mod encode_pool`; `encode`, `toDataURLAsync`, `toBlob` and `convertToBlob` spawn on it; `AsyncBlob::encode`, `BlobBytes`, `blob_slice`), `index.js` (`toBlob` passes `null` on)                                                                                                            |
-| QOI encoding           | `src/qoi.rs` (the encoder)                                                                    | `src/lib.rs` (`mod qoi`, `qoi` in `encode`, `image/qoi` in `get_data_ref`, `ContextOutputData::Qoi` arms), `src/ctx.rs` (`ContextData::Qoi`, `ContextOutputData::Qoi`), `index.d.ts` (the `qoi` overloads), `node-canvas.{js,d.ts}` (`image/qoi` in `toBuffer`)                                           |
-| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                                       | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
-| Build                  |                                                                                               | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
-| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                                       | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories)                                                                                                                                                                                                       |
-| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                             | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                                                               |
+| Layer                  | Fork code                                                                                                                                                                                                             | Upstream hooks                                                                                                                                                                                                                                                                                            |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,justify,word_break,group,filter_layer,fonts,pixels,surface}.{hpp,cpp}`                                                                                                                 | `skia-c/skia_c.cpp` (include + four `text_rendering` checks, the face `setAlias` takes), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `shadowable_faces` and system flag, the `setAlias` replay, the asset font manager) |
+| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts,pixels,surface}.rs`                                                                                                                       | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`                                                                                                                                          | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`), `src/filter.rs` (`drop-shadow()`, filter lists)                                                                                                                       |
+| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `loadSystemFontsInBackground`, `waitForSystemFonts`, `fontRevision`)                                                                                          | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`, `get_font` waits for the startup fonts), `src/font.rs` (any `font-weight`)                                                                                                                                                         |
+| Encode pool (napi)     | `src/encode_pool.rs` (the pool, `getEncodeThreads`)                                                                                                                                                                   | `src/lib.rs` (`mod encode_pool`; `encode`, `toDataURLAsync`, `toBlob` and `convertToBlob` spawn on it; `AsyncBlob::encode`, `BlobBytes`, `blob_slice`), `index.js` (`toBlob` passes `null` on)                                                                                                            |
+| Async raster (napi)    | `src/ctx/effing/raster.rs` (`EncodeFormat`, `EncodeSource`, `encode_source`, `EncodedCanvas`, `adopt_replayed`), `src/page_recorder/effing.rs` (`unflushed_layers_for_replay`, `consolidate_unflushed_with_snapshot`) | `src/lib.rs` (`encode`, `encode_format`), `src/ctx.rs` (`blank_generation`, `note_surface_cleared` after the whole-canvas clears, the `EncodeFormat` and `EncodedCanvas` re-export), `src/page_recorder.rs` (`replayed_off_thread`)                                                                       |
+| QOI encoding           | `src/qoi.rs` (the encoder)                                                                                                                                                                                            | `src/lib.rs` (`mod qoi`, `qoi` in `encode`, `image/qoi` in `get_data_ref`, `ContextOutputData::Qoi` arms), `src/ctx.rs` (`ContextData::Qoi`, `ContextOutputData::Qoi`), `index.d.ts` (the `qoi` overloads), `node-canvas.{js,d.ts}` (`image/qoi` in `toBuffer`)                                           |
+| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                                                                                                                                                               | `src/page_recorder.rs` (`mod effing`, `groups`, the save replay, `close_group_content`, `get_recording_canvas`, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                     |
+| Build                  |                                                                                                                                                                                                                       | `build.rs` (`EFFING_SOURCES`, `SK_RELEASE`)                                                                                                                                                                                                                                                               |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                                                                                                                                                               | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories, waiting for them on `exit`)                                                                                                                                                                           |
+| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                                                                                                                                                     | `package.json`, `.github/workflows/CI.yaml` (publish check)                                                                                                                                                                                                                                               |
 
 C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
 napi bindings are functions that take the context as their first argument
@@ -909,10 +910,11 @@ the same name, as an `@font-face` family does over a locally installed one in
 a browser (`__test__/effing-font-precedence.spec.ts`). That holds wherever a
 family name is resolved: `ctx.font` for `fillText`, `strokeText` and
 `measureText`, a `Paragraph`, each family of a `font-family` list, and SVG
-text. The system's fonts are the ones `index.js` loads at startup:
-`GlobalFonts.loadSystemFonts()` (the system font directory) and the user's
-font directories (`~/Library/Fonts`, `~/.fonts`, ...), which it loads with
-`loadSystemFontsFromDir` from `js-binding.js` instead of `loadFontsFromDir`.
+text. The system's fonts are the ones `index.js` loads at startup: the
+system font directory, as `GlobalFonts.loadSystemFonts()` loads it, and the
+user's font directories (`~/Library/Fonts`, `~/.fonts`, ...), as
+`loadSystemFontsFromDir` from `js-binding.js` loads them rather than
+`loadFontsFromDir` (see [Loading the system fonts](#loading-the-system-fonts)).
 
 Upstream puts the system's fonts and the registered ones in one
 `TypefaceFontProvider`, the font manager SkParagraph's `FontCollection` asks
@@ -971,6 +973,51 @@ registered faces.
 - Fallback for characters no family of the list has is unchanged: it comes
   from the system font directory's font manager, whichever fonts are
   registered.
+
+### Loading the system fonts
+
+`index.js` loads the system's fonts with `loadSystemFontsInBackground` from
+`js-binding.js`: once per process, on a thread of its own. Upstream loaded
+them synchronously, every time a JS thread loaded `index.js`. The font
+collection is one per process, so a worker thread found the system font
+directory loaded already (`loadSystemFonts()` loads it once), or waited for
+the thread loading it, and loaded the user's font directories again, which
+changed nothing. Scanning the system font directory takes about 70 ms on an
+Apple M-series Mac (372 files), so every JS thread that loaded `index.js`
+in the first 70 ms of the process, as the worker threads an app starts at
+once do, waited that long in `require`.
+
+Now `require` returns at once, and everything that reads or changes the
+font collection waits until the fonts are loaded, from any thread: every
+`GlobalFonts` call (`register`, `families`, `loadSystemFonts()`, ...),
+`fontRevision()`, and drawing, measuring or laying out text, SVG text
+included. So whatever runs after `index.js` sees the same fonts, and the same
+font revision, as when `index.js` loaded them synchronously
+(`__test__/effing-system-fonts.spec.ts`). A thread that needs the fonts before
+the background thread has started loads them itself. What a thread does
+meanwhile, such as loading other modules, overlaps the load, and one that
+never uses fonts doesn't wait at all.
+
+- The user's font directories load once per process too, with the system
+  font directory. A font added to them while the process runs is no longer
+  picked up by the next worker thread to load `index.js`; call
+  `loadSystemFontsFromDir` for that.
+- Loading `index.js` again no longer bumps the font revision (it bumped it
+  for every font in the user's font directories) or invalidates the text
+  layout caches.
+- `DISABLE_SYSTEM_FONTS_LOAD` still loads no fonts.
+- A process doesn't exit while the fonts load: the loading thread would crash
+  in the static destructors `exit()` runs. Every JS environment that loaded
+  `index.js` waits for the load before it's torn down (a napi env cleanup
+  hook: a worker that ends, exits or is terminated, and the main thread when
+  its event loop drains), and `index.js` waits for it on `process.on('exit')`
+  too, for `process.exit()` and an uncaught exception, which skip the cleanup
+  hooks. The main thread's exit stops the workers first, so this covers a
+  process where only a worker loaded `index.js` as well. So a process that
+  would have exited within the load's first ~70 ms exits when it ends. (Not
+  covered: calling the internal `process.reallyExit()` directly, which skips
+  the `exit` event. A signal's default action ends the process without
+  running the destructors, so it is safe.)
 
 ## Font matching
 
@@ -1113,7 +1160,7 @@ would miss a mutator added later. These change it:
   the rebuild of the collection they do;
 - `loadFontsFromDir`, `loadSystemFonts()` and `loadSystemFontsFromDir`, at
   every font they load, including the system fonts `index.js` loads at
-  startup.
+  startup, which `fontRevision()` waits for.
 
 Reads don't change it: `families`, `has`, `getVariationAxes`, measuring,
 laying out and drawing text. Nor does a call that fails (returns `null`,
@@ -1160,7 +1207,10 @@ in flight doesn't wait for them, as it did for libuv's: they run to
 completion on the pool, behind which later encodes queue, and their results
 are dropped. A panic in an encoder rejects the promise instead of taking a
 thread down. Everything else is unchanged: the canvas is still flushed and
-snapshotted when the method is called, the bytes are the sync encoders',
+snapshotted when the method is called (except by `encode()` of a blank
+canvas, which leaves the rasterising to the pool too; see
+[Rasterising async encodes on the pool](#rasterising-async-encodes-on-the-pool)),
+the bytes are the sync encoders',
 failures reject with the same errors (`__test__/effing-encode-pool.spec.ts`),
 and the sync methods still encode on the calling thread.
 
@@ -1181,6 +1231,62 @@ Node's defaults:
 
 `getEncodeThreads()` returns the pool's size, starting the pool if no encode
 has yet.
+
+### Rasterising async encodes on the pool
+
+A raster canvas records its draws, as upstream's does, and plays them onto
+its surface only when something needs the pixels. For an encode that used to
+be the calling thread's job: `encode()` flushed the recording, which is where
+all the rasterisation happens (paths, gradients, image resampling, text,
+groups), and only then handed a snapshot to the pool. A JS thread that keeps
+several frames in flight could only rasterise one at a time.
+
+`encode()` now leaves that to the pool while the canvas's surface is still
+blank, that is, while nothing has been flushed or written onto it since it
+was created or last cleared whole (`clearRect` over the whole canvas, or
+`reset()`). It hands the pool the recording's unflushed layers, which are
+immutable pictures, and a new transparent surface like the canvas's (same
+size, image info and surface properties), and the pool plays the layers onto
+it and encodes that. Those are the pictures a flush would play, onto the same
+pixels, so the bytes are the same. The canvas keeps its recording unflushed:
+draws after `encode()` go on recording, and whatever reads the canvas next
+flushes it as before. Like a snapshot, the pictures are taken when
+`encode()` is called, so later draws on the canvas, or on a canvas it drew,
+aren't in the encode.
+
+A flush of more than one layer (`putImageData`, and drawing the canvas into
+another canvas, split the recording into layers) consolidates them into one
+picture of the surface's snapshot, which releases what they pinned: the
+sources they drew, `putImageData`'s pixel copies, image patterns. So that an
+encoded canvas doesn't keep those for as long as it's kept (up to the 32 MiB
+recording limit per canvas), the canvas takes the image the pool rendered in
+place of such layers when the encode resolves, if it's still as the encode
+found it: nothing drawn, read, cleared or resized since. The image stays
+unflushed, so the surface is still blank and the next `encode()` goes to the
+pool again, where playing the image is a copy. This is a picture swap on the
+calling thread, with no rasterisation, and only for recordings a flush would
+have consolidated: a canvas with a single layer keeps it, as it did after a
+flush. (Eight idle 200×200 canvases, each with three 1500×1500 canvases drawn
+into it and a `putImageData`, encoded once: 212 MB of RSS kept without the
+swap, 101 MB with it, 99 MB with `encodeSync`.)
+
+Otherwise, `encode()` flushes and snapshots on the calling thread as before.
+That covers a canvas with `alpha: false` (its opaque fill is written straight
+to the surface), one with a Lottie frame on it, one read or flushed since its
+last whole clear, and a second `encode()` of the same recording, unless the
+first one's image has taken the layers' place: the pool would play every
+unflushed layer again, so the second one flushes them, which also
+consolidates them. `encodeSync()`, `toBuffer()`, `toDataURL()`, and the
+other async encoders (`toDataURLAsync()`, `toBlob()`, `convertToBlob()`)
+still flush on the calling thread.
+
+A 1296×1920 photo frame (one `drawImage`, encoded as JPEG) on an 18-core
+Apple M5 Pro, 8 frames in flight on one JS thread:
+
+|                          | `encode()` call | ms per frame | JS thread busy per frame |
+| ------------------------ | --------------- | ------------ | ------------------------ |
+| flushed on the JS thread | 5.75 ms         | 6.1          | 5.9 ms                   |
+| rasterised on the pool   | 0.08 ms         | 2.6          | 0.2 ms                   |
 
 ## QOI encoding
 
@@ -1301,6 +1407,27 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### Unreleased
+
+- `encode()` of a canvas whose surface hasn't been written or flushed since
+  it was created or last cleared whole plays its recording on the encode
+  pool, so rasterising no longer blocks the JS thread and frames in flight
+  rasterise in parallel. Any other canvas (one read since, such as by
+  `getImageData` or `toBuffer`, one with `alpha: false` or a Lottie frame,
+  or one whose recording an earlier `encode()` played on the pool, unless
+  that encode's image has since taken its layers' place) is flushed on the
+  JS thread as before. Same bytes as before, and a canvas kept after the
+  encode lets go of what its recording pinned, as after a flush (see
+  Rasterising async encodes on the pool).
+- The system fonts and the user's font directories load once per process,
+  on a thread of their own, instead of on every JS thread that requires the
+  package; font operations wait for that load. A later `require` in another
+  worker no longer rescans the user's font directories, and a process that
+  exits while the fonts load waits for them (see Loading the system fonts).
+- On Linux, `/usr/local/share/fonts` loads with the user's font directories.
+  It was meant to before, but the path was relative to the working
+  directory, so it never did.
 
 ### 1.0.10-effing.8
 

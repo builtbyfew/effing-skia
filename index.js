@@ -20,7 +20,8 @@ const {
   GifEncoder,
   GifDisposal,
   LottieAnimation,
-  loadSystemFontsFromDir, // effing: fonts registered under the same name shadow these
+  loadSystemFontsInBackground, // effing: once per process, off the JS thread
+  waitForSystemFonts, // effing: the process mustn't exit while they load
 } = require('./js-binding')
 
 const { DOMPoint, DOMMatrix, DOMRect } = require('./geometry')
@@ -158,21 +159,29 @@ class Canvas {
 }
 
 if (!process.env.DISABLE_SYSTEM_FONTS_LOAD) {
-  GlobalFonts.loadSystemFonts()
+  // effing: GlobalFonts.loadSystemFonts(), then the user's font directories as
+  // system fonts, which fonts registered under the same name shadow. Loaded
+  // once per process on a thread of its own; every font lookup waits for it.
+  const userFontDirs = []
   const platformName = platform()
   const homedirPath = homedir()
   switch (platformName) {
     case 'win32':
-      loadSystemFontsFromDir(join(homedirPath, 'AppData', 'Local', 'Microsoft', 'Windows', 'Fonts'))
+      userFontDirs.push(join(homedirPath, 'AppData', 'Local', 'Microsoft', 'Windows', 'Fonts'))
       break
     case 'darwin':
-      loadSystemFontsFromDir(join(homedirPath, 'Library', 'Fonts'))
+      userFontDirs.push(join(homedirPath, 'Library', 'Fonts'))
       break
     case 'linux':
-      loadSystemFontsFromDir(join('usr', 'local', 'share', 'fonts'))
-      loadSystemFontsFromDir(join(homedirPath, '.fonts'))
+      userFontDirs.push('/usr/local/share/fonts')
+      userFontDirs.push(join(homedirPath, '.fonts'))
       break
   }
+  loadSystemFontsInBackground(userFontDirs)
+  // The process mustn't exit while the fonts load (the loader would crash in
+  // the static destructors). Tearing down a JS environment waits for them,
+  // but process.exit() and an uncaught exception skip that, so wait here too.
+  process.once('exit', () => waitForSystemFonts())
 }
 
 module.exports = {

@@ -14,8 +14,8 @@
 
 use super::PageRecorder;
 use crate::picture_recorder::PictureRecorder;
-use crate::sk::Canvas;
 use crate::sk::effing::group::GroupLayer;
+use crate::sk::{Canvas, SkImage, SkPicture};
 
 /// A group open in the recording.
 pub(super) struct OpenGroup {
@@ -147,5 +147,45 @@ impl PageRecorder {
       return;
     };
     canvas.composite_group(&picture, paint, &layer.transform);
+  }
+}
+
+// Encodes that rasterise off the JS thread (`src/ctx/effing/raster.rs`).
+impl PageRecorder {
+  /// The recording's layers that no flush has played onto the surface yet,
+  /// after promoting the current recording to one, as a flush would. They
+  /// stay unflushed: a later flush still plays them onto the surface.
+  ///
+  /// `None` once an encode has played them off the JS thread since the last
+  /// reset (`note_replayed_off_thread`): each would play every unflushed
+  /// layer again, so a canvas encoded over and over without a clear flushes,
+  /// which consolidates them, instead.
+  pub(crate) fn unflushed_layers_for_replay(&mut self) -> Option<Vec<SkPicture>> {
+    if self.replayed_off_thread {
+      return None;
+    }
+    self.promote_layer();
+    Some(self.layers.iter().skip(self.depth).cloned().collect())
+  }
+
+  /// An encode plays the unflushed layers off the JS thread: once it has its
+  /// surface, so an encode that falls back to a flush doesn't count.
+  pub(crate) fn note_replayed_off_thread(&mut self) {
+    self.replayed_off_thread = true;
+  }
+
+  /// Replaces the layers with one picture of `image`, as
+  /// `consolidate_with_snapshot` does after a flush, but leaves it unflushed:
+  /// `image` is what the unflushed layers render onto the blank surface (an
+  /// encode rendered it off the JS thread), and the surface is still blank.
+  /// Playing it is a blit, so the next encode may play it off the JS thread
+  /// again.
+  pub(crate) fn consolidate_unflushed_with_snapshot(&mut self, image: SkImage) {
+    let consolidations = self.consolidations;
+    self.consolidate_with_snapshot(image);
+    if self.consolidations != consolidations {
+      self.depth = 0;
+      self.replayed_off_thread = false;
+    }
   }
 }
