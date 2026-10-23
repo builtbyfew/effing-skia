@@ -1376,6 +1376,19 @@ the CI matrix.
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
+### Unreleased
+
+- `encode()` of a canvas that hasn't been drawn onto directly since it was
+  created or last cleared whole plays its recording on the encode pool, so
+  rasterising no longer blocks the JS thread and frames in flight rasterise
+  in parallel. Same bytes as before (see Rasterising async encodes on the
+  pool).
+- The system fonts and the user's font directories load once per process,
+  on a thread of their own, instead of on every JS thread that requires the
+  package; font operations wait for that load. A later `require` in another
+  worker no longer rescans the user's font directories (see Loading the
+  system fonts).
+
 ### 1.0.10-effing.8
 
 - `encode('qoi')` and `encodeSync('qoi')` encode a canvas as QOI, lossless
