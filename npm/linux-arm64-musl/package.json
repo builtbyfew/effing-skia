@@ -6,7 +6,8 @@
   ],
   "main": "skia.linux-arm64-musl.node",
   "files": [
-    "skia.linux-arm64-musl.node"
+    "skia.linux-arm64-musl.node",
+    "sbom.cdx.json"
   ],
   "description": "Effing's fork of @napi-rs/canvas: Canvas for Node.js with skia backend, plus unsnapped text, a Paragraph primitive and compositing groups",
   "keywords": [

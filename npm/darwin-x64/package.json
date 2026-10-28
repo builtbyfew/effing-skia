@@ -6,7 +6,8 @@
   ],
   "main": "skia.darwin-x64.node",
   "files": [
-    "skia.darwin-x64.node"
+    "skia.darwin-x64.node",
+    "sbom.cdx.json"
   ],
   "description": "Effing's fork of @napi-rs/canvas: Canvas for Node.js with skia backend, plus unsnapped text, a Paragraph primitive and compositing groups",
   "keywords": [
