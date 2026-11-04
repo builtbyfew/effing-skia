@@ -10,7 +10,8 @@
 //! The recording below sees a plain save for a content-sized group, so the
 //! save stack stays in step with the context's. A flush or putImageData
 //! closes the open content recordings first, compositing what they hold so
-//! far, and `replay_saves` starts them over in the resumed recording.
+//! far, and `resume_recording` starts them over in the resumed recording
+//! (`reopen_save` for each save it replays).
 
 use super::PageRecorder;
 use crate::picture_recorder::PictureRecorder;
@@ -51,7 +52,7 @@ impl PageRecorder {
   /// own from here; otherwise it opened the layer.
   pub fn begin_group(&mut self, layer: GroupLayer, fits_content: bool) {
     let mut group = OpenGroup {
-      depth: self.save_count.saturating_sub(1),
+      depth: self.saved_levels.len().saturating_sub(1),
       layer,
       fits_content,
       content: None,
@@ -65,10 +66,29 @@ impl PageRecorder {
   /// Composites the group whose save is being restored, if it was recorded
   /// on its own. Called before the save is restored.
   pub fn end_group(&mut self) {
-    let depth = self.save_count.saturating_sub(1);
+    let depth = self.saved_levels.len().saturating_sub(1);
     if let Some(index) = self.groups.iter().rposition(|group| group.depth == depth) {
       self.composite_content(index);
     }
+  }
+
+  /// The device-space bounds of the context's clip, as `[left, top, right,
+  /// bottom]`: the intersection of the bounds of every clip on the save
+  /// stack, which holds the clip itself. `None` without a clip.
+  pub fn clip_bounds(&self) -> Option<[f32; 4]> {
+    self
+      .saved_levels
+      .iter()
+      .chain(std::iter::once(&self.top_level))
+      .flat_map(|level| &level.clips)
+      .map(|(transform, path)| {
+        let (left, top, right, bottom) = path.transform(transform).get_bounds();
+        [left, top, right, bottom]
+      })
+      .reduce(|a, b| {
+        let (left, top) = (a[0].max(b[0]), a[1].max(b[1]));
+        [left, top, a[2].min(b[2]).max(left), a[3].min(b[3]).max(top)]
+      })
   }
 
   /// Whether each open group, outermost first, is sized to its content.
@@ -86,38 +106,36 @@ impl PageRecorder {
 
   /// Composites every open content recording onto the recording below it,
   /// innermost first, so that `current` holds everything drawn: before it is
-  /// finished. `replay_saves` starts them over.
+  /// finished. `reopen_save` starts them over.
   pub(super) fn close_group_content(&mut self) {
     for index in (0..self.groups.len()).rev() {
       self.composite_content(index);
     }
   }
 
-  /// Replays the save stack onto a resumed recording, opening each group
-  /// again: a content-sized group gets a plain save and a new content
-  /// recording, any other its layer. Leaves the innermost recording at the
-  /// innermost group's state; the caller applies the current clip and
-  /// transform.
-  pub(super) fn replay_saves(&mut self) {
-    for depth in 0..self.save_count {
-      let index = self.groups.iter().position(|group| group.depth == depth);
-      // Only the groups below this depth have started over.
-      let split = index.unwrap_or(self.groups.len());
-      let (below, group) = self.groups.split_at_mut(split);
-      let Some(canvas) = innermost(below, &mut self.current) else {
-        return;
-      };
-      match group.first() {
-        Some(group) if group.fits_content => group.layer.reopen_save(canvas),
-        Some(group) => group.layer.reopen(canvas),
-        None => canvas.save(),
-      }
-      if let Some(index) = index
-        && self.groups[index].fits_content
-      {
-        let content = self.start_content(&self.groups[index].layer);
-        self.groups[index].content = Some(content);
-      }
+  /// Replays the save at `depth` onto a resumed recording, after the levels
+  /// below it, opening its group again if it opened one: a content-sized
+  /// group gets a plain save and a new content recording, any other its
+  /// layer. The caller then applies the level's clips and transform to the
+  /// innermost recording.
+  pub(super) fn reopen_save(&mut self, depth: usize) {
+    let index = self.groups.iter().position(|group| group.depth == depth);
+    // Only the groups below this depth have started over.
+    let split = index.unwrap_or(self.groups.len());
+    let (below, group) = self.groups.split_at_mut(split);
+    let Some(canvas) = innermost(below, &mut self.current) else {
+      return;
+    };
+    match group.first() {
+      Some(group) if group.fits_content => group.layer.reopen_save(canvas),
+      Some(group) => group.layer.reopen(canvas),
+      None => canvas.save(),
+    }
+    if let Some(index) = index
+      && self.groups[index].fits_content
+    {
+      let content = self.start_content(&self.groups[index].layer);
+      self.groups[index].content = Some(content);
     }
   }
 

@@ -25,6 +25,29 @@ fn main() {
     println!("cargo:rerun-if-changed={source}");
     println!("cargo:rerun-if-changed={}", source.replace(".cpp", ".hpp"));
   }
+  println!("cargo:rerun-if-changed=skia-c/text.cpp");
+  println!("cargo:rerun-if-changed=skia-c/text.hpp");
+  println!("cargo:rerun-if-changed=skia-c/font_families.cpp");
+  println!("cargo:rerun-if-changed=skia-c/text_metrics.cpp");
+  println!("cargo:rerun-if-changed=skia-c/hb_api.h");
+  println!("cargo:rerun-if-changed=skia-c/text_words.cpp");
+  println!("cargo:rerun-if-changed=skia-c/text_styles.cpp");
+  println!("cargo:rerun-if-changed=skia-c/text_caps.cpp");
+  println!("cargo:rerun-if-changed=skia-c/icu_api.h");
+  println!("cargo:rerun-if-changed=skia-c/text_raster.cpp");
+  println!("cargo:rerun-if-changed=skia-c/text_raster.hpp");
+  println!("cargo:rerun-if-changed=skia-c/font_scalers.cpp");
+  println!("cargo:rerun-if-changed=skia-c/svg_image.cpp");
+  println!("cargo:rerun-if-changed=skia-c/svg_image.hpp");
+  println!("cargo:rerun-if-changed=scripts/libskia.flags");
+
+  // src/svg_doc/dom.rs sizes its deep-parse stack by this (or by debug
+  // assertions): roxmltree's stack use per element level follows the
+  // opt-level. OPT_LEVEL is the opt-level of this crate's profile.
+  println!("cargo:rustc-check-cfg=cfg(svg_unoptimized)");
+  if env::var("OPT_LEVEL").as_deref() == Ok("0") {
+    println!("cargo:rustc-cfg=svg_unoptimized");
+  }
 
   let compile_target = env::var("TARGET").expect("TARGET");
   let compile_target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS");
@@ -56,10 +79,18 @@ fn main() {
 
   let mut build = cc::Build::new();
 
-  build
-    .cpp(true)
-    .file("skia-c/skia_c.cpp")
-    .files(EFFING_SOURCES);
+  build.cpp(true);
+  // Skia is built with SK_R32_SHIFT=0 (scripts/skia-gn-args.cjs): kN32 is
+  // RGBA, like our surfaces, so the legacy blitters can draw on them. The value
+  // shapes inline code in Skia's headers, so skia-c must use the same one;
+  // SkTypes.h would pick 16 (BGRA) on Windows.
+  build.define("SK_R32_SHIFT", "0");
+  // libskia is a release build (is_debug=false, -DSK_RELEASE in
+  // scripts/skia-gn-args.cjs). Without these, SkLoadUserConfig.h picks
+  // SK_DEBUG for skia-c, and the SkDEBUGCODE members change the layout of
+  // classes shared with libskia (SkMutex, SkPixelRef, SkTextBlob, ...).
+  build.define("NDEBUG", None);
+  build.define("SK_RELEASE", None);
 
   if compile_target.as_str() == "aarch64-linux-android" {
     let nkd_home = env::var("ANDROID_NDK_LATEST_HOME").unwrap();
@@ -126,6 +157,13 @@ fn main() {
       .flag("-fvisibility-inlines-hidden")
       .flag("-fdata-sections")
       .flag("-ffunction-sections")
+      // Chromium compiles all of its code this way
+      // (build/config/compiler/BUILD.gn, config("compiler")), and libskia
+      // too (gn/skia/BUILD.gn). clang and gcc contract a*b+c into one FMA
+      // by default where the CPU has one (arm64, riscv64), so
+      // SkMatrix::mapPoint, inlined in skia_c.cpp, mapped a trailing moveTo
+      // 1 ulp off libskia's mapPoints and off Chrome.
+      .flag("-ffp-contract=off")
       .flag("-Wno-unused-function")
       .flag("-Wno-unused-parameter");
   }
@@ -134,11 +172,25 @@ fn main() {
     "windows" => {
       build
         .flag("/std:c++20")
+        // clang-cl takes the clang flag only through /clang:, as in
+        // Chromium and scripts/skia-gn-args.cjs (CHROME_WIN_CFLAGS).
+        .flag("/clang:-ffp-contract=off")
         .flag("-Wno-unused-function")
         .flag("-Wno-unused-parameter")
         .static_crt(true);
     }
     "linux" => {
+      // #1405: rustc exports every #[no_mangle]/#[export_name] item of the
+      // cdylib's deps, cxx's runtime included (cxxbridge1$string$drop, ...).
+      // ld.so looks those names up in the host process first, and Electron
+      // (Chromium links Fontations through cxx) exports the same ones, so
+      // canvas freed its own Rust strings with Chromium's allocator and
+      // trapped. -Bsymbolic binds the addon's references to its own
+      // definitions; it hides nothing, napi_register_module_v1 stays
+      // exported. Not -Bsymbolic-functions: zig (the musl linker) rejects
+      // it, and every symbol the addon exports is a function anyway.
+      // e2e/electron loads the built addon inside Electron.
+      println!("cargo:rustc-cdylib-link-arg=-Wl,-Bsymbolic");
       // `cargo test` links a real binary, not the node-loaded cdylib, so
       // let the node-provided napi_* symbols stay unresolved (tests never
       // execute those paths). gnu only: musl cross-builds link through
@@ -229,24 +281,77 @@ fn main() {
 
   let out_dir = env::var("OUT_DIR").unwrap();
 
+  // Skia's Fontations font scaler, which Chrome draws Linux fonts and some
+  // macOS web fonts with (skia-c/font_scalers.cpp). Its Rust half is the
+  // skia-fontations crate; its C++ half is compiled here with the toolchain
+  // setup above and libskia's own defines.
+  let fontations = compile_target_os == "macos" || compile_target_os == "linux";
+  let mut fontations_build = build.clone();
+
+  if fontations {
+    build.define("SKIAC_FONTATIONS", None);
+  }
   build
+    .file("skia-c/skia_c.cpp")
+    .file("skia-c/text.cpp")
+    .file("skia-c/font_families.cpp")
+    .file("skia-c/text_metrics.cpp")
+    .file("skia-c/text_words.cpp")
+    .file("skia-c/text_styles.cpp")
+    .file("skia-c/text_caps.cpp")
+    .file("skia-c/text_raster.cpp")
+    .file("skia-c/font_scalers.cpp")
+    .file("skia-c/svg_image.cpp")
+    .files(EFFING_SOURCES)
     .include("./skia-c")
     .include(skia_path)
-    // effing: Skia is built without SK_DEBUG (is_debug=false, so NDEBUG), and
-    // the bridge must see its headers the same way. Under SK_DEBUG they give
-    // FontCollection, ParagraphCache, SkMutex, SkSharedMutex, SkTextBlob and
-    // the SkTypeface subclasses other sizes, and SkRefCnt other inline
-    // checks, than the library was built with.
-    .define("SK_RELEASE", None)
     // https://github.com/rust-lang/rust/pull/93901#issuecomment-1119360260
     .cargo_metadata(false)
     .out_dir(&out_dir)
     .compile("skiac");
 
+  if fontations {
+    // Writes the bridge's C++ (ffi.rs.h / ffi.rs.cc) under
+    // OUT_DIR/cxxbridge; Skia includes the header as
+    // "src/ports/fontations/src/ffi.rs.h".
+    cxx_build::CFG.include_prefix = "";
+    let bridge = cxx_build::bridge("skia/src/ports/fontations/src/ffi.rs");
+    let cxxbridge = path::Path::new(&out_dir).join("cxxbridge");
+    fontations_build
+      .files(bridge.get_files())
+      .file(skia_path.join("src/ports/SkTypeface_fontations.cpp"))
+      .file(skia_path.join("src/ports/SkFontScanner_fontations.cpp"))
+      .file(skia_path.join("src/ports/SkFontMgr_fontations_empty.cpp"))
+      .include(cxxbridge.join("include"))
+      .include(cxxbridge.join("include").join("skia"))
+      .include(skia_path);
+    for flag in libskia_flags(&compile_target) {
+      fontations_build.flag(flag);
+    }
+    fontations_build
+      .flag_if_supported("-Wno-unused-but-set-variable")
+      .cargo_metadata(false)
+      .out_dir(&out_dir)
+      .compile("skiac_fontations");
+  }
+
   println!("cargo:rustc-link-search={skia_lib_dir}");
   println!("cargo:rustc-link-search={}", &out_dir);
   println!("cargo:rustc-link-lib=static=skshaper");
   napi_build::setup();
+}
+
+/// The -D / -U flags libskia's C++ is built with for `target`
+/// (scripts/libskia.flags): Skia's private headers change class layouts
+/// with them.
+fn libskia_flags(target: &str) -> Vec<String> {
+  include_str!("scripts/libskia.flags")
+    .lines()
+    .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+    .filter_map(|line| line.split_once(' '))
+    .filter(|(scope, _)| *scope == "*" || *scope == "gn" || *scope == target)
+    .map(|(_, flag)| flag.trim().to_owned())
+    .collect()
 }
 
 fn link_libcxx(build: &mut cc::Build) {

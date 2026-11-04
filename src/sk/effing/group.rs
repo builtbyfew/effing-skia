@@ -1,6 +1,6 @@
 //! Compositing groups: `skia-c/effing/group.cpp`.
 
-use super::super::{Canvas, ImageFilter, Matrix, Paint, Path, SkPicture, ffi};
+use super::super::{Canvas, ImageFilter, Matrix, Paint, SkPicture, ffi};
 
 unsafe extern "C" {
   fn effing_canvas_save_group(
@@ -89,34 +89,31 @@ pub struct GroupLayer {
   pub bounds: Option<[f32; 4]>,
   /// The transform `bounds` are in.
   pub transform: Matrix,
-  /// The clip in effect when the group opened, in device space, which the
-  /// group's composite is confined to.
-  pub clip: Option<Path>,
+  /// The bounds of the clip in effect when the group opened, in device
+  /// space, as `[left, top, right, bottom]`: the content's composite can't
+  /// reach beyond them.
+  pub clip: Option<[f32; 4]>,
 }
 
 impl GroupLayer {
   /// Opens the layer on `canvas` like `save_group` did, without the
   /// backdrop: the content behind it already has the backdrop baked in.
-  /// Leaves `canvas` at the layer's transform. The clip goes on before the
-  /// layer, at the enclosing save, so the composite is clipped like the
-  /// first recording clipped it.
+  /// Leaves `canvas` at the layer's transform. The resumed recording has
+  /// already replayed the clips of the enclosing saves, so the composite is
+  /// clipped like the first recording clipped it.
   pub fn reopen(&self, canvas: &mut Canvas) {
     self.restore_opening_state(canvas);
     canvas.save_group(self.paint.as_ref(), None, self.bounds);
   }
 
   /// Like `reopen` for a group drawn on its own (see `begin_content`): the
-  /// clip, then the plain save its composite goes into when it ends.
+  /// plain save its composite goes into when it ends.
   pub fn reopen_save(&self, canvas: &mut Canvas) {
     self.restore_opening_state(canvas);
     canvas.save();
   }
 
   fn restore_opening_state(&self, canvas: &mut Canvas) {
-    canvas.reset_transform();
-    if let Some(ref clip) = self.clip {
-      canvas.set_clip_path(clip);
-    }
     canvas.set_transform(&self.transform);
   }
 
@@ -128,10 +125,7 @@ impl GroupLayer {
     let Some(ref paint) = self.paint else {
       return [0.0, 0.0, width, height];
     };
-    let clip = self.clip.as_ref().map(|clip| {
-      let (left, top, right, bottom) = clip.get_bounds();
-      [left, top, right, bottom]
-    });
+    let clip = self.clip;
     unsafe {
       effing_group_content_bounds(
         paint.0,

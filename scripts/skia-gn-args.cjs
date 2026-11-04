@@ -14,6 +14,40 @@ const PDF_HARFBUZZ_SUBSET_CRASHING_TARGETS = new Set([
   'aarch64-unknown-linux-musl',
 ])
 
+// Compile Skia's CPU raster code the way Chrome does, so the canvas output
+// matches Chrome's CPU canvas.
+// - Chrome never defines SK_FORCE_RASTER_PIPELINE_BLITTER, so solid and image
+//   fills use Skia's legacy 8-bit blitters and shader contexts. Those need
+//   SK_ENABLE_LEGACY_SHADERCONTEXT (chromium skia/BUILD.gn:68-69, "Staging").
+// - The SK_SUPPORT_LEGACY_* / SK_AVOID_* / SK_LEGACY_* defines are the CPU ones
+//   from chromium skia/config/SkUserConfig.h:129-144. The others in that list
+//   only touch Ganesh/Graphite, which we do not build.
+// - The legacy blitters only take kN32 (SkBlitter::UseLegacyBlitter and
+//   SkImageShader::onMakeContext), and our surfaces are kRGBA_8888. kN32 is
+//   BGRA by default on Windows (SkTypes.h) and Skia's BUILD.gn sets
+//   SK_R32_SHIFT=16 on Linux, so make it RGBA everywhere. -U first: the flags
+//   below come after gn's defines on the compile line. skia-c must agree, see
+//   SK_R32_SHIFT in build.rs.
+const CHROME_RASTER_DEFINES = [
+  '-DSK_ENABLE_LEGACY_SHADERCONTEXT',
+  '-DSK_SUPPORT_LEGACY_ANISOTROPIC_MIPMAP_SCALE',
+  '-DSK_SUPPORT_LEGACY_CONIC_CHOP',
+  '-DSK_AVOID_SLOW_RASTER_PIPELINE_BLURS',
+  '-DSK_LEGACY_INITWITHPREV_LAYER_SIZING',
+  '-DSK_SUPPORT_LEGACY_RRECT_TRANSFORM',
+  '-USK_R32_SHIFT',
+  '-DSK_R32_SHIFT=0',
+]
+
+// clang-cl defaults to -ffp-contract=on and fuses a*b+c into one FMA (seen on
+// win32-arm64), so Windows output drifts from Chrome and from our other
+// targets. Skia's gn/skia/BUILD.gn adds -ffp-contract=off only
+// `if (is_clang && !is_win)`; Chromium adds /clang:-ffp-contract=off on Windows
+// too (build/config/compiler/BUILD.gn, config("compiler")). extra_cflags goes
+// on the C and the C++ compile line of every target, skcms and third_party
+// included, after Skia's /fp:precise.
+const CHROME_WIN_CFLAGS = ['/clang:-ffp-contract=off']
+
 // context mirrors the build host: targetTriple is the --target= value ('' for
 // native), the rest describe the build machine.
 // Returns { gnArgs, args: Map<name, value>, cc, cxx }
@@ -98,7 +132,7 @@ function buildGnArgs({
       extraCflagsCC =
         '\\"/std:c++20\\",' +
         '\\"/MT\\",' +
-        '\\"-DSK_FORCE_RASTER_PIPELINE_BLITTER\\",' +
+        CHROME_RASTER_DEFINES.map((flag) => `\\"${flag}\\",`).join('') +
         '\\"-DSK_ENABLE_SVG\\",' +
         '\\"-DSK_RELEASE\\",' +
         '\\"-DSK_DISABLE_TRACING\\",' +
@@ -114,6 +148,8 @@ function buildGnArgs({
         console.info(`Found clang version: ${clangVersion}`)
         extraSkiaBuildFlag = `clang_win_version=\\"${clangVersion}\\"`
       }
+      // See CHROME_WIN_CFLAGS above.
+      GN_ARGS.push(`extra_cflags=[${CHROME_WIN_CFLAGS.map((flag) => `\\"${flag}\\"`).join(',')}]`)
       GN_ARGS.push(`clang_win=\\"C:\\\\Program Files\\\\LLVM\\"`)
       GN_ARGS.push(`skia_enable_fontmgr_win=false`)
       break
@@ -122,7 +158,7 @@ function buildGnArgs({
       extraCflagsCC =
         '"-std=c++20",' +
         '"-fno-exceptions",' +
-        '"-DSK_FORCE_RASTER_PIPELINE_BLITTER",' +
+        CHROME_RASTER_DEFINES.map((flag) => `"${flag}",`).join('') +
         '"-DSK_ENABLE_SVG",' +
         '"-DSK_RELEASE",' +
         '"-DSK_DISABLE_TRACING",' +

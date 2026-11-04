@@ -3,6 +3,36 @@ import { ReadableStream } from 'node:stream/web'
 // Clear all type of caches in Skia
 export function clearAllCache(): void
 
+export type TextRenderer = 'portable' | 'system'
+
+/**
+ * Selects how text is drawn.
+ *
+ * `'portable'` (the default) draws text the same way on every OS: FreeType,
+ * Skia's default text gamma, no LCD text and one font family table. The same
+ * registered fonts give the same pixels and TextMetrics on macOS, Linux and
+ * Windows.
+ *
+ * `'system'` draws text with each OS's own font renderer, as Chrome does:
+ * CoreText on macOS (Fontations for some color and variable fonts) with
+ * CoreText's installed fonts and fallback, Fontations on Linux, FreeType
+ * elsewhere; plus each OS's text gamma and contrast, LCD text on opaque macOS
+ * canvases, Chrome's per-OS font family settings and macOS metric rules.
+ *
+ * Applies to the whole process, worker threads included. Call it once at
+ * startup, before creating canvases. Setting the mode in use again changes
+ * nothing. Any other value throws a TypeError. Registered fonts keep their
+ * FontKey. A canvas created before the switch keeps its text gamma until its
+ * width or height is set. A `ctx.font` value set before the switch keeps its
+ * parsed form: sizes in `ex`/`ch`/... units and, on macOS, the
+ * BlinkMacSystemFont to system-ui rewrite. Set `ctx.font` again after the
+ * switch.
+ */
+export function setTextRenderer(renderer: TextRenderer): void
+
+/** The text renderer in use, set by {@link setTextRenderer}. */
+export function getTextRenderer(): TextRenderer
+
 interface CanvasRenderingContext2D
   extends CanvasCompositing,
   CanvasDrawPath,
@@ -33,14 +63,22 @@ interface CanvasShadowStyles {
   shadowOffsetX: number
   shadowOffsetY: number
 }
+type CanvasPixelFormat = 'float16' | 'unorm8'
+interface CanvasToneMapping {
+  mode?: 'extended' | 'standard'
+}
 interface CanvasRenderingContext2DSettings {
   alpha?: boolean
   colorSpace?: PredefinedColorSpace
+  /** 'float16' stores half floats, as Chrome does; `canvas.data()` then gives them premultiplied, 8 bytes a pixel. */
+  colorType?: CanvasPixelFormat
   desynchronized?: boolean
+  /** Not read by getContext() (as in Chrome); getContextAttributes() reports `{ mode: 'standard' }`. */
+  toneMapping?: CanvasToneMapping
   willReadFrequently?: boolean
 }
 interface CanvasSettings {
-  getContextAttributes(): CanvasRenderingContext2DSettings
+  getContextAttributes(): Required<CanvasRenderingContext2DSettings>
 }
 
 interface CanvasRect {
@@ -102,7 +140,13 @@ interface CanvasPath {
   moveTo(x: number, y: number): void
   quadraticCurveTo(cpx: number, cpy: number, x: number, y: number): void
   rect(x: number, y: number, w: number, h: number): void
-  roundRect(x: number, y: number, w: number, h: number, radii?: number | DOMPointInit | (number | DOMPointInit)[]): void
+  roundRect(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    radii?: number | DOMPointInit | Iterable<number | DOMPointInit>,
+  ): void
 }
 
 type ImageSmoothingQuality = 'high' | 'low' | 'medium'
@@ -117,7 +161,17 @@ interface CanvasTransform {
   rotate(angle: number): void
   scale(x: number, y: number): void
   setTransform(a: number, b: number, c: number, d: number, e: number, f: number): void
-  setTransform(transform?: DOMMatrix2DInit): void
+  /** Missing members default to the identity; `a` and `m11` (and so on) must agree when both are given. */
+  setTransform(
+    transform?: Partial<DOMMatrixInit> & {
+      m11?: number
+      m12?: number
+      m21?: number
+      m22?: number
+      m41?: number
+      m42?: number
+    },
+  ): void
   transform(a: number, b: number, c: number, d: number, e: number, f: number): void
   translate(x: number, y: number): void
 }
@@ -156,17 +210,55 @@ interface CanvasPDFAnnotations {
 }
 
 type PredefinedColorSpace = 'display-p3' | 'srgb'
+/** 'rgba-float16' throws a NotSupportedError on a runtime without Float16Array (Node 22). */
+type ImageDataPixelFormat = 'rgba-unorm8' | 'rgba-float16' | 'rgba-float32'
+/** Float16Array, where the TypeScript lib has it. */
+type ImageDataFloat16Array = typeof globalThis extends { Float16Array: { prototype: infer T } } ? T : never
+type ImageDataArray = Uint8ClampedArray | ImageDataFloat16Array | Float32Array
 
 interface ImageDataSettings {
   colorSpace?: PredefinedColorSpace
+  pixelFormat?: ImageDataPixelFormat
 }
 interface CanvasImageData {
-  createImageData(sw: number, sh: number, settings?: ImageDataSettings): ImageData
-  createImageData(imagedata: ImageData): ImageData
-  getImageData(sx: number, sy: number, sw: number, sh: number, settings?: ImageDataSettings): ImageData
-  putImageData(imagedata: ImageData, dx: number, dy: number): void
+  createImageData(sw: number, sh: number, settings?: ImageDataSettings & { pixelFormat?: 'rgba-unorm8' }): ImageData
+  createImageData(
+    sw: number,
+    sh: number,
+    settings: ImageDataSettings & { pixelFormat: 'rgba-float16' },
+  ): ImageData<ImageDataFloat16Array>
+  createImageData(
+    sw: number,
+    sh: number,
+    settings: ImageDataSettings & { pixelFormat: 'rgba-float32' },
+  ): ImageData<Float32Array>
+  createImageData(sw: number, sh: number, settings?: ImageDataSettings): ImageData<ImageDataArray>
+  createImageData<T extends ImageDataArray>(imagedata: ImageData<T>): ImageData<T>
+  getImageData(
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    settings?: ImageDataSettings & { pixelFormat?: 'rgba-unorm8' },
+  ): ImageData
+  getImageData(
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    settings: ImageDataSettings & { pixelFormat: 'rgba-float16' },
+  ): ImageData<ImageDataFloat16Array>
+  getImageData(
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    settings: ImageDataSettings & { pixelFormat: 'rgba-float32' },
+  ): ImageData<Float32Array>
+  getImageData(sx: number, sy: number, sw: number, sh: number, settings?: ImageDataSettings): ImageData<ImageDataArray>
+  putImageData(imagedata: ImageData<ImageDataArray>, dx: number, dy: number): void
   putImageData(
-    imagedata: ImageData,
+    imagedata: ImageData<ImageDataArray>,
     dx: number,
     dy: number,
     dirtyX: number,
@@ -283,7 +375,17 @@ interface DOMPointInit {
   z?: number
 }
 interface CanvasPattern {
-  setTransform(transform?: DOMMatrix2DInit): void
+  /** Missing members default to the identity; `a` and `m11` (and so on) must agree when both are given. */
+  setTransform(
+    transform?: Partial<DOMMatrix2DInit> & {
+      m11?: number
+      m12?: number
+      m21?: number
+      m22?: number
+      m41?: number
+      m42?: number
+    },
+  ): void
 }
 
 interface CanvasGradient {
@@ -476,11 +578,12 @@ export const DOMPoint: {
   fromPoint(other?: DOMPointInit): DOMPoint
 }
 
-export class ImageData {
+export class ImageData<T extends ImageDataArray = Uint8ClampedArray> {
   /**
-   * Returns the one-dimensional array containing the data in RGBA order, as integers in the range 0 to 255.
+   * Returns the one-dimensional array containing the data in RGBA order: integers in the range 0 to 255 for
+   * 'rgba-unorm8', unpremultiplied floats for 'rgba-float16' and 'rgba-float32'.
    */
-  readonly data: Uint8ClampedArray
+  readonly data: T
   /**
    * Returns the actual dimensions of the data in the ImageData object, in pixels.
    */
@@ -489,10 +592,13 @@ export class ImageData {
    * Returns the actual dimensions of the data in the ImageData object, in pixels.
    */
   readonly width: number
+  readonly colorSpace: PredefinedColorSpace
+  readonly pixelFormat: ImageDataPixelFormat
 
-  constructor(sw: number, sh: number, attr?: { colorSpace?: ColorSpace })
-  constructor(imageData: ImageData, attr?: { colorSpace?: ColorSpace })
-  constructor(data: Uint8ClampedArray | Uint16Array | Float16Array | Float32Array, sw: number, sh?: number)
+  /** Pass the data type for a float pixelFormat: `new ImageData<Float32Array>(w, h, { pixelFormat: 'rgba-float32' })`. */
+  constructor(sw: number, sh: number, settings?: ImageDataSettings)
+  /** The pixelFormat must match the data type. */
+  constructor(data: T, sw: number, sh?: number, settings?: ImageDataSettings)
 }
 
 export class Image {
@@ -510,14 +616,27 @@ export class Image {
   // if it's a string, it can be a file path, a data URL, a remote URL, or a SVG string
   src: Uint8Array | string
   onload?(): void
-  onerror?(err: Error): void
+  /** Called with an Event of type 'error', as in browsers. */
+  onerror?(event: Event): void
+  /** Rejects with an EncodingError DOMException when the image cannot be decoded. */
   decode(): Promise<void>
 }
 
 export class Path2D {
   constructor(path?: Path2D | string)
 
-  addPath(path: Path2D, transform?: DOMMatrix2DInit): void
+  /** Missing members default to the identity; `a` and `m11` (and so on) must agree when both are given. */
+  addPath(
+    path: Path2D,
+    transform?: Partial<DOMMatrix2DInit> & {
+      m11?: number
+      m12?: number
+      m21?: number
+      m22?: number
+      m41?: number
+      m42?: number
+    },
+  ): void
   arc(x: number, y: number, radius: number, startAngle: number, endAngle: number, anticlockwise?: boolean): void
   arcTo(x1: number, y1: number, x2: number, y2: number, radius: number): void
   bezierCurveTo(cp1x: number, cp1y: number, cp2x: number, cp2y: number, x: number, y: number): void
@@ -536,7 +655,13 @@ export class Path2D {
   moveTo(x: number, y: number): void
   quadraticCurveTo(cpx: number, cpy: number, x: number, y: number): void
   rect(x: number, y: number, w: number, h: number): void
-  roundRect(x: number, y: number, w: number, h: number, radii?: number | number[]): void
+  roundRect(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    radii?: number | DOMPointInit | Iterable<number | DOMPointInit>,
+  ): void
 
   // PathKit methods
   op(path: Path2D, operation: PathOp): Path2D
@@ -564,17 +689,17 @@ export interface StrokeOptions {
 }
 
 export interface SKRSContext2D extends CanvasRenderingContext2D {
-  canvas: Canvas
+  readonly canvas: Canvas
   /**
    * @param startAngle The angle at which to begin the gradient, in radians. Angle measurements start vertically above the centre and move around clockwise.
    * @param x The x-axis coordinate of the centre of the gradient.
    * @param y The y-axis coordinate of the centre of the gradient.
    */
   createConicGradient(startAngle: number, x: number, y: number): CanvasGradient
-  drawImage(image: Image | Canvas, dx: number, dy: number): void
-  drawImage(image: Image | Canvas, dx: number, dy: number, dw: number, dh: number): void
+  drawImage(image: Image | Canvas | SvgCanvas, dx: number, dy: number): void
+  drawImage(image: Image | Canvas | SvgCanvas, dx: number, dy: number, dw: number, dh: number): void
   drawImage(
-    image: Image | Canvas,
+    image: Image | Canvas | SvgCanvas,
     sx: number,
     sy: number,
     sw: number,
@@ -603,11 +728,12 @@ export interface SKRSContext2D extends CanvasRenderingContext2D {
     dWidth: number,
     dHeight: number,
   ): void
+  /** null when `image` is an Image with no src or one that is still loading. */
   createPattern(
-    image: Image | ImageData | Canvas | SvgCanvas,
-    repeat: 'repeat' | 'repeat-x' | 'repeat-y' | 'no-repeat' | null,
-  ): CanvasPattern
-  getContextAttributes(): { alpha: boolean; desynchronized: boolean }
+    image: Image | ImageData<ImageDataArray> | Canvas | SvgCanvas,
+    repeat: 'repeat' | 'repeat-x' | 'repeat-y' | 'no-repeat' | '' | null,
+  ): CanvasPattern | null
+  getContextAttributes(): Required<CanvasRenderingContext2DSettings>
   getTransform(): DOMMatrix
 
   letterSpacing: string
@@ -616,30 +742,86 @@ export interface SKRSContext2D extends CanvasRenderingContext2D {
 
 export type ColorSpace = 'srgb' | 'display-p3'
 
-export interface ContextAttributes {
-  alpha?: boolean
-  colorSpace?: ColorSpace
-}
+export interface ContextAttributes extends CanvasRenderingContext2DSettings {}
 
 export interface SvgCanvas {
   width: number
   height: number
+  /**
+   * Returns null for an id other than '2d', as browsers do for an unsupported id.
+   * Declared before the '2d' overload, so `ReturnType` still gives the context.
+   */
+  getContext<T extends string>(
+    contextType: T extends '2d' ? never : T,
+    contextAttributes?: ContextAttributes,
+  ): SKRSContext2D | null
   getContext(contextType: '2d', contextAttributes?: ContextAttributes): SKRSContext2D
 
   getContent(): Buffer
 }
 
 export interface AvifConfig {
-  /** 0-100 scale, 100 is lossless */
+  /**
+   * 0-100 scale, 100 is the best quality. 100 with 4:4:4 (the default) is
+   * lossless: R, G and B are coded as they are (CICP matrix 0, identity).
+   * Below 100, or with chroma subsampling, the pixels are lossy BT.601 YUV.
+   * Default 80.
+   */
   quality?: number
-  /** 0-100 scale */
+  /** 0-100 scale. Default 100 when `quality` is 100 (lossless alpha), else 90. */
   alphaQuality?: number
-  /** rav1e preset 1 (slow) 10 (fast but crappy), default is 4 */
+  /**
+   * aom encoder speed from 0 (slowest, smallest file) to 10 (fastest);
+   * larger values are 10. Default 5.
+   */
   speed?: number
-  /** How many threads should be used (0 = match core count) */
+  /** How many threads to use: 0 or unset is one per CPU core; at most 64. */
   threads?: number
   /** set to '4:2:0' to use chroma subsampling, default '4:4:4' */
   chromaSubsampling?: ChromaSubsampling
+}
+
+/**
+ * Metadata that `toBuffer`, `encode` and `encodeSync` write into PNG and JPEG
+ * output. It goes in the same options object as the other options. WebP, AVIF
+ * and GIF output ignore it. `toDataURL`, `toDataURLAsync`, `toBlob`,
+ * `convertToBlob`, `encodeStream` and `savePng` never write it.
+ *
+ * Nothing is converted, as in node-canvas: a member counts only when it is a
+ * number (`resolution`) or a string (the text members). Any other value is
+ * ignored. U+0000 is removed from text, and text that is then empty writes
+ * nothing. In JPEG, the XMP text must fit in one 64 KB segment (about 65000
+ * bytes of UTF-8 in all) and `comment` in 65533 UTF-8 bytes; more is a
+ * RangeError. PNG text has no such limit.
+ */
+export interface ImageMetadata {
+  /**
+   * Pixels per inch for both axes, as node-canvas's `PngConfig.resolution`.
+   * The fraction is dropped (300.9 is 300). A value below 1, NaN and the
+   * infinities write nothing.
+   * - PNG: a `pHYs` chunk of `Math.round(ppi * 39.3701)` pixels per metre (the
+   *   bytes node-canvas writes), at most 2147483647.
+   * - JPEG: the JFIF density in dots per inch, at most 65535.
+   */
+  resolution?: number
+  /** PNG `Title` text chunk; JPEG XMP `dc:title`. */
+  title?: string
+  /** PNG `Author` text chunk; JPEG XMP `dc:creator`. */
+  author?: string
+  /** PNG `Description` text chunk; JPEG XMP `dc:description`. */
+  description?: string
+  /** PNG `Copyright` text chunk; JPEG XMP `dc:rights`. */
+  copyright?: string
+  /** PNG `Software` text chunk; JPEG XMP `xmp:CreatorTool`. */
+  software?: string
+  /** PNG `Comment` text chunk; JPEG `COM` segment. */
+  comment?: string
+}
+
+/** The object form of `encode('jpeg')` and `encodeSync('jpeg')`: a quality and metadata. */
+export interface JpegEncodeOptions extends ImageMetadata {
+  /** 0-100; a larger value is 100. Default 92. */
+  quality?: number
 }
 
 /** GIF encoding configuration for single-frame encoding */
@@ -799,55 +981,88 @@ export enum ChromaSubsampling {
   Yuv400 = 3,
 }
 
+/** OffscreenCanvas ImageEncodeOptions. */
 export interface ConvertToBlobOptions {
-  mime?: string
+  /** Default 'image/png'; ASCII case-insensitive, and an unknown type is PNG. */
+  type?: string
+  /** 0 to 1 for JPEG, WebP (1 is lossless), AVIF and GIF. Default 1. */
   quality?: number
 }
 
 export class Canvas {
-  constructor(width: number, height: number, flag?: SvgExportFlag)
+  /**
+   * A missing width or height is the default, 300 x 150, as is NaN, an infinity
+   * or a non-zero number that converts to 0 (such as 0.5). 0 stays 0.
+   */
+  constructor(width?: number, height?: number, flag?: SvgExportFlag)
 
   width: number
   height: number
+  /**
+   * Returns null for an id other than '2d', as browsers do for an unsupported id.
+   * Declared before the '2d' overload, so `ReturnType` still gives the context.
+   */
+  getContext<T extends string>(
+    contextType: T extends '2d' ? never : T,
+    contextAttributes?: ContextAttributes,
+  ): SKRSContext2D | null
   getContext(contextType: '2d', contextAttributes?: ContextAttributes): SKRSContext2D
   encodeSync(format: 'webp' | 'jpeg', quality?: number): Buffer
-  encodeSync(format: 'png'): Buffer
-  encodeSync(format: 'avif', cfg?: AvifConfig): Buffer
+  encodeSync(format: 'jpeg', options: JpegEncodeOptions): Buffer
+  encodeSync(format: 'png', options?: ImageMetadata): Buffer
+  encodeSync(format: 'avif', cfg?: AvifConfig | number): Buffer
   encodeSync(format: 'gif', quality?: number): Buffer
   encodeSync(format: 'qoi'): Buffer // effing: lossless, see docs/effing.md
   encode(format: 'webp' | 'jpeg', quality?: number): Promise<Buffer>
-  encode(format: 'png'): Promise<Buffer>
-  encode(format: 'avif', cfg?: AvifConfig): Promise<Buffer>
+  encode(format: 'jpeg', options: JpegEncodeOptions): Promise<Buffer>
+  encode(format: 'png', options?: ImageMetadata): Promise<Buffer>
+  encode(format: 'avif', cfg?: AvifConfig | number): Promise<Buffer>
   encode(format: 'gif', quality?: number): Promise<Buffer>
   encode(format: 'qoi'): Promise<Buffer> // effing
+  /** Writes no image metadata; use `encode` and stream the Buffer for that. */
   encodeStream(format: 'webp' | 'jpeg', quality?: number): ReadableStream<Buffer>
   encodeStream(format: 'png'): ReadableStream<Buffer>
-  toBuffer(mime: 'image/png'): Buffer
+  toBuffer(mime: 'image/png', options?: ImageMetadata): Buffer
   toBuffer(mime: 'image/jpeg' | 'image/webp', quality?: number): Buffer
-  toBuffer(mime: 'image/avif', cfg?: AvifConfig): Buffer
+  /**
+   * JPEG with metadata, at quality 92: toBuffer does not read a quality from an
+   * object. To set both, use `encodeSync('jpeg', { quality, ...metadata })`.
+   */
+  toBuffer(mime: 'image/jpeg', options: ImageMetadata): Buffer
+  toBuffer(mime: 'image/avif', cfg?: AvifConfig | number): Buffer
   toBuffer(mime: 'image/gif', quality?: number): Buffer
   toBuffer(mime: 'image/qoi'): Buffer // effing
-  // raw pixels
+  /** The stored pixels, premultiplied: RGBA bytes, or RGBA half floats (8 bytes a pixel) for colorType 'float16'. */
   data(): Buffer
   toDataURL(mime?: 'image/png'): string
   toDataURL(mime: 'image/jpeg' | 'image/webp', quality?: number): string
   toDataURL(mime: 'image/gif', quality?: number): string
   toDataURL(mime?: 'image/jpeg' | 'image/webp' | 'image/png' | 'image/gif', quality?: number): string
-  toDataURL(mime?: 'image/avif', cfg?: AvifConfig): string
+  toDataURL(mime?: 'image/avif', cfg?: AvifConfig | number): string
   toDataURL(mime: 'image/qoi'): string // effing
+  /**
+   * As in browsers: the type is ASCII case-insensitive and an unknown one is
+   * PNG; the quality counts when it is a number from 0 to 1.
+   */
+  toDataURL(type?: string, quality?: any): string
 
   toDataURLAsync(mime?: 'image/png'): Promise<string>
   toDataURLAsync(mime: 'image/jpeg' | 'image/webp', quality?: number): Promise<string>
   toDataURLAsync(mime: 'image/gif', quality?: number): Promise<string>
   toDataURLAsync(mime?: 'image/jpeg' | 'image/webp' | 'image/png' | 'image/gif', quality?: number): Promise<string>
-  toDataURLAsync(mime?: 'image/avif', cfg?: AvifConfig): Promise<string>
+  toDataURLAsync(mime?: 'image/avif', cfg?: AvifConfig | number): Promise<string>
   toDataURLAsync(mime: 'image/qoi'): Promise<string> // effing
+  toDataURLAsync(type?: string, quality?: any): Promise<string>
 
-  toBlob(callback: (blob: Blob | null) => void, mime?: string, quality?: number): void
+  toBlob(callback: (blob: Blob | null) => void, type?: string, quality?: any): void
   convertToBlob(options?: ConvertToBlobOptions): Promise<Blob>
 }
 
-export function createCanvas(width: number, height: number): Canvas
+/**
+ * A missing width or height is the default, 300 x 150, as is NaN, an infinity
+ * or a non-zero number that converts to 0 (such as 0.5). 0 stays 0.
+ */
+export function createCanvas(width?: number, height?: number): Canvas
 
 export function createCanvas(width: number, height: number, svgExportFlag: SvgExportFlag): SvgCanvas
 

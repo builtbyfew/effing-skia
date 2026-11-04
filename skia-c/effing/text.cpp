@@ -10,19 +10,14 @@
 #include "include/core/SkPath.h"
 #include "include/core/SkPathBuilder.h"
 #include "include/core/SkTextBlob.h"
-#include "modules/skparagraph/src/ParagraphImpl.h"
 
 namespace effing {
 
 namespace {
 
-using skia::textlayout::Cluster;
-using skia::textlayout::ClusterIndex;
-using skia::textlayout::ClusterRange;
 using skia::textlayout::LineMetrics;
 using skia::textlayout::Paragraph;
 using skia::textlayout::ParagraphBuilder;
-using skia::textlayout::ParagraphImpl;
 using skia::textlayout::TextStyle;
 
 // The code point that starts at text[i], of valid UTF-8, and its length in
@@ -41,17 +36,16 @@ char32_t decode_utf8(const char* text, size_t len, size_t i, size_t* n) {
   return c;
 }
 
-// Whether Chrome adds no letter spacing after `c`: Blink's
+// Whether Chrome adds no letter spacing after `c` in CSS text: Blink's
 // Character::TreatAsZeroWidthSpace, which is a soft hyphen, the other
 // default-ignorable code points from U+0100 on, U+FFFC, a form feed and a
-// carriage return. A form feed is a hard break in a Paragraph, and Chrome's
-// canvas draws both as spaces, which it spaces. Blink tests the UTF-16 unit
+// carriage return. A form feed is a hard break in a Paragraph. Blink tests the UTF-16 unit
 // that starts each of HarfBuzz's clusters, a surrogate for a code point past
 // the BMP, so of those only the ones HarfBuzz merges into the cluster before
 // them, the tags and the variation selectors of plane 14, go without.
-bool unspaced(char32_t c, TextKind kind) {
+bool unspaced(char32_t c) {
   if (c < 0x100) {
-    return c == 0xAD || (kind == TextKind::kCss && c == '\r');
+    return c == 0xAD || c == '\r';
   }
   if (c < 0x10000) {
     return c == 0x034F || c == 0x061C || (c >= 0x115F && c <= 0x1160) ||
@@ -100,23 +94,25 @@ bool append_glyph_paths(const SkFont& font,
 // on the device size, which moves text by up to half a pixel between scales.
 // Filling the outlines places text as precisely as any other path.
 void draw_run_as_paths(SkCanvas* canvas,
-                       const Paragraph::VisitorInfo& run,
+                       const SkFont& run_font,
+                       const SkGlyphID* glyphs,
+                       const SkPoint* positions,
+                       int count,
                        SkScalar x,
                        SkScalar y,
                        const SkPaint& paint,
                        Painted* painted) {
   SkPathBuilder builder;
-  if (!append_glyph_paths(run.font, run.glyphs, run.positions, run.count,
-                          &builder)) {
-    SkFont font = run.font;
+  if (!append_glyph_paths(run_font, glyphs, positions, count, &builder)) {
+    SkFont font = run_font;
     font.setBaselineSnap(false);
     SkTextBlobBuilder blob;
-    const auto& buffer = blob.allocRunPos(font, run.count);
-    std::memcpy(buffer.glyphs, run.glyphs, run.count * sizeof(SkGlyphID));
-    std::memcpy(buffer.pos, run.positions, run.count * sizeof(SkPoint));
+    const auto& buffer = blob.allocRunPos(font, count);
+    std::memcpy(buffer.glyphs, glyphs, count * sizeof(SkGlyphID));
+    std::memcpy(buffer.pos, positions, count * sizeof(SkPoint));
     canvas->drawTextBlob(blob.make(), x, y, paint);
     if (painted != nullptr) {
-      painted->bytes += run.count * (sizeof(SkGlyphID) + sizeof(SkPoint));
+      painted->bytes += count * (sizeof(SkGlyphID) + sizeof(SkPoint));
       painted->ops++;
       if (const SkTypeface* typeface = font.getTypeface()) {
         const SkTypefaceID id = typeface->uniqueID();
@@ -138,7 +134,7 @@ void draw_run_as_paths(SkCanvas* canvas,
   }
 }
 
-// What paint_text_unsnapped drew on this thread, until
+// What paint_glyphs_unsnapped drew on this thread, until
 // effing_take_text_painted reports it.
 thread_local Painted text_painted;
 
@@ -167,21 +163,7 @@ float freetype_font_size(float size) {
   return std::isfinite(rounded) && rounded > 0 ? rounded : size;
 }
 
-void make_unhinted(skia::textlayout::TextStyle* text_style,
-                   skia::textlayout::StrutStyle* strut_style) {
-  text_style->setFontHinting(SkFontHinting::kNone);
-  // SkParagraph caches shaped runs, fonts included, under a key that leaves
-  // hinting out, so the same text and style drawn hinted and unhinted would
-  // share an entry and whichever came second would get the other's advances
-  // and outlines. The key does compare the strut style, and nothing reads the
-  // font families of a disabled strut: name the unhinted ones apart there.
-  strut_style->setFontFamilies({SkString("effing-unhinted")});
-}
-
-void add_text(ParagraphBuilder* builder,
-              const char* text,
-              size_t len,
-              TextKind kind) {
+void add_text(ParagraphBuilder* builder, const char* text, size_t len) {
   TextStyle without = builder->peekStyle();
   if (without.getLetterSpacing() == 0) {
     builder->addText(text, len);
@@ -191,12 +173,12 @@ void add_text(ParagraphBuilder* builder,
   size_t added = 0;
   for (size_t i = 0; i < len;) {
     size_t n;
-    if (!unspaced(decode_utf8(text, len, i, &n), kind)) {
+    if (!unspaced(decode_utf8(text, len, i, &n))) {
       i += n;
       continue;
     }
     size_t end = i + n;
-    while (end < len && unspaced(decode_utf8(text, len, end, &n), kind)) {
+    while (end < len && unspaced(decode_utf8(text, len, end, &n))) {
       end += n;
     }
     if (i > added) {
@@ -210,22 +192,6 @@ void add_text(ParagraphBuilder* builder,
   if (len > added) {
     builder->addText(text + added, len - added);
   }
-}
-
-SkScalar leading_half_letter_spacing(Paragraph* paragraph) {
-  auto* impl = static_cast<ParagraphImpl*>(paragraph);
-  if (impl->lines().empty()) {
-    return 0;
-  }
-  // As TextLine's constructor finds it.
-  const ClusterRange clusters = impl->lines().front().clustersWithSpaces();
-  for (ClusterIndex i = clusters.start; i < clusters.end; i++) {
-    const Cluster& cluster = impl->cluster(i);
-    if (!cluster.run().isPlaceholder() && !cluster.run().isCursiveScript()) {
-      return cluster.getHalfLetterSpacing();
-    }
-  }
-  return 0;
 }
 
 void paint_paragraph_unsnapped(Paragraph* paragraph,
@@ -253,30 +219,23 @@ void paint_paragraph_unsnapped(Paragraph* paragraph,
     // relative to wherever the line goes.
     const SkScalar run_x = x + origin.fX + (run->origin.fX - skia_origin.fX);
     const SkScalar run_y = y + origin.fY;
-    draw_run_as_paths(canvas, *run, run_x, run_y, paint, painted);
+    draw_run_as_paths(canvas, run->font, run->glyphs, run->positions,
+                      run->count, run_x, run_y, paint, painted);
   });
 }
 
-void paint_text_unsnapped(Paragraph* paragraph,
-                          SkCanvas* canvas,
-                          SkScalar x,
-                          SkScalar y,
-                          const SkPaint& paint) {
-  std::vector<LineMetrics> lines;
-  paragraph->getLineMetrics(lines);
-  if (lines.empty()) {
-    return;
+void paint_glyphs_unsnapped(SkCanvas* canvas,
+                            const SkFont& font,
+                            const SkGlyphID* glyphs,
+                            const SkPoint* positions,
+                            int count,
+                            SkScalar x,
+                            SkScalar y,
+                            const SkPaint& paint) {
+  if (count > 0) {
+    draw_run_as_paths(canvas, font, glyphs, positions, count, x, y, paint,
+                      &text_painted);
   }
-  const SkScalar shift = paragraph->getAlphabeticBaseline() -
-                         static_cast<SkScalar>(lines[0].fBaseline);
-  std::vector<SkPoint> origins;
-  origins.reserve(lines.size());
-  for (const LineMetrics& line : lines) {
-    origins.push_back({static_cast<SkScalar>(line.fLeft),
-                       static_cast<SkScalar>(line.fBaseline) + shift});
-  }
-  paint_paragraph_unsnapped(paragraph, canvas, x, y, paint, origins.data(),
-                            &text_painted);
 }
 
 }  // namespace effing

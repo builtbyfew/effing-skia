@@ -13,30 +13,9 @@
 #include "include/ports/SkFontScanner_FreeType.h"
 #include "modules/skparagraph/include/TypefaceFontProvider.h"
 
-extern "C" {
-
-uint32_t effing_font_collection_register_system_font(
-    skiac_font_collection* c_font_collection,
-    const char* path) {
-  auto typeface = c_font_collection->font_mgr->makeFromFile(path);
-  if (!typeface) {
-    return 0;
-  }
-  uint32_t typeface_id =
-      c_font_collection->assets->registerTypefaceFromPathWithTracking(
-          std::string(path), typeface, /*system=*/true);
-  if (typeface_id) {
-    c_font_collection->markCachesDirty();
-  }
-  return typeface_id;
-}
-
-}  // extern "C"
-
 namespace effing {
 
-std::vector<sk_sp<SkTypeface>> more_faces(SkFontMgr& font_mgr,
-                                          const std::string& path,
+std::vector<sk_sp<SkTypeface>> more_faces(const std::string& path,
                                           const sk_sp<SkData>& data) {
   std::unique_ptr<SkStreamAsset> stream =
       path.empty() ? (data ? SkMemoryStream::Make(data) : nullptr)
@@ -57,11 +36,13 @@ std::vector<sk_sp<SkTypeface>> more_faces(SkFontMgr& font_mgr,
       !scanner->scanFile(stream.get(), &count)) {
     return {};
   }
+  // Never destroyed: a font may outlive the statics at exit.
+  static SkFontMgr* const font_mgr = SkFontMgr_New_Custom_Empty().release();
   std::vector<sk_sp<SkTypeface>> faces;
   for (int i = 1; i < count; i++) {
     sk_sp<SkTypeface> face = path.empty()
-                                 ? font_mgr.makeFromData(data, i)
-                                 : font_mgr.makeFromFile(path.c_str(), i);
+                                 ? font_mgr->makeFromData(data, i)
+                                 : font_mgr->makeFromFile(path.c_str(), i);
     if (face != nullptr) {
       faces.push_back(std::move(face));
     }
