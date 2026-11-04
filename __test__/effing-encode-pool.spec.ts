@@ -56,8 +56,9 @@ test('many concurrent encodes all resolve, each with its own bytes', async (t) =
   encoded.forEach((buffer, i) => t.true(buffer.equals(canvases[i].encodeSync('png')), `canvas ${i}`))
 })
 
-// WebP can't encode an image over 16383px wide, so these fail on the pool
-// (an unknown format fails before the encode is queued, and throws).
+// WebP can't encode an image over 16383px wide, so encode() fails on the
+// pool (an unknown format fails before the encode is queued, and throws).
+// toBlob and convertToBlob crop it to 16383px instead, as Chrome does.
 const tooWideForWebp = () => createCanvas(16400, 10)
 
 test('a failed encode rejects with the encoder error', async (t) => {
