@@ -633,8 +633,9 @@ macTest('installed fonts stay before registered fonts across a switch on macOS',
   const helvetica = (steps: string[]) => macProbe(HELVETICA_PROBE, { PROBE_STEPS: steps.join(',') })
   const [portable] = helvetica(['register', 'state'])
   const [system] = helvetica(['switch:system', 'register', 'state'])
-  // The installed Helvetica wins over Lato.
-  t.not(portable.width, portable.lato)
+  // effing: a registered family shadows the installed one of its name
+  // (docs/effing.md), so Lato draws "Helvetica".
+  t.is(portable.width, portable.lato)
   t.deepEqual(helvetica(['register', 'switch:system', 'state', 'switch:portable', 'state']), [system, portable])
 })
 

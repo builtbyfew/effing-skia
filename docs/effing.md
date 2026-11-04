@@ -1125,8 +1125,10 @@ would miss a mutator added later. These change it:
 
 Reads don't change it: `families`, `has`, `getVariationAxes`, measuring,
 laying out and drawing text. Nor does a call that fails (returns `null`,
-`false` or 0), or `loadSystemFonts()` after its first call. A call that
-succeeds but turns out to change nothing may still bump it: registering the
+`false` or 0), or `loadSystemFonts()` after its first call, except on
+macOS, where upstream (from 1.1.0) lists the installed fonts again on every
+call. A call that succeeds but turns out to change nothing may still bump
+it: registering the
 same buffer or path again, `loadFontsFromDir` of the same directory again
 (once per file), or repeating a `setAlias`. For a cache key that is harmless,
 a needless miss and never a stale hit. It is upstream's generation
