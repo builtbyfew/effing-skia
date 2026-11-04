@@ -453,8 +453,8 @@ void LayOutLine(skiac_font_collection* c_collection,
   const bool unsnapped =
       request.text_rendering == effing::kTextRenderingGeometricPrecision &&
       !SystemFontRenderer();
-  const float size = unsnapped ? effing::effective_font_size(request.size)
-                               : request.size;
+  const float size =
+      unsnapped ? effing::effective_font_size(request.size) : request.size;
   auto shaping_size = [unsnapped](float px) {
     return unsnapped ? effing::freetype_font_size(px) : px;
   };
@@ -557,8 +557,7 @@ void LayOutLine(skiac_font_collection* c_collection,
   SkTypeface* primary = faces.empty() ? nullptr : faces.front().get();
   SkTypeface* primary_base =
       base_faces.empty() ? nullptr : base_faces.front().get();
-  line->primary =
-      CachedPrimaryFont(c_collection, primary, primary_base, size);
+  line->primary = CachedPrimaryFont(c_collection, primary, primary_base, size);
   if (request.text_len == 0) {
     // Nothing to lay out or draw; measureText keeps the font metrics.
     line->empty = true;

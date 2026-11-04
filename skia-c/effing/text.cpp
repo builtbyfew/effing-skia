@@ -39,10 +39,11 @@ char32_t decode_utf8(const char* text, size_t len, size_t i, size_t* n) {
 // Whether Chrome adds no letter spacing after `c` in CSS text: Blink's
 // Character::TreatAsZeroWidthSpace, which is a soft hyphen, the other
 // default-ignorable code points from U+0100 on, U+FFFC, a form feed and a
-// carriage return. A form feed is a hard break in a Paragraph. Blink tests the UTF-16 unit
-// that starts each of HarfBuzz's clusters, a surrogate for a code point past
-// the BMP, so of those only the ones HarfBuzz merges into the cluster before
-// them, the tags and the variation selectors of plane 14, go without.
+// carriage return. A form feed is a hard break in a Paragraph. Blink tests the
+// UTF-16 unit that starts each of HarfBuzz's clusters, a surrogate for a code
+// point past the BMP, so of those only the ones HarfBuzz merges into the
+// cluster before them, the tags and the variation selectors of plane 14, go
+// without.
 bool unspaced(char32_t c) {
   if (c < 0x100) {
     return c == 0xAD || c == '\r';

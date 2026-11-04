@@ -65,10 +65,10 @@ float freetype_font_size(float size);
 // a zero-width space: a default-ignorable code point (ZWSP, ZWJ, ZWNJ, WJ,
 // the bidi controls, variation selectors, a soft hyphen, ...), U+FFFC and, in
 // CSS text, a carriage return. (fillText's text gets the same from upstream's
-// text.cpp, NoLetterSpacingRanges.) SkParagraph spaces every glyph, so a ZWSP between
-// two letters would add a third gap to their two. A style that differs only
-// in letter spacing doesn't split SkParagraph's shaping runs, so ZWJ and ZWNJ
-// still join or break ligatures, emoji sequences and conjuncts as before.
+// text.cpp, NoLetterSpacingRanges.) SkParagraph spaces every glyph, so a ZWSP
+// between two letters would add a third gap to their two. A style that differs
+// only in letter spacing doesn't split SkParagraph's shaping runs, so ZWJ and
+// ZWNJ still join or break ligatures, emoji sequences and conjuncts as before.
 // Text without such code points, or a style without letter spacing, is added
 // as it is.
 void add_text(skia::textlayout::ParagraphBuilder* builder,

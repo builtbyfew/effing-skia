@@ -1387,7 +1387,7 @@ struct skiac_font_collection {
       }
       font_mgr = coretext_font_mgr;
       collection->setAssetFontManager(
-        effing::with_css_matching(font_mgr));  // effing
+          effing::with_css_matching(font_mgr));  // effing
       system_ui = coretext_system_ui;
       system_ui_ids = coretext_system_ui_ids;
       collection->setTestFontManager(system_ui);
