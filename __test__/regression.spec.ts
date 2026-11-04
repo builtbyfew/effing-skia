@@ -650,8 +650,8 @@ test('canvas-pattern-1010', async (t) => {
   const tmpCtx = tmpCanvas.getContext('2d')
   const image = await loadImage(join(__dirname, 'javascript.png'))
   tmpCtx.drawImage(image, 0, 0)
-  const pattern = ctx.createPattern(image, 'repeat')
-  const pattern2 = ctx.createPattern(tmpCanvas, 'repeat')
+  const pattern = ctx.createPattern(image, 'repeat')!
+  const pattern2 = ctx.createPattern(tmpCanvas, 'repeat')!
   ctx.fillStyle = pattern
   ctx.fillRect(0, 0, 512 / 2, 512)
 
@@ -715,11 +715,12 @@ test('draw-non-string-text', async (t) => {
 test('scale-svg-image', async (t) => {
   GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'iosevka-slab-regular.ttf'))
   const image = await loadImage(join(__dirname, 'image-og.svg'))
-  image.width = image.naturalWidth * 2
-  image.height = image.naturalHeight * 2
-  const canvas = createCanvas(image.width, image.height)
+  // Twice the size of the viewBox (1088x615). As in Chrome, the size is given
+  // to drawImage: img.width and img.height do not size the draw.
+  const [width, height] = [1088 * 2, 615 * 2]
+  const canvas = createCanvas(width, height)
   const ctx = canvas.getContext('2d')
-  ctx.drawImage(image, 0, 0)
+  ctx.drawImage(image, 0, 0, width, height)
   await snapshotImage(t, { ctx, canvas })
 })
 
@@ -745,8 +746,9 @@ test('shadow-alpha-with-global-alpha', async (t) => {
   ctx.fillStyle = 'blue'
   ctx.fillRect(20, 20, 60, 40)
 
-  // The checked-in baseline comes from Linux x64. Skia's mask-filter raster
-  // differs on ARM64, while the shadow's placement and alpha remain the same.
+  // The checked-in baseline was rendered on x64. The 6.1% ARM64 allowance dates
+  // from when shadowColor alpha 0.5 truncated to 127; rounded to 128, ARM64
+  // renders this scene byte-identically.
   await snapshotImage(t, { ctx, canvas }, 'png', process.arch === 'x64' ? 0.015 : 6.1)
 })
 
@@ -1340,10 +1342,10 @@ test('duplicated color stops behave the same on radial and conic gradients', (t)
     'radial gradient with a duplicated stop at 0.5',
   )
 
-  // Conic: our angular origin does not match Chrome's, so instead of comparing against Chrome we
-  // assert the property the bug destroyed — with a duplicated stop the sweep must be a hard step
-  // between two flat colors, with no interpolated pixel anywhere. Before the fix every pixel was
-  // an intermediate blend.
+  // Conic: with a duplicated stop the sweep must be a hard step between two flat colors, with no
+  // interpolated pixel anywhere. Before the fix every pixel was an intermediate blend. The sweep
+  // starts along +x and runs clockwise, so Chrome 155 CPU paints the bottom half red and the top
+  // half blue.
   const size = 64
   const canvas = createCanvas(size, size)
   const ctx = canvas.getContext('2d')!
@@ -1358,15 +1360,24 @@ test('duplicated color stops behave the same on radial and conic gradients', (t)
   let pureRed = 0
   let pureBlue = 0
   let blended = 0
+  let bottomRed = 0
+  let topBlue = 0
   for (let i = 0; i < data.length; i += 4) {
     const [r, g, b, a] = [data[i], data[i + 1], data[i + 2], data[i + 3]]
-    if (r === 255 && g === 0 && b === 0 && a === 255) pureRed++
-    else if (r === 0 && g === 0 && b === 255 && a === 255) pureBlue++
-    else blended++
+    const top = Math.floor(i / 4 / size) < size / 2
+    if (r === 255 && g === 0 && b === 0 && a === 255) {
+      pureRed++
+      if (!top) bottomRed++
+    } else if (r === 0 && g === 0 && b === 255 && a === 255) {
+      pureBlue++
+      if (top) topBlue++
+    } else blended++
   }
   t.is(blended, 0, 'a conic gradient with a duplicated stop must not interpolate anywhere')
   t.is(pureRed, (size * size) / 2, 'half the conic sweep is pure red')
   t.is(pureBlue, (size * size) / 2, 'the other half is pure blue')
+  t.is(bottomRed, (size * size) / 2, 'the red half is the bottom half, as in Chrome')
+  t.is(topBlue, (size * size) / 2, 'the blue half is the top half, as in Chrome')
 })
 
 test('an unparseable ctx.filter must not crash the process on the next draw', (t) => {

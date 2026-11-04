@@ -300,42 +300,44 @@ test.serial('lottie render lands over ops recorded before it', (t) => {
   t.deepEqual(px(ctx, 48, 0), [0, 255, 0, 255])
 })
 
-// getContext('2d', { alpha: false }) paints an opaque base fill straight onto
-// the surface. It must flush pending recorded ops under it (a recorded op
-// issued before the call renders OVER the fill).
-test.serial('alpha:false base fill lands over ops recorded before it', (t) => {
+// Spec (HTML getContext, context mode 2d): a later call returns "the same
+// object as was returned the last time" and does not re-run context creation,
+// so a late { alpha: false } neither repaints the bitmap nor flips the alpha
+// attribute. Chrome 155: same object, pixel stays (255,0,0,255), alpha true.
+test.serial('late getContext({ alpha: false }) returns the same context and is ignored', (t) => {
   const canvas = createCanvas(64, 64)
-  canvas.getContext('2d')!.fillStyle = '#ff0000'
-  canvas.getContext('2d')!.fillRect(0, 0, 64, 64)
-  canvas.getContext('2d', { alpha: false })
-
-  t.deepEqual(
-    Array.from(canvas.getContext('2d')!.getImageData(32, 32, 1, 1).data),
-    [255, 255, 255, 255],
-    'base fill was overwritten by the recorded fill',
-  )
+  const ctx = canvas.getContext('2d')!
+  ctx.fillStyle = '#ff0000'
+  ctx.fillRect(0, 0, 64, 64)
+  t.is(canvas.getContext('2d', { alpha: false }), ctx)
+  t.deepEqual(px(ctx, 32, 32), [255, 0, 0, 255])
+  t.true(ctx.getContextAttributes().alpha)
 })
 
-// A direct surface write bypasses the recording, so get_picture() (the
-// drawCanvas source path) rebases the layers on the post-write surface. The
-// two draw paths must agree.
+// The alpha:false base fill is a direct surface write that bypasses the
+// recording. An op recorded AFTER it lives only in the layers, so drawCanvas
+// (SkPicture replay) must rebase on the post-write surface or it loses the
+// base; drawImage (snapshot) is the reference. drawCanvas runs first as a
+// precaution: with this one recorded layer the order does not matter, but if
+// drawImage's flush consolidated more layers it would rebase the source and
+// hide a missing rebase.
 test.serial('drawCanvas and drawImage agree after alpha:false direct fill', (t) => {
   const src = createCanvas(64, 64)
-  src.getContext('2d')!.fillStyle = '#ff0000'
-  src.getContext('2d')!.fillRect(0, 0, 64, 64)
-  src.getContext('2d', { alpha: false })
-
-  const viaImage = createCanvas(64, 64).getContext('2d')!
-  viaImage.drawImage(src, 0, 0)
-  t.deepEqual(Array.from(viaImage.getImageData(32, 32, 1, 1).data), [255, 255, 255, 255])
+  const sctx = src.getContext('2d', { alpha: false })!
+  sctx.fillStyle = '#ff0000'
+  sctx.fillRect(0, 0, 32, 64)
 
   const viaCanvas = createCanvas(64, 64).getContext('2d')!
   viaCanvas.drawCanvas(src, 0, 0)
-  t.deepEqual(
-    Array.from(viaCanvas.getImageData(32, 32, 1, 1).data),
-    [255, 255, 255, 255],
-    'drawCanvas replayed the stale pre-fill recording',
-  )
+  const viaImage = createCanvas(64, 64).getContext('2d')!
+  viaImage.drawImage(src, 0, 0)
+
+  const base = px(sctx, 48, 32)
+  t.is(base[3], 255, 'alpha:false base must be opaque')
+  t.deepEqual(px(viaImage, 16, 32), [255, 0, 0, 255])
+  t.deepEqual(px(viaImage, 48, 32), base)
+  t.deepEqual(px(viaCanvas, 16, 32), [255, 0, 0, 255], 'drawCanvas lost the op recorded after the base fill')
+  t.deepEqual(px(viaCanvas, 48, 32), base, 'drawCanvas lost the base fill (picture not rebased)')
 })
 
 test.serial('drawCanvas and drawImage agree after a lottie render', (t) => {
@@ -433,7 +435,7 @@ test.serial('createPattern fillRect lands', (t) => {
   tctx.fillRect(0, 0, 8, 8)
 
   const ctx = createCanvas(64, 64).getContext('2d')!
-  ctx.fillStyle = ctx.createPattern(tile, 'repeat')
+  ctx.fillStyle = ctx.createPattern(tile, 'repeat')!
   ctx.fillRect(0, 0, 64, 64)
   t.deepEqual(px(ctx, 32, 32), [255, 0, 255, 255])
 })
@@ -481,7 +483,8 @@ test.serial('zero-area and non-finite draws paint nothing', (t) => {
   )
 })
 
-// Negative dims sort to a positive span and still paint (mirrored).
+// Negative dims still paint: fillRect sorts the rect, and drawImage and
+// drawCanvas move the origin (Blink AdjustRectForCanvas) instead of mirroring.
 test.serial('negative dims still paint through fillRect, drawImage and drawCanvas', (t) => {
   const ctx = createCanvas(128, 128).getContext('2d')!
   ctx.fillStyle = '#0f0'
@@ -506,7 +509,7 @@ test.serial('negative dims still paint through fillRect, drawImage and drawCanva
   dest.drawImage(src, 0, 0, 10, 10, 30, 20, -10, -10)
   t.deepEqual(px(dest, 25, 15), [255, 0, 0, 255])
 
-  // drawCanvas goes through draw_picture_rect: same sorted clip.
+  // drawCanvas normalises the same way before draw_picture_rect.
   sctx.fillStyle = '#0f0'
   sctx.fillRect(0, 0, 10, 10)
   dest = createCanvas(64, 64).getContext('2d')
@@ -553,11 +556,15 @@ test.serial('unfillable dirty-rect putImageData paints nothing', (t) => {
   ctx.putImageData(imageData, 0, 0, 16777216, 0, 1, 8)
   // Same collapse on the destination side: dx + dirtyX overflows.
   ctx.putImageData(imageData, 16777216, 0, 0, 0, 1, 8)
-  // NaN and +/-inf make src/dst rects non-finite or empty.
-  ctx.putImageData(imageData, 0, 0, NaN, 0, 8, 8)
-  ctx.putImageData(imageData, 0, 0, Infinity, 0, 8, 8)
-  ctx.putImageData(imageData, 0, 0, 0, 0, -Infinity, 8)
-  ctx.putImageData(imageData, 0, 0, 0, 0, 8, NaN)
+  // NaN and +/-inf are not [EnforceRange] long values: a TypeError, as in
+  // Chrome 155.
+  const put = "Failed to execute 'putImageData' on 'CanvasRenderingContext2D': "
+  const notLong = { instanceOf: TypeError, message: `${put}Value is not of type 'long'.` }
+  const infinite = { instanceOf: TypeError, message: `${put}Value is infinite and not of type 'long'.` }
+  t.throws(() => ctx.putImageData(imageData, 0, 0, NaN, 0, 8, 8), notLong)
+  t.throws(() => ctx.putImageData(imageData, 0, 0, Infinity, 0, 8, 8), infinite)
+  t.throws(() => ctx.putImageData(imageData, 0, 0, 0, 0, -Infinity, 8), infinite)
+  t.throws(() => ctx.putImageData(imageData, 0, 0, 0, 0, 8, NaN), notLong)
   // Negative dirty spans normalize per spec but end empty -> nothing paints.
   ctx.putImageData(imageData, 10, 10, 0, 0, -4, 8)
   ctx.putImageData(imageData, 20, 20, 0, 0, 8, -4)
@@ -575,10 +582,11 @@ test.serial('unfillable dirty-rect putImageData paints nothing', (t) => {
 
 // -- Extreme geometry still records ----------------------------------------
 
-// The drawImage canvas-arm preflight must not gate on a derived term the C++
-// never forms: under a tiny-scale CTM the derived `dx - sx*scale_x` overflows
-// f32 while the composed matrix stays finite, so the draw paints.
-test.serial('drawImage under extreme CTM paints when the composed matrix is finite', (t) => {
+// Chrome 155's CPU canvas paints nothing here: drawImage normalises the
+// negative width (the dst rect starts at -FLT_MAX) and maps the 1-pixel-wide
+// source onto it with drawImageRect, whose src-to-dst scale and translate do
+// not fit in a float. The draw must not throw or record a broken op.
+test.serial('drawImage under extreme CTM paints nothing, like Chrome', (t) => {
   const src = createCanvas(10, 10)
   const sctx = src.getContext('2d')
   sctx.fillStyle = '#f00'
@@ -586,7 +594,16 @@ test.serial('drawImage under extreme CTM paints when the composed matrix is fini
   const ctx = createCanvas(64, 64).getContext('2d')!
   ctx.setTransform(-1e-37, 0, 0, 1, 0, 0)
   ctx.drawImage(src, 9, 0, 1, 10, -3e38, 0, -3e38, 10)
-  t.deepEqual(px(ctx, 45, 5), [255, 0, 0, 255])
+  const data = ctx.getImageData(0, 0, 64, 64).data
+  t.false(
+    data.some((v) => v !== 0),
+    'painted pixels',
+  )
+  // The canvas still takes later draws.
+  ctx.resetTransform()
+  ctx.fillStyle = '#00f'
+  ctx.fillRect(0, 0, 8, 8)
+  t.deepEqual(px(ctx, 4, 4), [0, 0, 255, 255])
 })
 
 // SkCanvas::clipRect IGNORES a non-finite rect, so a dst clip whose endpoint
@@ -641,7 +658,7 @@ test.serial('measureText does not disturb the recording', (t) => {
   const tctx = tile.getContext('2d')!
   tctx.fillStyle = '#00ff00'
   tctx.fillRect(0, 0, 8, 8)
-  ctx.fillStyle = ctx.createPattern(tile, 'repeat')
+  ctx.fillStyle = ctx.createPattern(tile, 'repeat')!
 
   let width = 0
   for (let i = 0; i < 1000; i++) {
@@ -667,14 +684,14 @@ test.serial('fillText with the registered Lato font paints', (t) => {
   )
 })
 
-// A text draw that cannot record (interior NUL in the text CString) must
-// leave the recording untouched: the following draw still renders.
-test.serial('NUL-rejected fillText leaves the canvas usable', (t) => {
+// A U+0000 in the text is text, like in Chrome: the draw records and the
+// following draw still renders.
+test.serial('fillText with a NUL draws and leaves the canvas usable', (t) => {
   const ctx = createCanvas(64, 64).getContext('2d')!
   ctx.font = '16px Lato'
   const nulText = 'a\0b'
-  t.throws(() => ctx.fillText(nulText, 0, 16))
-  t.throws(() => ctx.strokeText(nulText, 0, 16))
+  t.notThrows(() => ctx.fillText(nulText, 0, 16))
+  t.notThrows(() => ctx.strokeText(nulText, 0, 16))
   ctx.fillStyle = '#ff0000'
   ctx.fillRect(0, 0, 64, 64)
   t.deepEqual(px(ctx, 32, 32), [255, 0, 0, 255])

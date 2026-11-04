@@ -1,8 +1,7 @@
 # `skr canvas`
 
 ![CI](https://github.com/Brooooooklyn/canvas/workflows/CI/badge.svg)
-![Skia Version](https://img.shields.io/badge/Skia-chrome%2Fm156-hotpink)
-[![install size](https://packagephobia.com/badge?p=@napi-rs/canvas)](https://packagephobia.com/result?p=@napi-rs/canvas)
+![Skia Version](https://img.shields.io/badge/Skia-chrome%2Fm157-hotpink)
 [![Downloads](https://img.shields.io/npm/dm/@napi-rs/canvas.svg?sanitize=true)](https://npmcharts.com/compare/@napi-rs/canvas?minimal=true)
 
 > 🚀 帮助我成为全职开源开发者: [Sponsoring me on Github](https://github.com/sponsors/Brooooooklyn)
@@ -75,6 +74,74 @@ main()
 
 ![](./example/simple.png)
 
+## 图片元数据
+
+`toBuffer`、`encode` 和 `encodeSync` 可以把分辨率（DPI）和几个文字字段写进 PNG 和 JPEG。把它们放在选项对象里：
+
+```js
+const png = canvas.toBuffer('image/png', {
+  resolution: 300, // 每英寸像素数，和 node-canvas 的选项相同
+  title: '平面图',
+  author: '张三',
+  description: '一层，1:100',
+})
+
+// JPEG：要同时设置质量，请用 encode / encodeSync
+const jpeg = await canvas.encode('jpeg', { quality: 90, resolution: 300, copyright: '© 2026 张三' })
+```
+
+| 选项          | PNG                | JPEG                    |
+| ------------- | ------------------ | ----------------------- |
+| `resolution`  | `pHYs` chunk       | JFIF 密度（每英寸点数） |
+| `title`       | `Title` 文字 chunk | XMP `dc:title`          |
+| `author`      | `Author`           | XMP `dc:creator`        |
+| `description` | `Description`      | XMP `dc:description`    |
+| `copyright`   | `Copyright`        | XMP `dc:rights`         |
+| `software`    | `Software`         | XMP `xmp:CreatorTool`   |
+| `comment`     | `Comment`          | `COM` 段                |
+
+WebP、AVIF 和 GIF 会忽略这些选项。`toDataURL`、`toDataURLAsync`、`toBlob`、`convertToBlob`、`encodeStream` 和 `savePng` 不会写元数据：需要带元数据的文件时，把 `toBuffer` 或 `encode` 返回的 Buffer 写到磁盘。传入对象时，`toBuffer('image/jpeg', ...)` 的质量是 92；要用别的质量，请用 `encode` 或 `encodeSync`。
+
+## 文字渲染
+
+默认情况下，文字在每个系统上看起来都一样。所有字体都用 FreeType 绘制，使用 Skia 默认的文字 gamma，不用 LCD（亚像素）文字，并且只有一张字体族表（Linux 用的那张）。同样的字体文件，在 macOS、Linux 和 Windows 上得到同样的像素和同样的 `measureText` 结果。
+
+想要每个系统上输出都一样，请用任何系统都不会安装的名字注册你自己的字体文件，并且只用这些名字绘制：
+
+```js
+const { GlobalFonts } = require('@napi-rs/canvas')
+
+GlobalFonts.registerFromPath('./fonts/Lato-Regular.ttf', 'MyLato')
+ctx.font = '20px MyLato'
+```
+
+下面这些仍然和系统、机器有关：
+
+- 已安装的字体。`Arial`、`Helvetica` 这样的名字，以及通用字体族（`sans-serif`、`serif`、`monospace`、`system-ui`，还有 canvas 默认的 `10px sans-serif`）会用到机器上装的字体。
+- 注册字体里没有的字符。它们会从已安装的默认字体里取；默认字体也没有时画成方框。不会在所有已安装字体里查找。
+- SVG 图片里的 `ex`、`ch`、`cap` 和行高单位使用一个已安装的默认字体。
+- Lottie（Skottie）里的文字使用已安装的字体。
+- PDF 的字体嵌入和编译目标有关。
+- x64 和 arm64 的构建在一些边缘像素上可能差 1 个色阶。
+- 环境变量 `FREETYPE_PROPERTIES` 会改变 FreeType 的 hinting。
+
+设置 `DISABLE_SYSTEM_FONTS_LOAD=1` 可以让已安装的字体不出现在 `GlobalFonts.families` 里。默认情况下，在所有系统上它们仍然可以按名字找到。
+
+### `setTextRenderer()`
+
+`setTextRenderer('system')` 让文字按 Chrome 在各个系统上的方式绘制：macOS 上用 CoreText（以及 CoreText 的已安装字体和回退），Linux 上用 Fontations，Windows 上用 FreeType；再加上各系统的文字 gamma、macOS 不透明 canvas 上的 LCD 文字、Chrome 各系统的字体族设置和 macOS 的度量规则。这是 1.0.12 和 1.0.13 的默认行为。默认值是 `'portable'`。
+
+```js
+const { setTextRenderer, getTextRenderer } = require('@napi-rs/canvas')
+
+setTextRenderer('system')
+getTextRenderer() // 'system'
+```
+
+它作用于整个进程。请在启动时、创建 canvas 之前调用一次。`setTextRenderer('portable')` 切换回默认方式。传入其他值会抛出 `TypeError`。切换之前创建的 canvas 会保留原来的文字 gamma，直到你设置它的 width 或 height。切换之前设置的 `ctx.font` 值会保留它解析后的结果（`ex`、`ch` 等字体相关单位的字号，以及 macOS 上 `BlinkMacSystemFont` 到 `system-ui` 的改写），所以切换之后请重新设置 `ctx.font`。
+
+> **行为变化**（[#1402](https://github.com/Brooooooklyn/canvas/issues/1402)）：macOS 和 Linux 上的文字改为按 Windows 的方式绘制，所以像素和 `measureText` 结果和 1.0.12、1.0.13 不同。在 macOS 上，已安装的字体重新成为 FreeType 字体（和 1.0.11 一样），读取自 `/System/Library/Fonts`、`/Library/Fonts` 和 `~/Library/Fonts`；不再有 CoreText 的逐字符回退，`sans-serif`、`serif` 和 `monospace` 对应 Arial、Times New Roman 和 Linux 的等宽字体列表。在 macOS 上，`DISABLE_SYSTEM_FONTS_LOAD` 不再让按名字查找找不到已安装的字体，和 Linux、Windows 以及 1.0.12 之前一样；它只让这些字体不出现在 `GlobalFonts.families` 里。调用 `setTextRenderer('system')` 可以回到 1.0.12 / 1.0.13 的行为。
+
 ## Emoji 文字
 
 ```js
@@ -103,53 +170,6 @@ writeFileSync(join(__dirname, 'draw-emoji.png'), b)
 ```
 
 ![](./example/draw-emoji.png)
-
-# 性能
-
-[benchmark](./benchmark) 代码。
-
-硬件信息:
-
-```
-                  ,MMMM.           Host        -  xxxxxxxxxxxxxxxxxxxxxxx
-                .MMMMMM            Machine     -  Mac15,9
-                MMMMM,             Kernel      -  24.0.0
-      .;MMMMM:' MMMMMMMMMM;.       OS          -  macOS 15.0.1 Sequoia
-    MMMMMMMMMMMMNWMMMMMMMMMMM:     DE          -  Aqua
-  .MMMMMMMMMMMMMMMMMMMMMMMMWM.     WM          -  Quartz Compositor
-  MMMMMMMMMMMMMMMMMMMMMMMMM.       Packages    -  194 (Homebrew), 32 (cargo)
- ;MMMMMMMMMMMMMMMMMMMMMMMM:        Shell       -  zsh
- :MMMMMMMMMMMMMMMMMMMMMMMM:        Terminal    -  warpterminal (Version v0.2024.10.23.14.49.stable_00)
- .MMMMMMMMMMMMMMMMMMMMMMMMM.       Resolution  -  5120x2880@160fps (as 2560x1440)
-  MMMMMMMMMMMMMMMMMMMMMMMMMMM.                    2992x1934@120fps (as 1496x967)
-   .MMMMMMMMMMMMMMMMMMMMMMMMMM.                   2232x1512@60fps (as 1116x756)
-     MMMMMMMMMMMMMMMMMMMMMMMM      Uptime      -  1d 2h 32m
-      ;MMMMMMMMMMMMMMMMMMMM.       CPU         -  Apple M3 Max (16)
-        .MMMM,.    .MMMM,.         CPU Load    -  16%
-                                   Memory      -  50.1 GB / 134.2 GB
-                                   Battery     -  78% & Discharging
-                                   Disk Space  -  624.0 GB / 994.7 GB
-```
-
-```
-❯ yarn bench
-Draw a House and export to PNG
-┌─────────┬─────────────────┬───────────────────────┬──────────────────────────┬────────────────────────────┬───────────────────────────┬─────────┐
-│ (index) │ Task name       │ Latency average (ns)  │ Latency median (ns)      │ Throughput average (ops/s) │ Throughput median (ops/s) │ Samples │
-├─────────┼─────────────────┼───────────────────────┼──────────────────────────┼────────────────────────────┼───────────────────────────┼─────────┤
-│ 0       │ '@napi-rs/skia' │ '14676992.14 ± 0.68%' │ '14602333.00'            │ '68 ± 0.59%'               │ '68'                      │ 69      │
-│ 1       │ 'skia-canvas'   │ '21167809.17 ± 2.05%' │ '20960021.00 ± 13646.00' │ '47 ± 1.31%'               │ '48'                      │ 64      │
-│ 2       │ 'node-canvas'   │ '16552027.42 ± 0.70%' │ '16451291.50 ± 2208.50'  │ '60 ± 0.62%'               │ '61'                      │ 64      │
-└─────────┴─────────────────┴───────────────────────┴──────────────────────────┴────────────────────────────┴───────────────────────────┴─────────┘
-Draw Gradient and export to PNG
-┌─────────┬─────────────────┬───────────────────────┬─────────────────────────┬────────────────────────────┬───────────────────────────┬─────────┐
-│ (index) │ Task name       │ Latency average (ns)  │ Latency median (ns)     │ Throughput average (ops/s) │ Throughput median (ops/s) │ Samples │
-├─────────┼─────────────────┼───────────────────────┼─────────────────────────┼────────────────────────────┼───────────────────────────┼─────────┤
-│ 0       │ '@napi-rs/skia' │ '15228495.58 ± 0.53%' │ '15146312.50 ± 1187.50' │ '66 ± 0.48%'               │ '66'                      │ 66      │
-│ 1       │ 'skia-canvas'   │ '21725564.41 ± 2.20%' │ '21412520.50 ± 2104.50' │ '46 ± 1.39%'               │ '47'                      │ 64      │
-│ 2       │ 'node-canvas'   │ '17976022.14 ± 1.53%' │ '17563479.50 ± 5104.50' │ '56 ± 1.38%'               │ '57'                      │ 64      │
-└─────────┴─────────────────┴───────────────────────┴─────────────────────────┴────────────────────────────┴───────────────────────────┴─────────┘
-```
 
 # 功能
 

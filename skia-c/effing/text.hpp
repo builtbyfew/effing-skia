@@ -28,16 +28,16 @@ struct effing_painted {
 };
 
 extern "C" {
-// Reports what paint_text_unsnapped drew on this thread since the last call,
-// and starts the tally over. fillText/strokeText under geometricPrecision
-// reach it through upstream's skiac_canvas_get_line_metrics_or_draw_text,
-// whose signature stays upstream's.
+// Reports what paint_glyphs_unsnapped drew on this thread since the last
+// call, and starts the tally over. fillText/strokeText under
+// geometricPrecision reach it through upstream's skiac_text_draw, whose
+// signature stays upstream's.
 void effing_take_text_painted(effing_painted* painted);
 }
 
 namespace effing {
 
-// The `text_rendering` value skia_c.cpp receives for geometricPrecision; it
+// The `text_rendering` value text.cpp receives for geometricPrecision; it
 // mirrors `TextRendering` in src/sk.rs.
 constexpr int kTextRenderingGeometricPrecision = 3;
 
@@ -59,38 +59,21 @@ float effective_font_size(float size);
 // A size that rounds to 0 stays as it is.
 float freetype_font_size(float size);
 
-// Makes a paragraph of `text_style` shape and draw unhinted, so glyph outlines
-// and advances don't depend on the device scale. `strut_style` is the
-// paragraph's strut, which must be disabled: it carries the marker that keeps
-// the paragraph apart from its hinted twin in SkParagraph's cache.
-void make_unhinted(skia::textlayout::TextStyle* text_style,
-                   skia::textlayout::StrutStyle* strut_style);
-
-// Which text add_text adds: a Paragraph's, laid out as CSS text, or
-// fillText's, which Chrome's canvas lays out with its tabs, line feeds, form
-// feeds and carriage returns turned into spaces.
-enum class TextKind { kCss, kCanvas };
-
-// Adds `text` to `builder` in the builder's current style, giving the code
-// points Chrome adds no letter spacing after a style of their own without
-// it. Blink skips the letter spacing of a character it treats as a
-// zero-width space: a default-ignorable code point (ZWSP, ZWJ, ZWNJ, WJ, the
-// bidi controls, variation selectors, a soft hyphen, ...), U+FFFC and, in CSS
-// text, a carriage return. SkParagraph spaces every glyph, so a ZWSP between
-// two letters would add a third gap to their two. A style that differs only
-// in letter spacing doesn't split SkParagraph's shaping runs, so ZWJ and ZWNJ
-// still join or break ligatures, emoji sequences and conjuncts as before.
+// Adds a Paragraph's `text` to `builder` in the builder's current style,
+// giving the code points Chrome adds no letter spacing after a style of their
+// own without it. Blink skips the letter spacing of a character it treats as
+// a zero-width space: a default-ignorable code point (ZWSP, ZWJ, ZWNJ, WJ,
+// the bidi controls, variation selectors, a soft hyphen, ...), U+FFFC and, in
+// CSS text, a carriage return. (fillText's text gets the same from upstream's
+// text.cpp, NoLetterSpacingRanges.) SkParagraph spaces every glyph, so a ZWSP
+// between two letters would add a third gap to their two. A style that differs
+// only in letter spacing doesn't split SkParagraph's shaping runs, so ZWJ and
+// ZWNJ still join or break ligatures, emoji sequences and conjuncts as before.
 // Text without such code points, or a style without letter spacing, is added
 // as it is.
 void add_text(skia::textlayout::ParagraphBuilder* builder,
               const char* text,
-              size_t len,
-              TextKind kind);
-
-// The half letter spacing SkParagraph moves a laid-out paragraph's first
-// line right by: that of its first cluster that is not a placeholder or in a
-// cursive script, which add_text can leave without letter spacing.
-SkScalar leading_half_letter_spacing(skia::textlayout::Paragraph* paragraph);
+              size_t len);
 
 // What the painter drew, for a recording's byte budget.
 struct Painted {
@@ -128,15 +111,18 @@ void paint_paragraph_unsnapped(skia::textlayout::Paragraph* paragraph,
                                const SkPoint* line_origins = nullptr,
                                Painted* painted = nullptr);
 
-// The fillText/strokeText flavour: paints the paragraph with its first line's
-// alphabetic baseline exactly at y + getAlphabeticBaseline(), the value the
-// Canvas 2D textBaseline offsets are computed from. What was drawn is added
+// The fillText/strokeText flavour, for one run of a line upstream's text.cpp
+// laid out: paints `count` glyphs of `font` at `positions`, relative to
+// (x, y), as paint_paragraph_unsnapped paints a run. What was drawn is added
 // to this thread's tally, which effing_take_text_painted reports.
-void paint_text_unsnapped(skia::textlayout::Paragraph* paragraph,
-                          SkCanvas* canvas,
-                          SkScalar x,
-                          SkScalar y,
-                          const SkPaint& paint);
+void paint_glyphs_unsnapped(SkCanvas* canvas,
+                            const SkFont& font,
+                            const SkGlyphID* glyphs,
+                            const SkPoint* positions,
+                            int count,
+                            SkScalar x,
+                            SkScalar y,
+                            const SkPaint& paint);
 
 }  // namespace effing
 

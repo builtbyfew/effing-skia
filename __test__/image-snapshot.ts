@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs'
+import { existsSync, promises as fs } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { arch } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -7,11 +7,28 @@ import PNG from '@jimp/png'
 import JPEG from '@jimp/jpeg'
 import { ExecutionContext } from 'ava'
 
+import { getTextRenderer } from '../index'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const png = PNG()
 const jpeg = JPEG()
 const ARCH_NAME = arch()
+
+// With the system font renderer, text is drawn by each OS's own font scaler,
+// as in Chrome (CoreText on macOS, Fontations on Linux, FreeType elsewhere), so
+// a snapshot under snapshots/<os>/ wins over the shared one in snapshots/.
+// Otherwise only the shared one is used.
+export function snapshotPath(
+  title: string,
+  ext: string,
+  existing: (p: string) => boolean,
+  system = getTextRenderer() === 'system',
+) {
+  const shared = join(__dirname, 'snapshots', `${title}.${ext}`)
+  const os = join(__dirname, 'snapshots', process.platform, `${title}.${ext}`)
+  return system && existing(os) ? os : shared
+}
 
 export async function snapshotImage<C>(
   t: ExecutionContext<C>,
@@ -23,10 +40,12 @@ export async function snapshotImage<C>(
   const { canvas } = context
   const image = await canvas.encode(type, 100)
   const ext = type === 'jpeg' ? 'jpg' : type
-  const p = join(__dirname, 'snapshots', `${t.title}.${ext}`)
+  const p = snapshotPath(t.title, ext, existsSync)
 
   async function writeFailureImage() {
-    await fs.writeFile(join(__dirname, 'failure', `${t.title}.${ext}`), image)
+    // A .system.spec wrapper runs the same titles, so keep its failures apart.
+    const name = getTextRenderer() === 'system' ? `${t.title}.system` : t.title
+    await fs.writeFile(join(__dirname, 'failure', `${name}.${ext}`), image)
   }
 
   let existed = true

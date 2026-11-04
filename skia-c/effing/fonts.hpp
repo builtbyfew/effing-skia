@@ -21,31 +21,18 @@
 #include "include/core/SkString.h"
 #include "include/core/SkTypeface.h"
 
-struct skiac_font_collection;
-
-extern "C" {
-// Registers the font file at `path`, every face of a collection, under its
-// own family name as a system font, one that any face registered under that
-// name shadows, as skiac_font_collection_register_from_path registers a font
-// otherwise.
-// Returns the font's id, or 0 when the file is no font. A font already
-// registered from `path` stays as it is.
-uint32_t effing_font_collection_register_system_font(
-    skiac_font_collection* collection,
-    const char* path);
-}
-
 namespace effing {
 
 // Whether `faces` holds `typeface` itself.
 bool has_face(const sk_sp<SkFontStyleSet>& faces, const SkTypeface& typeface);
 
 // The faces after the first of the font collection (.ttc, .otc, or a WOFF2
-// of one) at `path`, or in `data` when `path` is empty, as `font_mgr` makes
-// them, in order. None for a font that is no collection, which is told by
-// its first eight bytes, so that loading one opens it no further.
-std::vector<sk_sp<SkTypeface>> more_faces(SkFontMgr& font_mgr,
-                                          const std::string& path,
+// of one) at `path`, or in `data` when `path` is empty, made by FreeType as
+// the canvas makes a registered font's first face by default
+// (MakeCanvasTypeface), in order. None for a font that is no collection,
+// which is told by its first eight bytes, so that loading one opens it no
+// further.
+std::vector<sk_sp<SkTypeface>> more_faces(const std::string& path,
                                           const sk_sp<SkData>& data);
 
 // The faces of a font provider that join a family without shadowing it, by

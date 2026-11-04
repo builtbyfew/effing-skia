@@ -63,7 +63,6 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
-    "bench": "node --import @oxc-node/core/register benchmark/bench.ts",
     "build": "napi build --platform --release --js js-binding.js",
     "build:debug": "napi build --platform --js js-binding.js",
     "example-lottie": "yarn oxnode ./example/lottie-to-video.ts",
@@ -77,6 +76,7 @@
     "test:ci": "NODE_OPTIONS='--import=core-js/proposals/iterator-helpers.js' ava -c 1",
     "test": "NODE_OPTIONS='--import=core-js/proposals/iterator-helpers.js' ava",
     "e2e": "yarn workspace @napi-rs/canvas-e2e-webpack test",
+    "e2e:electron": "yarn workspace @napi-rs/canvas-e2e-electron test",
     "version": "napi version && conventional-changelog -p angular -i CHANGELOG.md -s && git add ."
   },
   "devDependencies": {
@@ -88,11 +88,11 @@
     "@napi-rs/webcodecs": "^1.1.1",
     "@node-rs/crc32": "^1.10.6",
     "@octokit/rest": "^22.0.1",
-    "@oxc-node/cli": "^0.1.0",
-    "@oxc-node/core": "^0.1.0",
+    "@oxc-node/cli": "^1.0.0",
+    "@oxc-node/core": "^1.0.0",
     "@taplo/cli": "^0.7.0",
     "@types/lodash": "^4.17.21",
-    "@types/node": "^25.0.3",
+    "@types/node": "^26.0.0",
     "@types/semver": "^7",
     "ava": "^8.0.0",
     "canvas": "^3.2.0",
@@ -101,22 +101,21 @@
     "conventional-changelog-cli": "^5.0.0",
     "core-js": "^3.47.0",
     "echarts": "^6.0.0",
-    "electron": "^44.0.0",
+    "electron": "^45.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.0",
     "lodash": "^4.17.21",
     "npm-run-all2": "^9.0.0",
     "oxlint": "^1.34.0",
     "oxlint-tsgolint": "^7.0.0",
+    "pdfjs-dist": "6.4.299",
     "pinst": "^3.0.0",
     "png.js": "^0.2.1",
     "prettier": "^3.7.4",
     "pretty-bytes": "^7.1.0",
     "semver": "^7.7.3",
-    "skia-canvas": "^3.0.8",
     "smol-toml": "^1.9.0",
     "table": "^6.9.0",
-    "tinybench": "^6.0.0",
     "typescript": "^7.0.0"
   },
   "lint-staged": {
@@ -157,9 +156,6 @@
   "packageManager": "yarn@4.18.1",
   "dependenciesMeta": {
     "canvas": {
-      "built": true
-    },
-    "skia-canvas": {
       "built": true
     }
   },

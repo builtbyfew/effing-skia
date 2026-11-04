@@ -1,430 +1,655 @@
-use std::num::ParseFloatError;
+//! `ctx.filter` as Blink 155 runs it for a canvas:
+//!
+//! ```text
+//!  string ──parse_filter──► ParsedFilter ──resolve──► Vec<CssFilter> ──css_filters_to_image_filter──► ImageFilter
+//!          (CSS grammar)    (tokens, calc())  (lengths)  (numbers)        (FilterEffectBuilder)
+//! ```
+//!
+//! * parse: CSSParser::ParseSingleValue(kFilter) -- ConsumeFilterFunctionList,
+//!   ConsumeFilterFunction and ParseSingleShadow (css_parsing_utils.cc:811-905,
+//!   4024-4047, 6021-6080). Math functions are layer 07's `css_math`, the
+//!   drop-shadow() color is layer 07's color parser.
+//! * resolve: FilterOperationResolver::CreateOffscreenFilterOperations
+//!   (filter_operation_resolver.cc:128-170, 275-360) and
+//!   StyleBuilderConverter::ConvertShadow. A Node canvas has no element, so
+//!   the lengths are the OffscreenCanvas ones: em and rem are 16px, viewport,
+//!   container and line-height units are 0, and the font-metric units come
+//!   from the canvas font.
+//! * build: FilterEffectBuilder (filter_effect_builder.cc).
 
 use cssparser::{Parser, Token};
-use cssparser_color::{Color, hsl_to_rgb, hwb_to_rgb};
-use nom::{
-  Err,
-  IResult,
-  Parser as NomParser,
-  branch::alt,
-  // effing: function names and units are case-insensitive, as in CSS
-  bytes::complete::tag_no_case as tag,
-  error::{Error, ErrorKind},
-};
-use rgb::RGBA;
-use thiserror::Error;
 
-use crate::sk::{ImageFilter, degrees_to_radians};
+use crate::color::{self, Color};
+use crate::css_math::{self, Category, Lengths, Literal, MathOptions, Node, Unit};
+use crate::sk::ImageFilter;
 
-#[derive(Error, Debug)]
-pub enum ParseFilterError<'a> {
-  #[error("{0}")]
-  Nom(Err<Error<&'a str>>),
-  #[error("{0}")]
-  ParseFloatError(ParseFloatError),
-  #[error("[`{0}`] is not valid unit")]
-  UnitParseError(&'a str),
-}
-
-impl<'a> From<Err<Error<&'a str>>> for ParseFilterError<'a> {
-  fn from(value: Err<Error<&'a str>>) -> Self {
-    Self::Nom(value)
-  }
-}
-
-impl From<ParseFloatError> for ParseFilterError<'_> {
-  fn from(value: ParseFloatError) -> Self {
-    Self::ParseFloatError(value)
-  }
-}
-
-#[derive(Debug, PartialEq)]
+/// A resolved filter function, the operand FilterEffectBuilder builds from.
+/// The amounts are doubles and the lengths floats, as in Blink's
+/// FilterOperations.
+#[derive(Debug, Clone, PartialEq)]
 pub enum CssFilter {
   Blur(f32),
-  Brightness(f32),
-  Contrast(f32),
-  DropShadow(f32, f32, f32, RGBA<u8>),
-  Grayscale(f32),
-  HueRotate(f32),
-  Invert(f32),
-  Opacity(f32),
-  Saturate(f32),
-  Sepia(f32),
+  Brightness(f64),
+  Contrast(f64),
+  DropShadow(f32, f32, f32, Color),
+  Grayscale(f64),
+  HueRotate(f64),
+  Invert(f64),
+  Opacity(f64),
+  Saturate(f64),
+  Sepia(f64),
 }
 
-// effing: only CSS whitespace separates and pads filter functions, where
-// `str::trim` also takes U+00A0 and the other Unicode spaces, which Chrome
-// rejects.
-const CSS_WHITESPACE: [char; 5] = [' ', '\t', '\n', '\r', '\x0C'];
-
-pub(crate) trait CssTrim {
-  fn css_trim(&self) -> &str;
+/// A numeric argument as parsed: a token, or a math function, whose value is
+/// range-checked only when it is resolved.
+#[derive(Clone, Debug)]
+enum Arg {
+  Literal(Literal),
+  Math(Node),
 }
 
-impl CssTrim for str {
-  fn css_trim(&self) -> &str {
-    self.trim_matches(CSS_WHITESPACE)
-  }
-}
-
-// effing: a CSS number at the start of `input`, and what follows it: an
-// optional sign, digits with an optional fraction (`.5`, `4.5`, not `4.`), and
-// an optional exponent (`4e1`, `1E-3`), which `4em` does not start. Upstream
-// cut the number at the first letter, so `blur(4e1px)` was rejected, and read
-// `inf` and `NaN` as numbers.
-fn css_number(input: &str) -> Option<(f32, &str)> {
-  let bytes = input.as_bytes();
-  let digits_from = |mut at: usize| {
-    while bytes.get(at).is_some_and(u8::is_ascii_digit) {
-      at += 1;
-    }
-    at
-  };
-  let mut end = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
-  let integer_end = digits_from(end);
-  let mut has_digits = integer_end > end;
-  end = integer_end;
-  if bytes.get(end) == Some(&b'.') && bytes.get(end + 1).is_some_and(u8::is_ascii_digit) {
-    end = digits_from(end + 1);
-    has_digits = true;
-  }
-  if !has_digits {
-    return None;
-  }
-  if matches!(bytes.get(end), Some(b'e' | b'E')) {
-    let sign = usize::from(matches!(bytes.get(end + 1), Some(b'+' | b'-')));
-    if bytes.get(end + 1 + sign).is_some_and(u8::is_ascii_digit) {
-      end = digits_from(end + 1 + sign);
+impl Arg {
+  fn any_unit(&self, f: &impl Fn(Unit) -> bool) -> bool {
+    match self {
+      Arg::Literal(l) => f(l.unit),
+      Arg::Math(node) => node.any_unit(f),
     }
   }
-  Some((input[..end].parse().ok()?, &input[end..]))
-}
 
-fn pixel<'a>(input: &'a str) -> Result<f32, ParseFilterError<'a>> {
-  // effing: the number as CSS reads it (`css_number`).
-  let input = input.css_trim();
-  let (size, unit) = css_number(input).ok_or(ParseFilterError::UnitParseError(input))?;
-  let mut size_px = size;
-  // effing: units are case-insensitive, as in CSS, and the table is shared
-  // with `drop-shadow()`'s lengths.
-  match unit.css_trim().to_ascii_lowercase().as_str() {
-    // effing: no `%`, which `blur()`, the only taker, rejects, as Chrome does
-    "" => {
-      if size_px != 0f32 {
-        return Err(ParseFilterError::UnitParseError("[No unit assigned]"));
-      }
+  /// The value in its canonical unit (px, degrees), relative lengths resolved.
+  fn compute(&self, lengths: &Lengths) -> f64 {
+    match self {
+      Arg::Literal(l) => Node::Literal(*l).compute_double(lengths),
+      Arg::Math(node) => node.compute_double(lengths),
     }
-    lowercase => match length_px(size, lowercase) {
-      Some(px) => size_px = px,
-      None => return Err(ParseFilterError::UnitParseError(unit)),
-    },
-  };
-
-  Ok(size_px)
+  }
 }
 
-// effing: the length units `pixel` takes, for a lowercase unit. Font-relative
-// ones are 16px, not the context's font.
-fn length_px(size: f32, unit: &str) -> Option<f32> {
-  Some(match unit {
-    "em" | "rem" | "pc" => size * 16.0,
-    "pt" => size * 4.0 / 3.0,
-    "px" => size,
-    "in" => size * 96.0,
-    "cm" => size * 96.0 / 2.54,
-    "mm" => size * 96.0 / 25.4,
-    "q" => size * 96.0 / 25.4 / 4.0,
-    _ => return None,
+/// The `<number-percentage>` filter functions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Amount {
+  Brightness,
+  Contrast,
+  Grayscale,
+  Invert,
+  Opacity,
+  Saturate,
+  Sepia,
+}
+
+/// One item of a parsed `<filter-value-list>`: a CSSFunctionValue, or url().
+#[derive(Clone, Debug)]
+enum FilterFunction {
+  /// url(): a reference to an SVG filter, which a canvas filter skips.
+  Url,
+  Blur(Option<Arg>),
+  Amount(Amount, Option<Arg>),
+  HueRotate(Option<Arg>),
+  DropShadow {
+    x: Arg,
+    y: Arg,
+    std_deviation: Option<Arg>,
+    /// Resolved as it was parsed, against the lengths `parse_filter` got.
+    color: Color,
+    /// The font-metric units the color has, at any depth.
+    color_reads: FontReads,
+  },
+}
+
+/// A `ctx.filter` string Blink accepts. `none` is the empty list.
+#[derive(Clone, Debug)]
+pub(crate) struct ParsedFilter(Vec<FilterFunction>);
+
+/// What a filter reads from the canvas font, so that set_filter measures
+/// only that: the units of Blink's FontSizes with `font_for_filter_`
+/// (css_to_length_conversion_data.cc:101-195).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FontReads {
+  /// ex, ch, cap and their root forms: the "x" and "0" glyphs.
+  pub(crate) glyphs: bool,
+  /// ic and ric: the U+6C34 glyph.
+  pub(crate) ideographic: bool,
+}
+
+impl FontReads {
+  fn of_unit(unit: Unit) -> Self {
+    Self {
+      glyphs: matches!(
+        unit,
+        Unit::Ex | Unit::Rex | Unit::Ch | Unit::Rch | Unit::Cap | Unit::Rcap
+      ),
+      ideographic: matches!(unit, Unit::Ic | Unit::Ric),
+    }
+  }
+
+  fn of_arg(arg: &Arg) -> Self {
+    Self {
+      glyphs: arg.any_unit(&|u| Self::of_unit(u).glyphs),
+      ideographic: arg.any_unit(&|u| Self::of_unit(u).ideographic),
+    }
+  }
+
+  fn union(self, other: Self) -> Self {
+    Self {
+      glyphs: self.glyphs || other.glyphs,
+      ideographic: self.ideographic || other.ideographic,
+    }
+  }
+
+  pub(crate) fn any(self) -> bool {
+    self.glyphs || self.ideographic
+  }
+}
+
+/// kOffScreenCanvasEmFontSize / kOffScreenCanvasRemFontSize.
+const OFFSCREEN_EM: f64 = 16.0;
+
+/// What the canvas font says, for the font-metric units.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct FontUnits {
+  /// The x-height, or None when the font has none (then ex is 0.5em).
+  pub(crate) x_height: Option<f64>,
+  /// The advance of "0".
+  pub(crate) zero_width: f64,
+  pub(crate) cap_height: f64,
+  /// The advance of U+6C34 in the primary font, or None when no family of
+  /// the font exists or that font has no such glyph (then ic is 1em).
+  pub(crate) ideographic_advance: Option<f64>,
+}
+
+/// CSSToLengthConversionData of CreateOffscreenFilterOperations: em and rem
+/// 16px, no viewport, no container, no line height (lh is 0), and the
+/// canvas font for ex, ch, cap and ic. FontSizes::Ic and Ric fall back to
+/// em and rem, both 16px here (css_to_length_conversion_data.cc:139-167).
+pub(crate) fn filter_lengths(font: FontUnits) -> Lengths {
+  let ex = font.x_height.unwrap_or(OFFSCREEN_EM / 2.0);
+  let ic = font.ideographic_advance.unwrap_or(OFFSCREEN_EM);
+  Lengths {
+    em: OFFSCREEN_EM,
+    rem: OFFSCREEN_EM,
+    ex,
+    rex: ex,
+    ch: font.zero_width,
+    rch: font.zero_width,
+    ic,
+    ric: ic,
+    cap: font.cap_height,
+    rcap: font.cap_height,
+    lh: 0.0,
+    rlh: 0.0,
+    viewport_width: 0.0,
+    viewport_height: 0.0,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------
+
+/// Runs `f` and rewinds the parser when it fails.
+fn attempt<'i, T>(p: &mut Parser<'i>, f: impl FnOnce(&mut Parser<'i>) -> Option<T>) -> Option<T> {
+  let state = p.state();
+  let result = f(p);
+  if result.is_none() {
+    p.reset(&state);
+  }
+  result
+}
+
+/// Parses the block the last token opened; `f` must read all of it.
+fn nested<'i, T>(p: &mut Parser<'i>, f: impl FnOnce(&mut Parser<'i>) -> Option<T>) -> Option<T> {
+  p.parse_nested_block(|q| f(q).ok_or_else(css_math::custom_error))
+    .ok()
+}
+
+/// MathFunctionParser: a math function whose result has `category`.
+fn consume_math(p: &mut Parser<'_>, allow_percent: bool, category: Category) -> Option<Arg> {
+  attempt(p, |p| {
+    let (token, _) = css_math::next_token(p)?;
+    let Token::Function(name) = token else {
+      return None;
+    };
+    if !css_math::is_math_function(&name) {
+      return None;
+    }
+    let options = MathOptions {
+      allow_percent,
+      channels: &[],
+    };
+    let node = nested(p, |q| css_math::parse_math_function(q, &name, options))?;
+    (node.category() == category).then_some(Arg::Math(node))
   })
 }
 
-#[inline(always)]
-fn pixel_in_tuple(input: &str) -> IResult<&str, f32> {
-  // effing: up to the `)` or the end, which closes it (`close_paren`).
-  let end = input.find(')').unwrap_or(input.len());
-  let size = pixel(&input[..end]).map_err(|_| Err::Error(Error::new(input, ErrorKind::MapRes)))?;
-  Ok((&input[end..], size))
+/// A numeric token (number, percentage or dimension) that `accept` takes.
+fn consume_token(
+  p: &mut Parser<'_>,
+  accept: impl FnOnce(&Token<'_>, f64, Unit) -> Option<Literal>,
+) -> Option<Arg> {
+  attempt(p, |p| {
+    let (token, source) = css_math::next_token(p)?;
+    let (value, unit) = css_math::numeric_token(&token, source)?;
+    accept(&token, value, unit?).map(Arg::Literal)
+  })
 }
 
-// effing: a function's `)`, or the end of the value, which closes what is
-// still open, as in CSS: `blur(4px` is `blur(4px)`.
-fn close_paren(input: &str) -> IResult<&str, ()> {
-  let input = input.trim_start_matches(CSS_WHITESPACE);
-  match input.strip_prefix(')') {
-    Some(rest) => Ok((rest, ())),
-    None if input.is_empty() => Ok((input, ())),
-    None => Err(Err::Error(Error::new(input, ErrorKind::Char))),
-  }
-}
-
-// effing: a negative amount or length is invalid, as in Chrome, which then
-// keeps the previous `ctx.filter`; upstream clamped an amount and, for a
-// length, built no filter, which took the whole list with it. A value that
-// overflows f32 (`opacity(1e40)`, `blur(1e38in)`) is invalid too, where Chrome
-// clamps it: it would reach Skia as infinity, which builds nothing.
-fn reject_invalid(input: &str, value: f32) -> Result<(), Err<Error<&str>>> {
-  if value.is_finite() && value >= 0.0 {
-    Ok(())
-  } else {
-    Err(Err::Error(Error::new(input, ErrorKind::Verify)))
-  }
-}
-
-fn number_percentage(input: &str) -> IResult<&str, f32> {
-  // effing: the number as CSS reads it (`css_number`).
-  let input = input.css_trim();
-  let (num, input) = css_number(input).ok_or(Err::Error(Error::new(input, ErrorKind::Float)))?;
-  if let Ok((input, _)) = tag::<&str, &str, Error<&str>>("%")(input.css_trim()) {
-    Ok((input, num / 100.0f32))
-  } else {
-    Ok((input, num))
-  }
-}
-
-fn hue_rotate_parser(input: &str) -> IResult<&str, CssFilter> {
-  let (rotated_output, _) = tag("hue-rotate(")(input)?;
-  // effing: no angle is 0, as in Chrome.
-  if let Ok((rest, ())) = close_paren(rotated_output) {
-    return Ok((rest.css_trim(), CssFilter::HueRotate(0.0)));
-  }
-  // effing: the number as CSS reads it (`css_number`).
-  let rotated_output = rotated_output.css_trim();
-  let (angle, rotated_output) =
-    css_number(rotated_output).ok_or(Err::Error(Error::new(rotated_output, ErrorKind::Float)))?;
-  if !angle.is_finite() {
-    return Err(Err::Error(Error::new(rotated_output, ErrorKind::Verify))); // effing
-  }
-  let output = rotated_output.css_trim();
-  let (output, filter) = if let Ok((output, _)) = tag::<&str, &str, Error<&str>>("deg")(output) {
-    (output, CssFilter::HueRotate(angle))
-  } else if let Ok((output, _)) = tag::<&str, &str, Error<&str>>("turn")(output) {
-    (output, CssFilter::HueRotate(angle.fract() * 360.0))
-  } else if let Ok((output, _)) = tag::<&str, &str, Error<&str>>("rad")(output) {
-    (output, CssFilter::HueRotate(angle.to_degrees()))
-  } else if let Ok((output, _)) = tag::<&str, &str, Error<&str>>("grad")(output) {
-    (output, CssFilter::HueRotate(angle * 0.9))
-  } else if angle == 0.0 {
-    (output, CssFilter::HueRotate(0.0f32))
-  } else {
-    // effing: only a zero angle may go without a unit, as in Chrome; upstream
-    // read `hue-rotate(90)` as `hue-rotate(0)`.
-    return Err(Err::Error(Error::new(output, ErrorKind::Verify)));
-  };
-  let (finished_input, _) = close_paren(output)?; // effing
-  Ok((finished_input.css_trim(), filter))
-}
-
-macro_rules! percentage_parser {
-  ($filter_name:ident, $filter_rule:expr, $filter_value:ident) => {
-    fn $filter_name(input: &str) -> IResult<&str, CssFilter> {
-      let (input, _) = tag($filter_rule)(input)?;
-      // effing: no amount is 1, the default of every one of these functions.
-      if let Ok((rest, ())) = close_paren(input) {
-        return Ok((rest.css_trim(), CssFilter::$filter_value(1.0)));
-      }
-      let (input, value) = number_percentage(input)?;
-      reject_invalid(input, value)?; // effing
-      let (input, _) = close_paren(input)?; // effing
-      Ok((input.css_trim(), CssFilter::$filter_value(value)))
+/// ConsumeLength in kHTMLStandardMode: a length, or a unitless 0.
+fn consume_length(p: &mut Parser<'_>, non_negative: bool) -> Option<Arg> {
+  let literal = consume_token(p, |token, value, unit| {
+    if non_negative && value < 0.0 {
+      return None;
     }
-
-    mod $filter_name {
-      #[test]
-      fn $filter_name() {
-        use super::CssFilter;
-        assert_eq!(
-          super::$filter_name(concat!($filter_rule, "2)")),
-          Ok(("", CssFilter::$filter_value(2.0f32)))
-        );
-        assert_eq!(
-          super::$filter_name(concat!($filter_rule, "2%)")),
-          Ok(("", CssFilter::$filter_value(0.02f32)))
-        );
-        assert_eq!(
-          super::$filter_name(concat!($filter_rule, ".2)")),
-          Ok(("", CssFilter::$filter_value(0.2f32)))
-        );
-        assert_eq!(
-          super::$filter_name(concat!($filter_rule, " 2%)")),
-          Ok(("", CssFilter::$filter_value(0.02f32)))
-        );
-
-        assert_eq!(
-          super::$filter_name(concat!($filter_rule, " 2% )")),
-          Ok(("", CssFilter::$filter_value(0.02f32)))
-        );
-
-        assert_eq!(
-          super::$filter_name(concat!($filter_rule, " 2 % )")),
-          Ok(("", CssFilter::$filter_value(0.02f32)))
-        );
-
-        assert_eq!(
-          super::$filter_name(concat!($filter_rule, " 2 % )  ")),
-          Ok(("", CssFilter::$filter_value(0.02f32)))
-        );
+    match token {
+      Token::Number { .. } if value == 0.0 => Some(Literal {
+        value,
+        unit: Unit::Px,
+      }),
+      Token::Dimension { .. }
+        if Node::Literal(Literal { value, unit }).category() == Category::Length =>
+      {
+        Some(Literal { value, unit })
       }
+      _ => None,
     }
-  };
+  });
+  literal.or_else(|| consume_math(p, true, Category::Length))
 }
 
-percentage_parser!(brightness_parser, "brightness(", Brightness);
-percentage_parser!(contrast_parser, "contrast(", Contrast);
-percentage_parser!(grayscale_parser, "grayscale(", Grayscale);
-percentage_parser!(invert_parser, "invert(", Invert);
-percentage_parser!(opacity_parser, "opacity(", Opacity);
-percentage_parser!(saturate_parser, "saturate(", Saturate);
-percentage_parser!(sepia_parser, "sepia(", Sepia);
-
-fn blur_parser(input: &str) -> IResult<&str, CssFilter> {
-  let (blurred_input, _) = tag("blur(")(input)?;
-  // effing: no length is 0.
-  if let Ok((rest, ())) = close_paren(blurred_input) {
-    return Ok((rest.css_trim(), CssFilter::Blur(0.0)));
-  }
-
-  let (blurred_input, pixel) = pixel_in_tuple(blurred_input)?;
-  reject_invalid(blurred_input, pixel)?; // effing
-  let (finished_input, _) = close_paren(blurred_input)?; // effing
-  Ok((finished_input.css_trim(), CssFilter::Blur(pixel)))
-}
-
-// effing: `drop-shadow( [<color>]? && [<length>{2} <length [0,∞]>?] )`, read
-// with cssparser between balanced parentheses: the colour before or after the
-// lengths, any colour function inside, and anything else invalid, where
-// upstream took the colour only after the lengths, cut it at the first `)`
-// unless it was `rgb()`/`rgba()`, and drew black for what it could not read.
-fn drop_shadow_parser(input: &str) -> IResult<&str, CssFilter> {
-  let invalid = || Err::Error(Error::new(input, ErrorKind::Verify));
-  let (args, _) = tag("drop-shadow(")(input)?;
-  let mut depth = 1usize;
-  let close = args
-    .char_indices()
-    .find(|&(_, ch)| {
-      match ch {
-        '(' => depth += 1,
-        ')' => depth -= 1,
-        _ => {}
-      }
-      depth == 0
+/// ConsumePercent, then ConsumeNumber (ConsumeFilterFunction), both
+/// kNonNegative.
+fn consume_number_or_percent(p: &mut Parser<'_>) -> Option<Arg> {
+  consume_token(p, |token, value, unit| {
+    (matches!(token, Token::Percentage { .. }) && value >= 0.0).then_some(Literal { value, unit })
+  })
+  .or_else(|| consume_math(p, true, Category::Percent))
+  .or_else(|| {
+    consume_token(p, |token, value, unit| {
+      (matches!(token, Token::Number { .. }) && value >= 0.0).then_some(Literal { value, unit })
     })
-    .map(|(index, _)| index);
-  // The end of the value closes what is still open.
-  let (args, rest) = match close {
-    Some(close) => (&args[..close], &args[close + 1..]),
-    None => (args, ""),
-  };
+  })
+  .or_else(|| consume_math(p, true, Category::Number))
+}
 
-  let mut parser = Parser::new(args);
-  let mut lengths: Vec<f32> = Vec::with_capacity(3);
-  let mut color = None;
-  // The lengths are one run, before or after the colour.
-  let mut lengths_closed = false;
-  while !parser.is_exhausted() {
-    let length = parser.try_parse(|parser| match *parser.next().map_err(|_| ())? {
-      Token::Dimension {
-        value, ref unit, ..
-      } => length_px(value, &unit.to_ascii_lowercase()).ok_or(()),
-      Token::Number { value: 0.0, .. } => Ok(0.0),
-      _ => Err(()),
-    });
-    match length {
-      Ok(_) if lengths_closed => return Err(invalid()),
-      Ok(length) => lengths.push(length),
-      Err(()) if color.is_none() => {
-        let parsed = Color::parse(&mut parser).map_err(|_| invalid())?;
-        color = Some(css_color_to_rgba(parsed).ok_or_else(invalid)?);
-        lengths_closed = !lengths.is_empty();
+/// ConsumeAngle with the filter's unitless zero.
+fn consume_angle(p: &mut Parser<'_>) -> Option<Arg> {
+  consume_token(p, |token, value, unit| match token {
+    Token::Dimension { .. } if matches!(unit, Unit::Deg | Unit::Rad | Unit::Grad | Unit::Turn) => {
+      Some(Literal { value, unit })
+    }
+    Token::Number { .. } if value == 0.0 => Some(Literal {
+      value: 0.0,
+      unit: Unit::Deg,
+    }),
+    _ => None,
+  })
+  .or_else(|| consume_math(p, false, Category::Angle))
+}
+
+/// The font-metric units of the dimensions anywhere in `p`, inside functions
+/// and blocks too. Reads `p` to its end.
+fn font_reads_of_tokens(p: &mut Parser<'_>) -> FontReads {
+  let mut reads = FontReads::default();
+  while let Some((token, source)) = css_math::next_token(p) {
+    match token {
+      Token::Dimension { .. } => {
+        if let Some((_, Some(unit))) = css_math::numeric_token(&token, source) {
+          reads = reads.union(FontReads::of_unit(unit));
+        }
       }
-      Err(()) => return Err(invalid()),
+      Token::Function(_)
+      | Token::ParenthesisBlock
+      | Token::SquareBracketBlock
+      | Token::CurlyBracketBlock => {
+        let nested_reads = nested(p, |q| Some(font_reads_of_tokens(q)));
+        reads = reads.union(nested_reads.unwrap_or_default());
+      }
+      _ => {}
     }
   }
-  let &[offset_x, offset_y, ref blur @ ..] = lengths.as_slice() else {
-    return Err(invalid());
-  };
-  let blur_radius = match *blur {
-    [] => 0.0,
-    [blur] => blur,
-    _ => return Err(invalid()),
-  };
-  // A negative offset is fine. One that overflows f32 (`1e38in`) is invalid,
-  // where Chrome clamps it, as is a negative or overflowing blur.
-  if !offset_x.is_finite() || !offset_y.is_finite() {
-    return Err(invalid());
+  reads
+}
+
+/// A drop-shadow() `<color>` read from `p`, resolved against `lengths`, and
+/// the font-metric units it has (then `lengths` must have the font's).
+fn consume_shadow_color(p: &mut Parser<'_>, lengths: &Lengths) -> Option<(Color, FontReads)> {
+  let start = p.position();
+  let color = color::consume_filter_color(p, lengths)?;
+  // The color's own tokens, read again. The color parser's limits bound
+  // their nesting.
+  let mut tokens = Parser::new(p.slice_from(start));
+  tokens.set_nested_block_limit(0);
+  Some((color, font_reads_of_tokens(&mut tokens)))
+}
+
+/// ParseSingleShadow with inset and spread forbidden: a color before or
+/// after the lengths, never between them.
+fn consume_drop_shadow(p: &mut Parser<'_>, lengths: &Lengths) -> Option<FilterFunction> {
+  if p.is_exhausted() {
+    return None;
   }
-  reject_invalid(input, blur_radius)?;
-  // No colour is `currentcolor`, the canvas element's `color`, black unless
-  // styled; this canvas has no element to style.
-  let shadow_color = color.unwrap_or(RGBA::new(0, 0, 0, 255));
-  Ok((
-    rest.css_trim(),
-    CssFilter::DropShadow(offset_x, offset_y, blur_radius, shadow_color),
-  ))
+  let mut color = consume_shadow_color(p, lengths);
+  let x = consume_length(p, false)?;
+  let y = consume_length(p, false)?;
+  let std_deviation = consume_length(p, true);
+  if color.is_none() && !p.is_exhausted() {
+    color = consume_shadow_color(p, lengths);
+  }
+  // No color is currentcolor, black in a canvas filter (product decision:
+  // OffscreenCanvas behaviour, no taint).
+  let (color, color_reads) = color.unwrap_or((Color::BLACK, FontReads::default()));
+  Some(FilterFunction::DropShadow {
+    x,
+    y,
+    std_deviation,
+    color,
+    color_reads,
+  })
 }
 
-// effing: the colours the rest of the context takes (`rgb()`, `hsl()`, hex,
-// names, `transparent`), with `hwb()` and `currentcolor` (black, see above);
-// `None` for `lab()`, `lch()`, `oklab()`, `oklch()` and `color()`.
-fn css_color_to_rgba(color: Color) -> Option<RGBA<u8>> {
-  let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-  let hue = |hue: Option<f32>| hue.unwrap_or(0.0).rem_euclid(360.0) / 360.0;
-  let (r, g, b, a) = match color {
-    Color::CurrentColor => (0.0, 0.0, 0.0, 1.0),
-    Color::Rgba(rgba) => {
-      return Some(RGBA::new(
-        rgba.red,
-        rgba.green,
-        rgba.blue,
-        channel(rgba.alpha),
-      ));
-    }
-    Color::Hsl(hsl) => {
-      let (r, g, b) = hsl_to_rgb(
-        hue(hsl.hue),
-        hsl.saturation.unwrap_or(0.0).clamp(0.0, 1.0),
-        hsl.lightness.unwrap_or(0.0).clamp(0.0, 1.0),
-      );
-      (r, g, b, hsl.alpha.unwrap_or(1.0))
-    }
-    Color::Hwb(hwb) => {
-      let (r, g, b) = hwb_to_rgb(
-        hue(hwb.hue),
-        hwb.whiteness.unwrap_or(0.0).clamp(0.0, 1.0),
-        hwb.blackness.unwrap_or(0.0).clamp(0.0, 1.0),
-      );
-      (r, g, b, hwb.alpha.unwrap_or(1.0))
-    }
-    _ => return None,
+/// The filter functions with one optional argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Function {
+  Blur,
+  HueRotate,
+  Amount(Amount),
+}
+
+impl Function {
+  fn from_name(name: &str) -> Option<Self> {
+    Some(match name.to_ascii_lowercase().as_str() {
+      "blur" => Self::Blur,
+      "hue-rotate" => Self::HueRotate,
+      "brightness" => Self::Amount(Amount::Brightness),
+      "contrast" => Self::Amount(Amount::Contrast),
+      "grayscale" => Self::Amount(Amount::Grayscale),
+      "invert" => Self::Amount(Amount::Invert),
+      "opacity" => Self::Amount(Amount::Opacity),
+      "saturate" => Self::Amount(Amount::Saturate),
+      "sepia" => Self::Amount(Amount::Sepia),
+      _ => return None,
+    })
+  }
+}
+
+/// ConsumeFilterFunction for all but drop-shadow(): `p` is inside the
+/// function's block. No argument at all is the default value.
+fn consume_filter_function(function: Function, p: &mut Parser<'_>) -> Option<FilterFunction> {
+  let arg = if p.is_exhausted() {
+    None
+  } else {
+    let arg = match function {
+      Function::Blur => consume_length(p, true),
+      Function::HueRotate => consume_angle(p),
+      Function::Amount(_) => consume_number_or_percent(p),
+    };
+    Some(arg?)
   };
-  Some(RGBA::new(channel(r), channel(g), channel(b), channel(a)))
+  p.is_exhausted().then_some(match function {
+    Function::Blur => FilterFunction::Blur(arg),
+    Function::HueRotate => FilterFunction::HueRotate(arg),
+    Function::Amount(amount) => FilterFunction::Amount(amount, arg),
+  })
 }
 
-pub fn css_filter(input: &str) -> IResult<&str, Vec<CssFilter>> {
-  let mut filters = Vec::with_capacity(10);
-  let mut input = input.css_trim(); // effing: CSS whitespace only
-  while let Ok((output, filter)) = alt((
-    blur_parser,
-    brightness_parser,
-    contrast_parser,
-    drop_shadow_parser,
-    grayscale_parser,
-    hue_rotate_parser,
-    invert_parser,
-    opacity_parser,
-    saturate_parser,
-    sepia_parser,
-  ))
-  .parse(input)
-  {
-    input = output;
-    filters.push(filter);
+/// One `url()` or filter function.
+fn consume_item(p: &mut Parser<'_>, lengths: &Lengths) -> Option<FilterFunction> {
+  attempt(p, |p| {
+    let (token, _) = css_math::next_token(p)?;
+    match token {
+      Token::UnquotedUrl(_) => Some(FilterFunction::Url),
+      // url("…"): a string and nothing else (Chrome 155 rejects URL request
+      // modifiers such as `url("#x" crossorigin(anonymous))`).
+      Token::Function(name) if name.eq_ignore_ascii_case("url") => nested(p, |q| {
+        q.expect_string().ok()?;
+        q.is_exhausted().then_some(FilterFunction::Url)
+      }),
+      Token::Function(name) if name.eq_ignore_ascii_case("drop-shadow") => nested(p, |q| {
+        let shadow = consume_drop_shadow(q, lengths)?;
+        q.is_exhausted().then_some(shadow)
+      }),
+      Token::Function(name) => {
+        let function = Function::from_name(&name)?;
+        nested(p, |q| consume_filter_function(function, q))
+      }
+      _ => None,
+    }
+  })
+}
+
+/// Parse a `ctx.filter` string: None when Blink rejects it (the setter then
+/// ignores the assignment). A drop-shadow() color is resolved as it is
+/// parsed (layer 07's color parser), against `lengths`; what parses does not
+/// depend on them.
+pub(crate) fn parse_filter(input: &str, lengths: &Lengths) -> Option<ParsedFilter> {
+  let mut p = Parser::new(input);
+  // Our own limits (css_math, the color parser) bound the nesting.
+  p.set_nested_block_limit(0);
+  let none = attempt(&mut p, |p| match p.next() {
+    Ok(Token::Ident(ident)) if ident.eq_ignore_ascii_case("none") => Some(()),
+    _ => None,
+  });
+  if none.is_some() {
+    return p.is_exhausted().then(|| ParsedFilter(Vec::new()));
+  }
+  // CSS-wide keywords, `,`, `!important` and anything else that is not a
+  // url() or a filter function end the list; the input must end there too.
+  let mut list = Vec::new();
+  while let Some(item) = consume_item(&mut p, lengths) {
+    list.push(item);
+  }
+  (!list.is_empty() && p.is_exhausted()).then_some(ParsedFilter(list))
+}
+
+// ---------------------------------------------------------------------------
+// Resolving
+// ---------------------------------------------------------------------------
+
+/// CSSValueClampingUtils::ClampDouble: NaN is 0, infinities saturate.
+fn clamp_double(v: f64) -> f64 {
+  if v.is_nan() {
+    0.0
+  } else {
+    v.clamp(f64::MIN, f64::MAX)
+  }
+}
+
+/// CensorNaNToZero.
+fn censor_nan(v: f64) -> f64 {
+  if v.is_nan() { 0.0 } else { v }
+}
+
+/// CSSValueClampingUtils::ClampAngle: NaN is 0, and the largest multiple of
+/// 360deg a double holds exactly bounds the rest.
+fn clamp_angle(v: f64) -> f64 {
+  const APPROX_DOUBLE_INFINITY_ANGLE: f64 = 2867080569122160.0;
+  censor_nan(v).clamp(-APPROX_DOUBLE_INFINITY_ANGLE, APPROX_DOUBLE_INFINITY_ANGLE)
+}
+
+/// ClampTo<float>: saturates where `as f32` would overflow to infinity.
+fn clamp_to_f32(v: f64) -> f32 {
+  if v >= f32::MAX as f64 {
+    f32::MAX
+  } else if v <= f32::MIN as f64 {
+    f32::MIN
+  } else {
+    v as f32
+  }
+}
+
+/// kMinValueForCssLength / kMaxValueForCssLength (css_primitive_value.cc:50).
+const MIN_CSS_LENGTH: f64 = (i32::MIN / 64 + 2) as f64;
+const MAX_CSS_LENGTH: f64 = (i32::MAX / 64 - 2) as f64;
+
+impl Arg {
+  /// ResolveNumericArgumentForFunction's number or percentage, before the
+  /// [0, 1] clamp: a math result is clamped to >= 0 (kNonNegative).
+  fn resolve_amount(&self, lengths: &Lengths) -> f64 {
+    match self {
+      Arg::Literal(l) if l.unit == Unit::Percent => clamp_double(l.value) / 100.0,
+      Arg::Literal(l) => clamp_double(l.value),
+      Arg::Math(node) => {
+        let v = clamp_double(censor_nan(node.compute_double(lengths)).max(0.0));
+        if node.category() == Category::Percent {
+          v / 100.0
+        } else {
+          v
+        }
+      }
+    }
   }
 
-  Ok((input, filters))
+  /// CSSPrimitiveValue::ComputeLength<float>; a math result is NaN-censored
+  /// and, when `non_negative`, clamped to >= 0.
+  fn resolve_length(&self, lengths: &Lengths, non_negative: bool) -> f32 {
+    let mut v = censor_nan(self.compute(lengths));
+    if non_negative && matches!(self, Arg::Math(_)) {
+      v = v.max(0.0);
+    }
+    clamp_to_f32(clamp_double(v))
+  }
+
+  /// blur()'s ConvertToLength: ComputeLength<Length>, which clamps to the
+  /// CSS length range; a math result is NaN-censored and clamped to >= 0
+  /// first.
+  fn resolve_blur(&self, lengths: &Lengths) -> f32 {
+    let mut v = censor_nan(self.compute(lengths));
+    if matches!(self, Arg::Math(_)) {
+      v = v.max(0.0);
+    }
+    clamp_double(v).clamp(MIN_CSS_LENGTH, MAX_CSS_LENGTH) as f32
+  }
 }
 
-/// Fold a parsed `<filter-value-list>` into one chained `SkImageFilter`, or
-/// `None` when the list produces no filter at all.
+impl ParsedFilter {
+  /// What resolving reads from the canvas font (ex, ch, ic, cap and their
+  /// root forms), so the caller measures only that. A drop-shadow() color
+  /// that reads it was resolved while it parsed, so it needs a parse with the
+  /// font's lengths.
+  pub(crate) fn font_reads(&self) -> FontReads {
+    let of = |arg: &Option<Arg>| arg.as_ref().map(FontReads::of_arg).unwrap_or_default();
+    self
+      .0
+      .iter()
+      .map(|f| match f {
+        FilterFunction::Url => FontReads::default(),
+        FilterFunction::Blur(arg)
+        | FilterFunction::Amount(_, arg)
+        | FilterFunction::HueRotate(arg) => of(arg),
+        FilterFunction::DropShadow {
+          x,
+          y,
+          std_deviation,
+          color_reads,
+          ..
+        } => color_reads
+          .union(FontReads::of_arg(x))
+          .union(FontReads::of_arg(y))
+          .union(of(std_deviation)),
+      })
+      .fold(FontReads::default(), FontReads::union)
+  }
+
+  /// CreateOffscreenFilterOperations: url() items are skipped.
+  pub(crate) fn resolve(&self, lengths: &Lengths) -> Vec<CssFilter> {
+    self
+      .0
+      .iter()
+      .filter_map(|f| {
+        Some(match f {
+          FilterFunction::Url => return None,
+          FilterFunction::Blur(arg) => {
+            CssFilter::Blur(arg.as_ref().map_or(0.0, |a| a.resolve_blur(lengths)))
+          }
+          FilterFunction::Amount(kind, arg) => {
+            let v = arg.as_ref().map_or(1.0, |a| a.resolve_amount(lengths));
+            // Only these four clamp to 1 (FilterOperationResolver).
+            let clamped = || v.clamp(0.0, 1.0);
+            match kind {
+              Amount::Brightness => CssFilter::Brightness(v),
+              Amount::Contrast => CssFilter::Contrast(v),
+              Amount::Saturate => CssFilter::Saturate(v),
+              Amount::Grayscale => CssFilter::Grayscale(clamped()),
+              Amount::Invert => CssFilter::Invert(clamped()),
+              Amount::Opacity => CssFilter::Opacity(clamped()),
+              Amount::Sepia => CssFilter::Sepia(clamped()),
+            }
+          }
+          // CSSPrimitiveValue::ComputeDegrees, which ends in ClampAngle.
+          FilterFunction::HueRotate(arg) => CssFilter::HueRotate(clamp_angle(match arg {
+            None => 0.0,
+            Some(Arg::Literal(l)) => l.degrees(),
+            Some(Arg::Math(node)) => node.compute_double(lengths),
+          })),
+          FilterFunction::DropShadow {
+            x,
+            y,
+            std_deviation,
+            color,
+            ..
+          } => CssFilter::DropShadow(
+            x.resolve_length(lengths, false),
+            y.resolve_length(lengths, false),
+            std_deviation
+              .as_ref()
+              .map_or(0.0, |a| a.resolve_length(lengths, true)),
+            *color,
+          ),
+        })
+      })
+      .collect()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Building (FilterEffectBuilder)
+// ---------------------------------------------------------------------------
+
+/// Blink's `ClampToU8` (fe_component_transfer.cc): clamp, then truncate.
+fn clamp_u8(v: f64) -> u8 {
+  v.clamp(0.0, 255.0) as u8
+}
+
+/// Blink's FEComponentTransfer `Table()`: linear steps between the values,
+/// in double.
+fn transfer_table(values: &[f32]) -> [u8; 256] {
+  let n = values.len();
+  core::array::from_fn(|i| {
+    let c = i as f64 / 255.0;
+    let k = (c * (n - 1) as f64) as usize;
+    let v1 = values[k] as f64;
+    let v2 = values[(k + 1).min(n - 1)] as f64;
+    clamp_u8(255.0 * (v1 + (c * (n - 1) as f64 - k as f64) * (v2 - v1)))
+  })
+}
+
+/// Blink's FEComponentTransfer `Linear()`: `slope * i + 255 * intercept` on
+/// the function's float fields, so the sum is a float.
+fn transfer_linear(slope: f32, intercept: f32) -> [u8; 256] {
+  core::array::from_fn(|i| clamp_u8((slope * i as f32 + 255f32 * intercept) as f64))
+}
+
+/// The same transfer table on R, G and B; alpha keeps its identity table.
+fn rgb_transfer(table: &[u8; 256], chain: Option<&ImageFilter>) -> Option<ImageFilter> {
+  ImageFilter::from_argb(None, Some(table), Some(table), Some(table), chain)
+}
+
+/// An RGB colour matrix, alpha kept.
+fn rgb_matrix(m: [f32; 9], chain: Option<&ImageFilter>) -> Option<ImageFilter> {
+  ImageFilter::make_image_filter(
+    m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], 1.0, chain,
+  )
+}
+
+/// Blink's GrayscaleMatrix / SepiaMatrix (filter_effect_builder.cc): the
+/// entries are `base + scale * (1 - amount)` in double, stored as float.
+fn amount_matrix(amount: f64, base: [f64; 9], scale: [f64; 9]) -> [f32; 9] {
+  let one_minus_amount = (1.0 - amount).clamp(0.0, 1.0);
+  core::array::from_fn(|i| clamp_to_f32(base[i] + scale[i] * one_minus_amount))
+}
+
+/// Fold a resolved `<filter-value-list>` into one chained `SkImageFilter`
+/// the way Blink's FilterEffectBuilder builds it, or `None` when the list
+/// produces no filter at all.
 ///
 /// `None` is the only representation of "no filter" this may return, and the
 /// chain is threaded as an `Option` so that an empty list yields it by
@@ -433,515 +658,545 @@ pub fn css_filter(input: &str) -> IResult<&str, Vec<CssFilter>> {
 pub(crate) fn css_filters_to_image_filter(filters: Vec<CssFilter>) -> Option<ImageFilter> {
   let mut chain: Option<ImageFilter> = None;
   for f in filters {
-    // effing: a step that builds no filter is skipped, as an identity step,
-    // rather than taking the whole list with it. The parsers keep out the
-    // values Skia rejects (a negative sigma, a non-finite matrix, where
-    // `SkImageFilters::ColorFilter` hands back its input, null at the start).
+    // A filter that fails to build takes the whole list with it.
     let next = match f {
       CssFilter::Blur(blur) => ImageFilter::make_blur(blur, blur, chain.as_ref()),
-      CssFilter::Brightness(brightness) => {
-        let brightness = brightness.max(0.0);
-        ImageFilter::make_image_filter(
-          brightness,
-          0.0,
-          0.0,
-          0.0,
-          brightness,
-          0.0,
-          0.0,
-          0.0,
-          brightness,
-          1.0,
-          chain.as_ref(),
-        )
+      CssFilter::Brightness(amount) => {
+        rgb_transfer(&transfer_linear(clamp_to_f32(amount), 0.0), chain.as_ref())
       }
-      CssFilter::Contrast(contrast) => {
-        let amt = contrast.max(0.0);
-        let mut ramp = [0u8; 256];
-        ramp.iter_mut().take(256).enumerate().for_each(|(i, v)| {
-          let orig = i as f32;
-          *v = (127.0 + amt * (orig - 127.0)) as u8;
-        });
-        let ramp = Some(&ramp);
-        ImageFilter::from_argb(None, ramp, ramp, ramp, chain.as_ref())
+      CssFilter::Contrast(amount) => {
+        let slope = clamp_to_f32(amount);
+        let intercept = (-0.5 * slope as f64 + 0.5) as f32;
+        rgb_transfer(&transfer_linear(slope, intercept), chain.as_ref())
       }
-      CssFilter::DropShadow(offset_x, offset_y, blur_radius, shadow_color) => {
-        // effing: the blur length is the standard deviation (Filter Effects 1,
-        // `drop-shadow()`), as in `blur()` and Chrome. `shadowBlur` halves it.
-        let sigma = blur_radius;
-        // effing: a transparent shadow draws nothing, so it is skipped; it used
-        // to drop the whole list, as `drop-shadow(0 0 0)` did. An unblurred,
-        // unshifted shadow still shows where the content is translucent.
-        if shadow_color.a == 0 {
-          continue;
-        }
+      // Blink always builds the FEDropShadow, even a transparent or an
+      // all-zero one, and takes the blur as its standard deviation ("stored
+      // in sigma form", filter_effect_builder.cc). Blink hands Skia
+      // `color.toSkColor4f().toSkColor()` (cc/paint/paint_filter.cc:391-400).
+      CssFilter::DropShadow(offset_x, offset_y, std_deviation, shadow_color) => {
         ImageFilter::make_drop_shadow(
           offset_x,
           offset_y,
-          sigma,
-          sigma,
-          ((shadow_color.a as u32) << 24)
-            | ((shadow_color.r as u32) << 16)
-            | ((shadow_color.g as u32) << 8)
-            | shadow_color.b as u32,
+          std_deviation,
+          std_deviation,
+          shadow_color.to_sk_color4f().to_sk_color(),
           chain.as_ref(),
         )
       }
-      CssFilter::Grayscale(amt) => {
-        let amt = 1.0 - amt.clamp(0.0, 1.0);
-        ImageFilter::make_image_filter(
-          0.2126 + 0.7874 * amt,
-          0.7152 - 0.7152 * amt,
-          0.0722 - 0.0722 * amt,
-          0.2126 - 0.2126 * amt,
-          0.7152 + 0.2848 * amt,
-          0.0722 - 0.0722 * amt,
-          0.2126 - 0.2126 * amt,
-          0.7152 - 0.7152 * amt,
-          0.0722 + 0.9278 * amt,
-          1.0,
-          chain.as_ref(),
-        )
-      }
+      CssFilter::Grayscale(amount) => rgb_matrix(
+        amount_matrix(
+          amount,
+          [
+            0.2126, 0.7152, 0.0722, 0.2126, 0.7152, 0.0722, 0.2126, 0.7152, 0.0722,
+          ],
+          [
+            0.7874, -0.7152, -0.0722, -0.2126, 0.2848, -0.0722, -0.2126, -0.7152, 0.9278,
+          ],
+        ),
+        chain.as_ref(),
+      ),
+      // FEColorMatrix HueRotateMatrix (fe_color_matrix.cc), all float.
       CssFilter::HueRotate(angle) => {
-        let cos = degrees_to_radians(angle).cos();
-        let sin = degrees_to_radians(angle).sin();
-        ImageFilter::make_image_filter(
-          0.213 + cos * 0.787 - sin * 0.213,
-          0.715 - cos * 0.715 - sin * 0.715,
-          0.072 - cos * 0.072 + sin * 0.928,
-          0.213 - cos * 0.213 + sin * 0.143,
-          0.715 + cos * 0.285 + sin * 0.140,
-          0.072 - cos * 0.072 - sin * 0.283,
-          0.213 - cos * 0.213 - sin * 0.787,
-          0.715 - cos * 0.715 + sin * 0.715,
-          0.072 + cos * 0.928 + sin * 0.072,
-          1.0,
+        let radians = clamp_to_f32(angle) * (std::f32::consts::PI / 180.0);
+        let (sin, cos) = (radians.sin(), radians.cos());
+        rgb_matrix(
+          [
+            0.213 + cos * 0.787 - sin * 0.213,
+            0.715 - cos * 0.715 - sin * 0.715,
+            0.072 - cos * 0.072 + sin * 0.928,
+            0.213 - cos * 0.213 + sin * 0.143,
+            0.715 + cos * 0.285 + sin * 0.140,
+            0.072 - cos * 0.072 - sin * 0.283,
+            0.213 - cos * 0.213 - sin * 0.787,
+            0.715 - cos * 0.715 + sin * 0.715,
+            0.072 + cos * 0.928 + sin * 0.072,
+          ],
           chain.as_ref(),
         )
       }
-      CssFilter::Invert(amt) => {
-        let amt = amt.clamp(0.0, 1.0);
-        let mut ramp = [0u8; 256];
-        ramp
-          .iter_mut()
-          .take(256)
-          .enumerate()
-          .map(|(i, v)| (i as f32, v))
-          .for_each(|(i, val)| {
-            let (orig, inv) = (i, 255.0 - i);
-            *val = (orig * (1.0 - amt) + inv * amt) as u8;
-          });
-        let ramp = Some(&ramp);
-        ImageFilter::from_argb(None, ramp, ramp, ramp, chain.as_ref())
+      CssFilter::Invert(amount) => {
+        let table = transfer_table(&[clamp_to_f32(amount), clamp_to_f32(1.0 - amount)]);
+        rgb_transfer(&table, chain.as_ref())
       }
-      CssFilter::Opacity(opacity) => {
-        let opacity = opacity.clamp(0.0, 1.0);
-        ImageFilter::make_image_filter(
-          1.0,
-          0.0,
-          0.0,
-          0.0,
-          1.0,
-          0.0,
-          0.0,
-          0.0,
-          1.0,
-          opacity,
+      // A table on alpha only.
+      CssFilter::Opacity(amount) => {
+        let table = transfer_table(&[0.0, clamp_to_f32(amount)]);
+        ImageFilter::from_argb(Some(&table), None, None, None, chain.as_ref())
+      }
+      // FEColorMatrix SaturateMatrix (fe_color_matrix.cc), all float.
+      CssFilter::Saturate(amount) => {
+        let s = clamp_to_f32(amount);
+        rgb_matrix(
+          [
+            0.213 + 0.787 * s,
+            0.715 - 0.715 * s,
+            0.072 - 0.072 * s,
+            0.213 - 0.213 * s,
+            0.715 + 0.285 * s,
+            0.072 - 0.072 * s,
+            0.213 - 0.213 * s,
+            0.715 - 0.715 * s,
+            0.072 + 0.928 * s,
+          ],
           chain.as_ref(),
         )
       }
-      CssFilter::Saturate(amt) => {
-        let amt = amt.max(0.0);
-        ImageFilter::make_image_filter(
-          0.2126 + 0.7874 * amt,
-          0.7152 - 0.7152 * amt,
-          0.0722 - 0.0722 * amt,
-          0.2126 - 0.2126 * amt,
-          0.7152 + 0.2848 * amt,
-          0.0722 - 0.0722 * amt,
-          0.2126 - 0.2126 * amt,
-          0.7152 - 0.7152 * amt,
-          0.0722 + 0.9278 * amt,
-          1.0,
-          chain.as_ref(),
-        )
-      }
-      CssFilter::Sepia(amt) => {
-        let amt = 1.0 - amt.clamp(0.0, 1.0);
-        ImageFilter::make_image_filter(
-          0.393 + 0.607 * amt,
-          0.769 - 0.769 * amt,
-          0.189 - 0.189 * amt,
-          0.349 - 0.349 * amt,
-          0.686 + 0.314 * amt,
-          0.168 - 0.168 * amt,
-          0.272 - 0.272 * amt,
-          0.534 - 0.534 * amt,
-          0.131 + 0.869 * amt,
-          1.0,
-          chain.as_ref(),
-        )
-      }
+      CssFilter::Sepia(amount) => rgb_matrix(
+        amount_matrix(
+          amount,
+          [
+            0.393, 0.769, 0.189, 0.349, 0.686, 0.168, 0.272, 0.534, 0.131,
+          ],
+          [
+            0.607, -0.769, -0.189, -0.349, 0.314, -0.168, -0.272, -0.534, 0.869,
+          ],
+        ),
+        chain.as_ref(),
+      ),
     };
-    if next.is_some() {
-      chain = next; // effing: `Some(next?)`, see above
-    }
+    chain = Some(next?);
   }
   chain
 }
 
-#[test]
-fn parse_empty() {
-  assert_eq!(css_filter(""), Ok(("", vec![])));
-}
+#[cfg(test)]
+mod tests {
+  use super::*;
 
-#[test]
-fn empty_filter_list_is_no_filter_not_a_null_one() {
-  // Pins the `Option` chain: an empty list must produce `None`, not a
-  // `Some(ImageFilter(null))` that the next draw would dereference.
-  assert!(css_filters_to_image_filter(vec![]).is_none());
-}
-
-#[test]
-fn leftover_input_is_the_all_or_nothing_gate() {
-  // `css_filter` never returns `Err`; anything it cannot read comes back as
-  // leftover input, which `Context::set_filter` uses as Blink's
-  // `!stream.AtEnd()` gate. So every accepted value must leave nothing behind...
-  for input in [
-    "blur(3px)",
-    "blur(3px) grayscale(50%)",
-    "contrast(175%) brightness(103%)",
-    "drop-shadow(16px 16px 10px black)",
-    "hue-rotate(90deg)",
-    "opacity(20%)",
-    "saturate(200%)",
-    "sepia(100%)",
-    "invert(100%)",
-    " blur(3px) ",
-  ] {
-    let (rest, filters) = css_filter(input).unwrap();
-    assert_eq!(rest.trim(), "", "`{input}` should be consumed whole");
-    assert!(!filters.is_empty(), "`{input}` should parse to a filter");
+  /// The lengths of a 10px font whose x-height is 5, "0" 6 wide, cap
+  /// height 7 and U+6C34 9 wide.
+  fn lengths() -> Lengths {
+    filter_lengths(FontUnits {
+      x_height: Some(5.0),
+      zero_width: 6.0,
+      cap_height: 7.0,
+      ideographic_advance: Some(9.0),
+    })
   }
 
-  // ...and every rejected value must be visibly rejected, by leaving junk
-  // behind or by parsing to nothing at all.
-  for input in [
-    "", "   ", "garbage", "inherit", "initial", "unset", "revert", "none",
-  ] {
-    let (rest, filters) = css_filter(input).unwrap();
-    assert!(
-      filters.is_empty(),
-      "`{input}` should not parse to any filter"
-    );
-    assert_eq!(rest, input.trim_start(), "`{input}` should be left unread");
+  fn parse(s: &str) -> Option<ParsedFilter> {
+    parse_filter(s, &lengths())
   }
 
-  // Greedy parsing DOES read the valid prefix, so the leftover is the only
-  // thing telling the setter to reject the assignment.
-  assert_eq!(
-    css_filter("blur(3px) notafilter(1)"),
-    Ok(("notafilter(1)", vec![CssFilter::Blur(3.0)]))
-  );
-}
-
-#[test]
-fn parse_blur() {
-  assert_eq!(
-    css_filter("blur(20px)"),
-    Ok(("", vec![CssFilter::Blur(20.0)]))
-  );
-  assert_eq!(css_filter("blur(0)"), Ok(("", vec![CssFilter::Blur(0.0)])));
-  assert_eq!(
-    css_filter("blur(1.5rem)"),
-    Ok(("", vec![CssFilter::Blur(24.0)]))
-  );
-  assert_eq!(
-    css_filter("blur(20 px)"),
-    Ok(("", vec![CssFilter::Blur(20.0)]))
-  );
-  assert_eq!(
-    css_filter("blur( 20 px )"),
-    Ok(("", vec![CssFilter::Blur(20.0)]))
-  );
-}
-
-#[test]
-fn drop_shadow_parse() {
-  assert_eq!(
-    drop_shadow_parser("drop-shadow(2px 2px)"),
-    Ok((
-      "",
-      CssFilter::DropShadow(2.0f32, 2.0f32, 0.0f32, RGBA::new(0, 0, 0, 255))
-    ))
-  );
-  assert_eq!(
-    drop_shadow_parser("drop-shadow(2px 2px 5px)"),
-    Ok((
-      "",
-      CssFilter::DropShadow(2.0f32, 2.0f32, 5.0f32, RGBA::new(0, 0, 0, 255))
-    ))
-  );
-
-  assert_eq!(
-    drop_shadow_parser("drop-shadow(2px 2px 5px #2F14DF)"),
-    Ok((
-      "",
-      CssFilter::DropShadow(2.0f32, 2.0f32, 5.0f32, RGBA::new(47, 20, 223, 255))
-    ))
-  );
-
-  assert_eq!(
-    drop_shadow_parser("drop-shadow(2px 2px 5px rgba(47, 20, 223, 255))"),
-    Ok((
-      "",
-      CssFilter::DropShadow(2.0f32, 2.0f32, 5.0f32, RGBA::new(47, 20, 223, 255))
-    ))
-  );
-}
-
-#[test]
-fn composite_parse() {
-  assert_eq!(
-    css_filter("blur(1.5rem) brightness(2)"),
-    Ok((
-      "",
-      vec![CssFilter::Blur(24.0), CssFilter::Brightness(2.0f32)]
-    ))
-  );
-
-  assert_eq!(
-    css_filter("brightness(2) blur(1.5rem)"),
-    Ok((
-      "",
-      vec![CssFilter::Brightness(2.0f32), CssFilter::Blur(24.0)]
-    ))
-  );
-
-  assert_eq!(
-    css_filter("drop-shadow(2px 2px 5px rgba(47, 20, 223, 255)) brightness(2) blur(1.5rem)"),
-    Ok((
-      "",
-      vec![
-        CssFilter::DropShadow(2.0f32, 2.0f32, 5.0f32, RGBA::new(47, 20, 223, 255)),
-        CssFilter::Brightness(2.0f32),
-        CssFilter::Blur(24.0)
-      ]
-    ))
-  );
-
-  assert_eq!(
-    css_filter("brightness(2) drop-shadow(2px 2px 5px rgba(47, 20, 223, 255)) blur(1.5rem)"),
-    Ok((
-      "",
-      vec![
-        CssFilter::Brightness(2.0f32),
-        CssFilter::DropShadow(2.0f32, 2.0f32, 5.0f32, RGBA::new(47, 20, 223, 255)),
-        CssFilter::Blur(24.0)
-      ]
-    ))
-  );
-
-  assert_eq!(
-    css_filter("brightness(2) blur(1.5rem) drop-shadow(2px 2px 5px rgba(47, 20, 223, 255))"),
-    Ok((
-      "",
-      vec![
-        CssFilter::Brightness(2.0f32),
-        CssFilter::Blur(24.0),
-        CssFilter::DropShadow(2.0f32, 2.0f32, 5.0f32, RGBA::new(47, 20, 223, 255)),
-      ]
-    ))
-  );
-}
-
-#[test]
-fn hue_rotate_parse() {
-  assert_eq!(
-    hue_rotate_parser("hue-rotate(0)"),
-    Ok(("", CssFilter::HueRotate(0.0f32)))
-  );
-  assert_eq!(
-    hue_rotate_parser("hue-rotate(90deg)"),
-    Ok(("", CssFilter::HueRotate(90.0f32)))
-  );
-  assert_eq!(
-    hue_rotate_parser("hue-rotate(-0.25turn)"),
-    Ok(("", CssFilter::HueRotate(-90.0f32)))
-  );
-  assert_eq!(
-    hue_rotate_parser("hue-rotate(3.141592653rad)"),
-    Ok(("", CssFilter::HueRotate(180.0f32)))
-  );
-}
-
-#[test]
-fn parse_number_or_percentage() {
-  assert_eq!(number_percentage("2"), Ok(("", 2f32)));
-  assert_eq!(number_percentage("1.11"), Ok(("", 1.11f32)));
-  assert_eq!(number_percentage("20%"), Ok(("", 0.2f32)));
-  assert_eq!(number_percentage("-20%"), Ok(("", -0.2f32)));
-  assert_eq!(number_percentage("-0.1"), Ok(("", -0.1f32)));
-}
-
-#[test]
-fn negative_and_non_finite_values_are_left_unread() {
-  // effing: as in Chrome, which then keeps the previous filter.
-  for input in [
-    "blur(-1px)",
-    "drop-shadow(0 0 -2px red)",
-    "brightness(-1)",
-    "contrast(-50%)",
-    "grayscale(-1)",
-    "invert(-1)",
-    "opacity(-1)",
-    "saturate(-1)",
-    "sepia(-1)",
-    "opacity(inf)",
-    "opacity(NaN)",
-    "hue-rotate(infdeg)",
-    "blur(1e38in)",
-    "drop-shadow(1e38in 0 red)",
-    "drop-shadow(0 -1e38in red)",
-    "hue-rotate(90)",
-    "drop-shadow(4px red 4px)",
-    "drop-shadow(4px 4px 2px nosuchcolor)",
-    "drop-shadow(4px 4px 2px 1px)",
-    "drop-shadow(4px 4px 2px red 1px)",
-    "drop-shadow(4px 4px 2px red blue)",
-    "drop-shadow(4px)",
-    "drop-shadow(red)",
-    "drop-shadow(4px 4px 2px lab(50% 40 59))",
-  ] {
-    let (rest, filters) = css_filter(input).unwrap();
-    assert!(filters.is_empty(), "`{input}` should not parse to a filter");
-    assert_eq!(rest, input, "`{input}` should be left unread");
+  /// What `s` resolves to with that font; None when it is rejected.
+  fn resolve(s: &str) -> Option<Vec<CssFilter>> {
+    parse(s).map(|f| f.resolve(&lengths()))
   }
-  // A negative offset or angle is fine.
-  for input in ["drop-shadow(-2px -3px 1px red)", "hue-rotate(-90deg)"] {
-    assert_eq!(css_filter(input).unwrap().0, "", "`{input}` should be read");
+
+  fn one(s: &str) -> CssFilter {
+    let mut list = resolve(s).unwrap_or_else(|| panic!("`{s}` should parse"));
+    assert_eq!(list.len(), 1, "{s}");
+    list.remove(0)
   }
-}
 
-#[test]
-fn transparent_drop_shadow_is_skipped_not_the_whole_list() {
-  // effing: it used to return `None` for the whole list.
-  let transparent = || CssFilter::DropShadow(0.0, 0.0, 0.0, RGBA::new(255, 0, 0, 0));
-  assert!(css_filters_to_image_filter(vec![transparent()]).is_none());
-  let filter = css_filters_to_image_filter(vec![transparent(), CssFilter::Blur(2.0)]).unwrap();
-  assert!(filter.needs_device_space_layer());
-  let unshifted = CssFilter::DropShadow(0.0, 0.0, 0.0, RGBA::new(255, 0, 0, 255));
-  assert!(css_filters_to_image_filter(vec![unshifted, CssFilter::Grayscale(1.0)]).is_some());
-}
+  /// The resolved filters with each drop-shadow() color as Skia gets it, ARGB.
+  fn with_argb(s: &str) -> Option<Vec<(CssFilter, u32)>> {
+    Some(
+      resolve(s)?
+        .into_iter()
+        .map(|f| match f {
+          CssFilter::DropShadow(x, y, blur, c) => (
+            CssFilter::DropShadow(x, y, blur, Color::BLACK),
+            c.to_sk_color4f().to_sk_color(),
+          ),
+          f => (f, 0),
+        })
+        .collect(),
+    )
+  }
 
-#[test]
-fn drop_shadow_colour_before_or_after_any_colour_function() {
-  // effing: as in Chrome.
-  let green = RGBA::new(0, 128, 0, 255);
-  for input in [
-    "drop-shadow(4px 4px 2px rgb(0, 128, 0))",
-    "drop-shadow(rgb(0, 128, 0) 4px 4px 2px)",
-    "drop-shadow(4px 4px 2px hsl(120, 100%, 25%))",
-    "drop-shadow(hsl(120deg 100% 25%) 4px 4px 2px)",
-    "drop-shadow(4px 4px 2px hwb(120 0% 50%))",
-    "DROP-SHADOW(4PX 4px 2Px #008000)",
-  ] {
+  fn shadow(x: f32, y: f32, blur: f32, argb: u32) -> (CssFilter, u32) {
+    (CssFilter::DropShadow(x, y, blur, Color::BLACK), argb)
+  }
+
+  #[test]
+  fn empty_filter_list_is_no_filter_not_a_null_one() {
+    // Pins the `Option` chain: an empty list must produce `None`, not a
+    // `Some(ImageFilter(null))` that the next draw would dereference.
+    assert!(css_filters_to_image_filter(vec![]).is_none());
+    assert!(css_filters_to_image_filter(resolve("url(#x)").unwrap()).is_none());
+  }
+
+  #[test]
+  fn the_whole_string_is_one_filter_value() {
+    for input in [
+      "blur(3px)",
+      "blur(3px) grayscale(50%)",
+      "contrast(175%) brightness(103%)",
+      "drop-shadow(16px 16px 10px black)",
+      "hue-rotate(90deg)",
+      " blur(3px) ",
+      "blur(1px)blur(1px)",
+      "blur(1px) /* c */",
+      "BLUR(2px)",
+      "blur(1px",
+      "url(#x)",
+      "url(\"#x\") blur(1px)",
+      "URL(#x)",
+    ] {
+      assert!(parse(input).is_some_and(|f| !f.0.is_empty()), "{input:?}");
+    }
+    for input in ["none", "NONE", " none "] {
+      assert!(parse(input).is_some_and(|f| f.0.is_empty()), "{input:?}");
+    }
+    for input in [
+      "",
+      "   ",
+      "garbage",
+      "inherit",
+      "initial",
+      "unset",
+      "revert",
+      "revert-layer",
+      "blur(3px) notafilter(1)",
+      "blur(1px),blur(1px)",
+      "blur(2px) ; ",
+      "blur(2px) !important",
+      "blur(1px) none",
+      "none blur(1px)",
+      "url(#x x)",
+      "url(\"#x\" x)",
+    ] {
+      assert!(parse(input).is_none(), "{input:?}");
+    }
+  }
+
+  #[test]
+  fn arguments_follow_the_css_grammar() {
+    assert_eq!(one("blur(20px)"), CssFilter::Blur(20.0));
+    assert_eq!(one("blur(0)"), CssFilter::Blur(0.0));
+    assert_eq!(one("blur()"), CssFilter::Blur(0.0));
+    assert_eq!(one("blur(1.5rem)"), CssFilter::Blur(24.0));
+    assert_eq!(one("blur(1.5em)"), CssFilter::Blur(24.0));
+    assert_eq!(one("blur(1e1px)"), CssFilter::Blur(10.0));
+    assert_eq!(one("blur(1in)"), CssFilter::Blur(96.0));
+    assert_eq!(one("blur(1vw)"), CssFilter::Blur(0.0));
+    assert_eq!(one("blur(2ex)"), CssFilter::Blur(10.0));
+    assert_eq!(one("blur(2ch)"), CssFilter::Blur(12.0));
+    assert_eq!(one("blur(1cap)"), CssFilter::Blur(7.0));
+    assert_eq!(one("blur(1ic)"), CssFilter::Blur(9.0));
+    assert_eq!(one("blur(2ric)"), CssFilter::Blur(18.0));
+    assert_eq!(one("blur(1lh)"), CssFilter::Blur(0.0));
+    assert_eq!(one("grayscale()"), CssFilter::Grayscale(1.0));
+    assert_eq!(one("grayscale(2)"), CssFilter::Grayscale(1.0));
+    assert_eq!(one("opacity(50%)"), CssFilter::Opacity(0.5));
+    assert_eq!(one("brightness(2)"), CssFilter::Brightness(2.0));
+    assert_eq!(one("saturate(250%)"), CssFilter::Saturate(2.5));
+    assert_eq!(one("hue-rotate()"), CssFilter::HueRotate(0.0));
+    assert_eq!(one("hue-rotate(0)"), CssFilter::HueRotate(0.0));
+    assert_eq!(one("hue-rotate(90deg)"), CssFilter::HueRotate(90.0));
+    assert_eq!(one("hue-rotate(-0.25turn)"), CssFilter::HueRotate(-90.0));
+    assert_eq!(one("hue-rotate(100grad)"), CssFilter::HueRotate(90.0));
+    for input in [
+      "blur(-1px)",
+      "blur(2)",
+      "blur(2%)",
+      "blur(20 px)",
+      "blur( 20 px )",
+      "grayscale(-1)",
+      "opacity(50 %)",
+      "brightness(-1)",
+      "hue-rotate(90)",
+      "hue-rotate(90 deg)",
+      "blur(var(--x))",
+      "foo(1)",
+    ] {
+      assert!(parse(input).is_none(), "{input:?}");
+    }
+  }
+
+  #[test]
+  fn math_functions_are_typed_and_clamped_when_used() {
+    assert_eq!(one("blur(calc(1px + 2px))"), CssFilter::Blur(3.0));
+    assert_eq!(one("blur(calc(1px - 3px))"), CssFilter::Blur(0.0));
+    assert_eq!(one("blur(calc(NaN * 1px))"), CssFilter::Blur(0.0));
+    assert_eq!(one("blur(calc(0.2em + 1px))"), CssFilter::Blur(4.2));
+    assert_eq!(one("opacity(calc(2))"), CssFilter::Opacity(1.0));
+    assert_eq!(one("opacity(calc(50% + 10%))"), CssFilter::Opacity(0.6));
+    assert_eq!(one("contrast(calc(-1))"), CssFilter::Contrast(0.0));
+    assert_eq!(one("hue-rotate(calc(-90deg))"), CssFilter::HueRotate(-90.0));
     assert_eq!(
-      css_filter(input),
-      Ok(("", vec![CssFilter::DropShadow(4.0, 4.0, 2.0, green)])),
-      "`{input}`"
+      one("hue-rotate(calc(NaN * 1deg))"),
+      CssFilter::HueRotate(0.0)
+    );
+    assert_eq!(
+      with_argb("drop-shadow(calc(1px * 3) min(1px, 2px) max(-1px, 0px))"),
+      Some(vec![shadow(3.0, 1.0, 0.0, 0xff000000)])
+    );
+    assert_eq!(
+      with_argb("drop-shadow(calc(infinity * 1px) 0 calc(-1px))"),
+      Some(vec![shadow(f32::MAX, 0.0, 0.0, 0xff000000)])
+    );
+    for input in [
+      "blur(calc(0))",
+      "blur(calc(1px + 2))",
+      "blur(calc(6px / 2px))",
+      "blur(calc(100% - 1px))",
+      "blur(calc(1px+2px))",
+      "opacity(calc(0.25 + 25%))",
+      "opacity(calc(0.5px))",
+      "opacity(calc(50% * 50%))",
+      "hue-rotate(calc(90))",
+      "hue-rotate(calc(90deg + 1px))",
+      "hue-rotate(calc(90deg / 1deg))",
+      "drop-shadow(sign(-3px) 0 0 red)",
+      "drop-shadow(round(2.5px) 0 0 red)",
+    ] {
+      assert!(parse(input).is_none(), "{input:?}");
+    }
+  }
+
+  #[test]
+  fn font_metric_units_are_flagged() {
+    const NONE: FontReads = FontReads {
+      glyphs: false,
+      ideographic: false,
+    };
+    const GLYPHS: FontReads = FontReads {
+      glyphs: true,
+      ideographic: false,
+    };
+    const IC: FontReads = FontReads {
+      glyphs: false,
+      ideographic: true,
+    };
+    const BOTH: FontReads = FontReads {
+      glyphs: true,
+      ideographic: true,
+    };
+    for (input, reads) in [
+      ("blur(1px)", NONE),
+      ("blur(1em)", NONE),
+      ("blur(1ex)", GLYPHS),
+      ("blur(1ic)", IC),
+      ("hue-rotate(0) blur(calc(1ric + 1px))", IC),
+      ("drop-shadow(calc(1px + 1ch) 0)", GLYPHS),
+      ("drop-shadow(0 0 1rcap)", GLYPHS),
+      ("drop-shadow(1ic 1ex)", BOTH),
+      ("blur(1ic) drop-shadow(0 0 1rch)", BOTH),
+      ("opacity(1) url(#x)", NONE),
+      // A drop-shadow() color, at any depth, before or after the lengths.
+      ("drop-shadow(1px 1px rgb(calc(1ex / 1px) 0 0))", GLYPHS),
+      ("drop-shadow(rgb(calc(1ric / 1px) 0 0) 1px 1px)", IC),
+      (
+        "drop-shadow(1px 1px rgb(calc(1ic / 1px) calc(1ch / 1px) 0))",
+        BOTH,
+      ),
+      (
+        "drop-shadow(1px 1px color-mix(in srgb, rgb(0 calc((1px + 1cap) / 1px) 0), red))",
+        GLYPHS,
+      ),
+      (
+        "drop-shadow(1px 1px color-mix(in srgb, rgb(0 calc((1px + 1IC) / 1px) 0), red))",
+        IC,
+      ),
+      (
+        "drop-shadow(1px 1px rgb(from red calc(1rch / 1px) g b))",
+        GLYPHS,
+      ),
+      ("drop-shadow(1px 1px rgb(calc(1\\63 h / 1px) 0 0))", GLYPHS),
+      ("drop-shadow(1px 1px rgb(calc(1\\69 c / 1px) 0 0))", IC),
+      ("drop-shadow(1px 1px rgb(calc(1em / 1px) 0 0))", NONE),
+      ("drop-shadow(rgb(calc(1lh / 1px) 0 0) 1px 1ch)", GLYPHS),
+      ("drop-shadow(rgb(calc(1lh / 1px) 0 0) 1px 1px)", NONE),
+      ("drop-shadow(rgb(calc(1ric / 1px) 0 0) 1px 1ch)", BOTH),
+    ] {
+      let got = parse(input).unwrap().font_reads();
+      assert_eq!(got, reads, "{input}");
+      assert_eq!(got.any(), reads != NONE, "{input}");
+    }
+    // A font without an x-height: ex is 0.5em. A primary font without
+    // U+6C34: ic and ric are em and rem, 16px.
+    let lengths = filter_lengths(FontUnits::default());
+    assert_eq!(
+      parse("blur(1ex) blur(1ic) blur(1ric)")
+        .unwrap()
+        .resolve(&lengths),
+      vec![
+        CssFilter::Blur(8.0),
+        CssFilter::Blur(16.0),
+        CssFilter::Blur(16.0)
+      ]
     );
   }
-  assert_eq!(
-    css_filter("drop-shadow(hsla(0, 0%, 0%, 0) 1px 2px) blur(1px)"),
-    Ok((
-      "",
-      vec![
-        CssFilter::DropShadow(1.0, 2.0, 0.0, RGBA::new(0, 0, 0, 0)),
-        CssFilter::Blur(1.0)
-      ]
-    ))
-  );
-  assert_eq!(
-    css_filter("hue-rotate(0) HUE-ROTATE(90DEG)"),
-    Ok((
-      "",
-      vec![CssFilter::HueRotate(0.0), CssFilter::HueRotate(90.0)]
-    ))
-  );
-}
 
-#[test]
-fn css_numbers_with_exponents_and_without_trailing_dots() {
-  // effing: as CSS reads them.
-  assert_eq!(css_number("4e1px"), Some((40.0, "px")));
-  assert_eq!(css_number("1E-1%"), Some((0.1, "%")));
-  assert_eq!(css_number("4em"), Some((4.0, "em")));
-  assert_eq!(css_number("-.5px"), Some((-0.5, "px")));
-  assert_eq!(css_number("+2"), Some((2.0, "")));
-  assert_eq!(css_number("4.px"), Some((4.0, ".px")));
-  assert_eq!(css_number("."), None);
-  assert_eq!(css_number("inf"), None);
-  assert_eq!(css_number("NaN"), None);
-  assert_eq!(
-    css_filter("blur(4e1px)"),
-    Ok(("", vec![CssFilter::Blur(40.0)]))
-  );
-  assert_eq!(
-    css_filter("hue-rotate()"),
-    Ok(("", vec![CssFilter::HueRotate(0.0)]))
-  );
-  assert_eq!(css_filter("blur(4px"), Ok(("", vec![CssFilter::Blur(4.0)])));
-  for input in ["blur(4.px)", "opacity(1.)"] {
-    assert_eq!(
-      css_filter(input).unwrap().0,
-      input,
-      "`{input}` should be left unread"
-    );
+  // A drop-shadow() color resolves against the lengths it was parsed with,
+  // the same the filter's lengths use (ConvertShadow).
+  #[test]
+  fn shadow_colors_resolve_font_units() {
+    for (input, argb) in [
+      (
+        "drop-shadow(20px 0 0 rgb(calc(10ex / 1px) 0 0))",
+        0xff320000,
+      ),
+      (
+        "drop-shadow(20px 0 0 rgb(calc(10ch / 1px) 0 0))",
+        0xff3c0000,
+      ),
+      (
+        "drop-shadow(20px 0 0 rgb(calc(10cap / 1px) 0 0))",
+        0xff460000,
+      ),
+      (
+        "drop-shadow(20px 0 0 rgb(calc(10ic / 1px) 0 0))",
+        0xff5a0000,
+      ),
+      (
+        "drop-shadow(20px 0 0 rgb(calc(10ric / 1px) 0 0))",
+        0xff5a0000,
+      ),
+      (
+        "drop-shadow(rgb(calc(10rch / 1px) 0 0) 20px 0 0)",
+        0xff3c0000,
+      ),
+      (
+        "drop-shadow(20px 0 0 rgb(calc(calc(5ch / 1px) * 2) 0 calc(1ex / 1px)))",
+        0xff3c0005,
+      ),
+      (
+        "drop-shadow(20px 0 0 rgb(calc(10lh / 1px) 0 0))",
+        0xff000000,
+      ),
+    ] {
+      assert_eq!(
+        with_argb(input),
+        Some(vec![shadow(20.0, 0.0, 0.0, argb)]),
+        "{input}"
+      );
+    }
   }
-}
 
-#[test]
-fn only_css_whitespace_separates_filters() {
-  // effing: U+00A0 and the other Unicode spaces are not CSS whitespace.
-  assert_eq!(
-    css_filter("\x0Cblur(1px)\r\n\tgrayscale(1)\n"),
-    Ok(("", vec![CssFilter::Blur(1.0), CssFilter::Grayscale(1.0)]))
-  );
-  assert_eq!(
-    css_filter("blur(1px)\u{a0}grayscale(1)"),
-    Ok(("\u{a0}grayscale(1)", vec![CssFilter::Blur(1.0)]))
-  );
-  assert_eq!("\u{a0}none\u{2003}".css_trim(), "\u{a0}none\u{2003}");
-}
-
-#[test]
-fn omitted_arguments_take_their_defaults() {
-  // effing: as in Filter Effects 1 and Chrome.
-  assert_eq!(css_filter("blur()"), Ok(("", vec![CssFilter::Blur(0.0)])));
-  assert_eq!(css_filter("blur( )"), Ok(("", vec![CssFilter::Blur(0.0)])));
-  assert_eq!(css_filter("blur("), Ok(("", vec![CssFilter::Blur(0.0)])));
-  assert_eq!(
-    css_filter("grayscale() sepia() invert() opacity() brightness() contrast() saturate("),
-    Ok((
-      "",
-      vec![
-        CssFilter::Grayscale(1.0),
-        CssFilter::Sepia(1.0),
-        CssFilter::Invert(1.0),
-        CssFilter::Opacity(1.0),
-        CssFilter::Brightness(1.0),
-        CssFilter::Contrast(1.0),
-        CssFilter::Saturate(1.0),
-      ]
-    ))
-  );
-  for input in ["blur(10%)", "blur(0%)"] {
+  #[test]
+  fn drop_shadow_parse() {
     assert_eq!(
-      css_filter(input).unwrap().0,
-      input,
-      "`{input}` should be left unread"
+      with_argb("drop-shadow(2px 2px)"),
+      Some(vec![shadow(2.0, 2.0, 0.0, 0xff000000)])
     );
+    assert_eq!(
+      with_argb("drop-shadow(2px 2px 5px)"),
+      Some(vec![shadow(2.0, 2.0, 5.0, 0xff000000)])
+    );
+    assert_eq!(
+      with_argb("drop-shadow(2px 2px 5px #2F14DF)"),
+      Some(vec![shadow(2.0, 2.0, 5.0, 0xff2f14df)])
+    );
+    assert_eq!(
+      with_argb("drop-shadow(#2F14DF 2px 2px 5px)"),
+      Some(vec![shadow(2.0, 2.0, 5.0, 0xff2f14df)])
+    );
+    assert_eq!(
+      with_argb("drop-shadow(2px 2px 5px rgba(47, 20, 223, 255))"),
+      Some(vec![shadow(2.0, 2.0, 5.0, 0xff2f14df)])
+    );
+    assert_eq!(
+      with_argb("drop-shadow(-2px 2px 1em red)"),
+      Some(vec![shadow(-2.0, 2.0, 16.0, 0xffff0000)])
+    );
+
+    // Chrome 155 draws hsl(120, 100%, 25%) as 0,128,0.
+    assert_eq!(
+      with_argb("drop-shadow(4px 0 0 hsl(120, 100%, 25%)) blur(1px)"),
+      Some(vec![
+        shadow(4.0, 0.0, 0.0, 0xff008000),
+        (CssFilter::Blur(1.0), 0)
+      ])
+    );
+    assert_eq!(
+      with_argb("drop-shadow(4px 0 0 hsla(0, 100%, 50%, 0.5))"),
+      Some(vec![shadow(4.0, 0.0, 0.0, 0x80ff0000)])
+    );
+
+    // CSS function names are ASCII case-insensitive; Chrome 155 keeps all of these.
+    for (input, color) in [
+      ("HSL(120, 100%, 25%)", 0xff008000),
+      ("HsLa(0, 100%, 50%, 0.5)", 0x80ff0000),
+      ("RGB(0, 128, 0)", 0xff008000),
+      ("rGbA(255, 0, 0, 0.5)", 0x80ff0000),
+    ] {
+      assert_eq!(
+        with_argb(&format!("DROP-SHADOW(4px 0 0 {input}) blur(1px)")),
+        Some(vec![
+          shadow(4.0, 0.0, 0.0, color),
+          (CssFilter::Blur(1.0), 0)
+        ]),
+        "{input}"
+      );
+    }
+
+    // The color slot is CSS: nested functions, comments, and the end of input
+    // closing the open blocks (Chrome 155 keeps each of these filters).
+    for (input, color) in [
+      (
+        "drop-shadow(20px 0 0 color-mix(in srgb, red, blue))",
+        0xff800080,
+      ),
+      (
+        "drop-shadow(20px 0 0 rgb(from red r g calc(b + 255)))",
+        0xffff00ff,
+      ),
+      ("drop-shadow(20px 0 0 /**/red)", 0xffff0000),
+      ("drop-shadow(20px 0 0 rgb(1 2 3)", 0xff010203),
+      ("drop-shadow(20px 0 0 rgb(1 2 3", 0xff010203),
+      ("drop-shadow(20px 0 0 /**/)", 0xff000000),
+      ("drop-shadow(20px 0 0 currentcolor)", 0xff000000),
+      ("drop-shadow(20px 0 0 transparent)", 0x00000000),
+    ] {
+      assert_eq!(
+        with_argb(input),
+        Some(vec![shadow(20.0, 0.0, 0.0, color)]),
+        "{input}"
+      );
+    }
+    // A color it cannot read, a fourth length, a color between the lengths
+    // or a negative blur rejects the whole filter.
+    for input in [
+      "drop-shadow(20px 0 0 red x)",
+      "drop-shadow(20px 0 0 inherit)",
+      "drop-shadow(20px 0 0 violetred)",
+      "drop-shadow(red 2px 2px blue)",
+      "drop-shadow(2px)",
+      "drop-shadow()",
+      "drop-shadow(2px 2px 2px 2px red)",
+      "drop-shadow(2px 2px red 2px)",
+      "drop-shadow(2px 2px -1px red)",
+      "drop-shadow(2px, 2px, red)",
+      "drop-shadow(inset 2px 2px red)",
+      "drop-shadow(2px 2px red inset)",
+    ] {
+      assert!(parse(input).is_none(), "{input}");
+    }
+  }
+
+  #[test]
+  fn composite_parse() {
+    assert_eq!(
+      resolve("blur(1.5rem) brightness(2)"),
+      Some(vec![CssFilter::Blur(24.0), CssFilter::Brightness(2.0)])
+    );
+    assert_eq!(
+      resolve("brightness(2) blur(1.5rem) url(#x)"),
+      Some(vec![CssFilter::Brightness(2.0), CssFilter::Blur(24.0)])
+    );
+    let shadow = shadow(2.0, 2.0, 5.0, 0xff2f14df);
+    for (input, expected) in [
+      (
+        "drop-shadow(2px 2px 5px rgba(47, 20, 223, 255)) brightness(2) blur(1.5rem)",
+        vec![
+          shadow.clone(),
+          (CssFilter::Brightness(2.0), 0),
+          (CssFilter::Blur(24.0), 0),
+        ],
+      ),
+      (
+        "brightness(2) drop-shadow(2px 2px 5px rgba(47, 20, 223, 255)) blur(1.5rem)",
+        vec![
+          (CssFilter::Brightness(2.0), 0),
+          shadow.clone(),
+          (CssFilter::Blur(24.0), 0),
+        ],
+      ),
+    ] {
+      assert_eq!(with_argb(input), Some(expected), "{input}");
+    }
   }
 }

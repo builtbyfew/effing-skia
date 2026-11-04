@@ -54,7 +54,7 @@ fn encode_peeked(image: &SkImage) -> Option<Vec<u8>> {
 /// conversion, then encodes it.
 fn encode_read(image: &SkImage) -> Result<Vec<u8>> {
   let pixels = image
-    .read_pixels(AlphaType::Unpremultiplied)
+    .read_pixels(AlphaType::Unpremultiplied, image.color_space())
     .ok_or_else(|| {
       Error::new(
         Status::GenericFailure,
@@ -190,7 +190,12 @@ mod tests {
   // canvas or, with `premultiplied` false, as it is.
   fn noise(width: u32, height: u32, premultiplied: bool) -> SkImage {
     let mut surface = if premultiplied {
-      Surface::new_rgba_premultiplied(width, height, ColorSpace::default())
+      Surface::new_rgba_premultiplied(
+        width,
+        height,
+        ColorSpace::default(),
+        crate::webidl::CanvasPixelFormat::default(),
+      )
     } else {
       Surface::new_rgba(width, height, ColorSpace::default())
     }
@@ -235,7 +240,9 @@ mod tests {
   #[test]
   fn pixels_fed_in_any_pieces_encode_the_same() {
     let image = noise(33, 9, true);
-    let pixels = image.read_pixels(AlphaType::Unpremultiplied).unwrap();
+    let pixels = image
+      .read_pixels(AlphaType::Unpremultiplied, image.color_space())
+      .unwrap();
     let whole = encode_read(&image).unwrap();
     for piece in [4, 12, 132, 1000] {
       let mut encoder = Encoder::new(33, 9);

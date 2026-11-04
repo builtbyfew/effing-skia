@@ -1,4 +1,6 @@
-import { execSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -8,11 +10,23 @@ export const REPO = 'canvas'
 const [FULL_HASH] =
   process.env.NODE_ENV === 'ava' ? ['000000'] : execSync(`git submodule status skia`).toString('utf8').trim().split(' ')
 
-const SHORT_HASH = FULL_HASH.substring(0, 8)
-
 export const dirname = join(fileURLToPath(import.meta.url), '..')
 
-export const TAG = `skia-${SHORT_HASH}`
+/**
+ * The prebuilt Skia libraries depend on the Skia commit and on the GN args
+ * they were built with, so the release tag carries both: a change to
+ * scripts/skia-gn-args.cjs needs new binaries instead of reusing the old ones.
+ * CRLF is folded to LF first, as Windows runners check the repo out with CRLF.
+ * @param {string} submoduleHash `git submodule status skia` hash
+ * @param {string} gnArgsSource content of scripts/skia-gn-args.cjs
+ * @returns {string} `skia-<8 hex of the Skia commit>-<8 hex of the GN args>`
+ */
+export function skiaReleaseTag(submoduleHash, gnArgsSource) {
+  const gnArgsHash = createHash('sha256').update(gnArgsSource.replace(/\r\n/g, '\n')).digest('hex').substring(0, 8)
+  return `skia-${submoduleHash.substring(0, 8)}-${gnArgsHash}`
+}
+
+export const TAG = skiaReleaseTag(FULL_HASH, readFileSync(join(dirname, 'skia-gn-args.cjs'), 'utf8'))
 
 /**
  * @param {string} lib Static lib name
@@ -71,4 +85,22 @@ export function libPath(lib, hostPlatform, triple, tag = TAG) {
   const copy = join(dirname, '..', platformName)
   const downloadUrl = `https://github.com/${OWNER}/${REPO}/releases/download/${tag}/${platformName}`
   return { binary, copy, downloadUrl, filename: platformName }
+}
+
+/**
+ * Download `url` to `output` with curl. `--fail` makes an HTTP error (a 404 for
+ * a release asset that is not published yet) fail the download instead of
+ * saving the error page as the file. On failure no partial file is left.
+ * @param {string} url
+ * @param {string} output
+ */
+export function downloadFile(url, output) {
+  try {
+    execFileSync('curl', ['--fail', '--location', '-H', 'Accept: application/octet-stream', '-o', output, url], {
+      stdio: 'inherit',
+    })
+  } catch (e) {
+    rmSync(output, { force: true })
+    throw new Error(`Failed to download ${url}`, { cause: e })
+  }
 }

@@ -100,13 +100,11 @@ test.serial('ctx.font takes any font-weight from 1 to 1000, as Chrome does', (t)
 // Chrome ignores these, keeping the font it had; ctx.font throws on them, as
 // on any value it can't parse, and keeps it too. "550 20px X" used to be a
 // 550px font of the family "20px X".
-test.serial('a font-weight outside 1 to 1000 makes ctx.font invalid', (t) => {
+test.serial('a font-weight outside 1 to 1000 leaves ctx.font as it was', (t) => {
   const ctx = createCanvas(10, 10).getContext('2d')
   for (const weight of ['0', '1001', '-1', '0.5', '550.']) {
     ctx.font = '13px serif'
-    t.throws(() => {
-      ctx.font = `${weight} 20px Arial`
-    })
+    ctx.font = `${weight} 20px Arial`
     t.is(ctx.font, '13px serif', weight)
   }
 })

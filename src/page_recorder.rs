@@ -38,6 +38,11 @@ pub(crate) enum RasterKey {
   /// needs its own arm: drawPath/clip ops pin a COW-shared SkPathData, and
   /// distinct-data paths of identical size must not alias each other.
   Path { data_id: u32 },
+  /// SkImage::uniqueID() of a decode a recorded drawImage drew in place of
+  /// its source (Chrome's decode cache), a fourth id space. A level the
+  /// cache keeps is drawn as the same SkImage and charged once; one made
+  /// again, or made for a single draw, is a new allocation with a new id.
+  Image { uid: u32 },
   /// Content hash of the resolved-font descriptor (family/style/variations)
   /// folded with the font-collection generation. Each recorded text op's
   /// blob refs the resolved typeface, and identical descriptors resolve to
@@ -71,6 +76,8 @@ pub struct PageRecorder {
   layers: Vec<SkPicture>,   // Accumulated finalized layers
   width: f32,
   height: f32,
+  /// The bytes of one surface pixel: 8 on a float16 canvas.
+  pub(crate) bytes_per_pixel: usize,
   changed: bool,                     // Dirty flag for lazy layer promotion
   depth: usize, // Tracks how many layers have been rendered to external surface
   cached_picture: Option<SkPicture>, // Cached composite picture for get_picture()
@@ -101,10 +108,13 @@ pub struct PageRecorder {
   // and cannot reproduce the write, so get_picture() has to be rebased on a
   // surface snapshot before returning a composite.
   surface_dirty: bool,
-  current_transform: Option<Matrix>, // Transform to restore after layer promotion
-  current_clip: Option<SkPath>,      // Clip path to restore after layer promotion
-  save_count: usize,                 // Track save stack depth to restore after layer promotion
-  groups: Vec<effing::OpenGroup>,    // effing: the groups open in the recording
+  // The context's save stack, replayed after a recording restart like
+  // Blink's RestoreMatrixClipStack (canvas_2d_recorder_context.cc:793-821):
+  // one entry per open save(), then the current level. Each level keeps its
+  // CTM and the clips added while it was current.
+  saved_levels: Vec<RecorderLevel>,
+  top_level: RecorderLevel,
+  groups: Vec<effing::OpenGroup>, // effing: the groups open in the recording
   // effing: whether an encode has played the unflushed layers back off the
   // JS thread since the last reset (src/ctx/effing/raster.rs)
   replayed_off_thread: bool,
@@ -115,6 +125,22 @@ pub struct PageRecorder {
   // Lifetime consolidation count (consolidate_with_snapshot completions) --
   // the observable "a flush collapsed the recording" signal for tests.
   consolidations: u64,
+  // alpha:false: reset() clears to opaque black instead of transparent.
+  opaque: bool,
+  // The recording holds an op that is not a plain source-over draw (a clear,
+  // a putImageData kSrc write, another composite mode). Replayed straight
+  // onto another canvas such an op reaches that canvas's pixels, so
+  // drawCanvas replays the picture inside a layer. A snapshot rebase clears
+  // it: the snapshot is drawn source-over.
+  needs_isolation: bool,
+}
+
+/// One level of the context's save stack, for resume_recording.
+#[derive(Default)]
+struct RecorderLevel {
+  transform: Matrix,
+  /// Each clip() of this level: the CTM it ran under and its path.
+  clips: Vec<(Matrix, SkPath)>,
 }
 
 impl PageRecorder {
@@ -127,6 +153,7 @@ impl PageRecorder {
       layers: Vec::new(),
       width,
       height,
+      bytes_per_pixel: 4,
       changed: false,
       depth: 0,
       cached_picture: None,
@@ -136,41 +163,58 @@ impl PageRecorder {
       retained_rasters: HashSet::new(),
       content_version: 0,
       surface_dirty: false,
-      current_transform: None,
-      current_clip: None,
-      save_count: 0,
+      saved_levels: Vec::new(),
+      top_level: RecorderLevel::default(),
       groups: Vec::new(),
       replayed_off_thread: false,
       recording_limit: MAX_RECORDED_BYTES,
       consolidations: 0,
+      opaque: false,
+      needs_isolation: false,
     }
   }
 
-  /// Begin a new recording and restore the current canvas state (save stack, clip, transform).
+  pub(crate) fn set_opaque(&mut self) {
+    self.opaque = true;
+  }
+
+  /// Begin a new recording and replay the context's save stack into it, as
+  /// Blink's RestoreMatrixClipStack does: the root level, then one save()
+  /// per later level; each level's own clips in the order they were added,
+  /// then that level's CTM. A later canvas.restore() then lands on exactly
+  /// the saved clip and matrix.
+  ///
+  /// Blink replays each clip as its device-space path at identity. Here each
+  /// clip runs again as recorded, its path under its CTM: the same Skia ops,
+  /// so a restart never changes a pixel, as in Chrome. A device-space path
+  /// at identity clips a few edge pixels differently in this Skia build.
   fn resume_recording(&mut self) {
     self
       .current
       .begin_recording(0.0, 0.0, self.width, self.height);
-    self.replay_saves(); // effing: opens the groups again
-    // effing: the innermost recording is a group's own when one is open
-    if let Some(canvas) = effing::innermost(&mut self.groups, &mut self.current) {
-      if let Some(ref clip_path) = self.current_clip {
-        canvas.reset_transform();
-        canvas.set_clip_path(clip_path);
+    let mut charges = Vec::new();
+    for index in 0..=self.saved_levels.len() {
+      // effing: a save that opened a group opens it again, and the draws
+      // after it go to the innermost group's own recording when it has one.
+      if index > 0 {
+        self.reopen_save(index - 1);
       }
-      if let Some(ref transform) = self.current_transform {
+      let level = self.saved_levels.get(index).unwrap_or(&self.top_level);
+      let Some(canvas) = effing::innermost(&mut self.groups, &mut self.current) else {
+        break;
+      };
+      for (transform, clip) in &level.clips {
         canvas.set_transform(transform);
+        canvas.set_clip_path(clip);
+        charges.push((clip.generation_id(), clip.estimated_bytes()));
       }
+      canvas.set_transform(&level.transform);
     }
-    // The set_clip_path above re-pins the clip's SkPathData inside the new
-    // recording: it is the DEVICE-space clip (ctx.sync_clip_to_recorder
-    // stores the transformed path), a different data object than the raw
-    // path clip() already charged, so it needs its own key. Dedup makes it
-    // once per window per data version; after consolidate clears the set
-    // the resumed layer gets a fresh charge, matching its fresh reference.
-    if let Some(ref clip_path) = self.current_clip {
-      let bytes = clip_path.estimated_bytes();
-      let data_id = clip_path.generation_id();
+    // Each replayed clip re-pins its SkPathData inside the new recording.
+    // Dedup makes it once per window per data version; after consolidate
+    // clears the set the resumed layer gets a fresh charge, matching its
+    // fresh reference.
+    for (data_id, bytes) in charges {
       self.account_raster_resource(RasterKey::Path { data_id }, bytes);
     }
     self.changed = false;
@@ -205,25 +249,35 @@ impl PageRecorder {
     }
   }
 
-  /// Set the current transform to restore after layer promotion
+  /// The current level's CTM changed.
   pub fn set_transform(&mut self, transform: &Matrix) {
-    self.current_transform = Some(transform.clone());
+    self.top_level.transform = transform.clone();
   }
 
-  /// Set the current clip path to restore after layer promotion
-  pub fn set_clip(&mut self, clip_path: Option<SkPath>) {
-    self.current_clip = clip_path;
+  /// clip() added `path` under `transform` to the current level.
+  pub fn add_clip(&mut self, transform: &Matrix, path: SkPath) {
+    self.top_level.clips.push((transform.clone(), path));
   }
 
-  /// Increment save count (called when ctx.save() is invoked)
-  pub fn increment_save(&mut self) {
-    self.save_count += 1;
+  /// ctx.save(): the new level starts with the same CTM and no clips of its
+  /// own (Blink's kDontCopyClipList).
+  pub fn push_save(&mut self) {
+    let next = RecorderLevel {
+      transform: self.top_level.transform.clone(),
+      clips: Vec::new(),
+    };
+    self
+      .saved_levels
+      .push(std::mem::replace(&mut self.top_level, next));
   }
 
-  /// Decrement save count (called when ctx.restore() is invoked)
-  pub fn decrement_save(&mut self) {
-    self.save_count = self.save_count.saturating_sub(1);
-    self.groups.retain(|group| group.depth < self.save_count); // effing
+  /// ctx.restore(): back to the level below.
+  pub fn pop_restore(&mut self) {
+    if let Some(level) = self.saved_levels.pop() {
+      self.top_level = level;
+    }
+    let depth = self.saved_levels.len();
+    self.groups.retain(|group| group.depth < depth); // effing
   }
 
   /// Get composite picture of all layers (for drawCanvas)
@@ -313,15 +367,16 @@ impl PageRecorder {
       self.cached_picture = None;
       self.layers_at_cache = 0;
       self.pending_bytes = 0;
-      // The snapshot picture retains the passed raster (~width*height*4);
+      // The snapshot picture retains the passed raster (~width*height*bpp);
       // approx_bytes_used on a composited picture cannot see it, so it joins
       // the raster-byte tally a drawCanvas destination is charged with.
-      self.raster_bytes = self.width as usize * self.height as usize * 4;
+      self.raster_bytes = self.width as usize * self.height as usize * self.bytes_per_pixel;
       // The layers that pinned the deduped rasters are gone; future ops
       // re-charge shared sources under the new window.
       self.retained_rasters.clear();
       // The snapshot rebase makes `layers` a complete picture again.
       self.surface_dirty = false;
+      self.needs_isolation = false;
       self.consolidations += 1;
     }
   }
@@ -341,8 +396,13 @@ impl PageRecorder {
     // Record a clear() command to ensure picture playback clears the target canvas
     // This is necessary because begin_recording may not fully reset canvas state
     if let Some(canvas) = self.current.get_recording_canvas() {
-      canvas.clear();
+      if self.opaque {
+        canvas.fill(0, 0, 0, 255);
+      } else {
+        canvas.clear();
+      }
     }
+    self.needs_isolation = true;
     self.changed = false;
     // Reset all caches
     self.depth = 0;
@@ -358,12 +418,10 @@ impl PageRecorder {
     // pre-clear snapshot must not dedup the next draw against the cleared
     // raster under the old (id, version) key.
     self.content_version += 1;
-    // Reset transform and clip state
-    self.current_transform = None;
-    self.current_clip = None;
-    // Reset save count
-    self.save_count = 0;
-    self.groups.clear();
+    // Reset the save stack mirror
+    self.saved_levels.clear();
+    self.top_level = RecorderLevel::default();
+    self.groups.clear(); // effing
     self.replayed_off_thread = false; // effing
   }
 
@@ -421,6 +479,8 @@ impl PageRecorder {
     // Step 4: Start new recording and restore state
     self.resume_recording();
     self.content_version += 1;
+    // The pixels are drawn with kSrc.
+    self.needs_isolation = true;
     self.account_raster_bytes(pixel_bytes);
   }
 
@@ -438,6 +498,13 @@ impl PageRecorder {
     effing::innermost(&mut self.groups, &mut self.current) // effing: a group's own recording
   }
 
+  /// The recording canvas's device clip bounds (None inside: an empty clip),
+  /// read without counting an op. None: there is no recording canvas.
+  pub(crate) fn device_clip_bounds(&mut self) -> Option<Option<[i32; 4]>> {
+    effing::innermost(&mut self.groups, &mut self.current) // effing: a group's own recording
+      .map(|canvas| canvas.device_clip_bounds())
+  }
+
   /// Bump the content generation for a recorded op that can alter pixels --
   /// the draw funnels (render_passes) call this once the op is committed.
   /// State-only records (save/restore/transform/clip) must not reach here.
@@ -446,10 +513,27 @@ impl PageRecorder {
     self.content_version += 1;
   }
 
+  /// A recorded op that is not a plain source-over draw. See
+  /// `needs_isolation`.
+  pub(crate) fn note_non_source_over_op(&mut self) {
+    self.needs_isolation = true;
+  }
+
+  /// Whether drawCanvas must replay this recording inside a layer.
+  pub(crate) fn needs_isolation(&self) -> bool {
+    self.needs_isolation
+  }
+
   /// Charge recorded bytes that the per-op base estimate cannot see, e.g. a
   /// drawn path's point data or a nested picture's record.
   pub fn account_recorded_bytes(&mut self, bytes: usize) {
     self.pending_bytes += bytes;
+  }
+
+  /// Charge `count` more ops at the base estimate: the ones a draw records
+  /// after the single `get_recording_canvas` call that charged its first.
+  pub(crate) fn account_recorded_ops(&mut self, count: usize) {
+    self.pending_bytes += count * BYTES_PER_RECORDED_OP;
   }
 
   /// Charge bytes that also retain payload a picture's approximateBytesUsed
@@ -519,7 +603,8 @@ impl PageRecorder {
   /// Whether the pending recording has grown past the configured limit and
   /// should be flushed. See Context::flush_if_recording_limit_exceeded.
   pub fn recording_limit_exceeded(&self) -> bool {
-    self.pending_bytes >= self.recording_limit && !self.holds_composited_group() // effing: it would composite in parts
+    // effing: a composited group must stay in one recording until it closes
+    self.pending_bytes >= self.recording_limit && !self.holds_composited_group()
   }
 
   /// Override the byte cap that trips the recording flush. Test-only hook:
@@ -559,6 +644,15 @@ impl PageRecorder {
     self.consolidations
   }
 
+  /// SkPicture::approximateBytesUsed of every layer, the pending recording
+  /// finished into one first: what the charged ops really hold. Test-only
+  /// introspection.
+  #[cfg(test)]
+  pub(crate) fn recorded_bytes(&mut self) -> usize {
+    self.promote_layer();
+    self.layers.iter().map(SkPicture::approx_bytes_used).sum()
+  }
+
   /// Bytes of approx_bytes_used-invisible payload this recorder's pictures
   /// still retain: pinned pixel copies, recorded typeface refs, and the
   /// consolidated snapshot raster. drawCanvas charges the destination for it
@@ -586,7 +680,7 @@ mod tests {
 
   /// A raster surface snapshot for consolidate_with_snapshot.
   fn snapshot_of(width: u32, height: u32) -> SkImage {
-    Surface::new_rgba_premultiplied(width, height, ColorSpace::default())
+    Surface::new_rgba_premultiplied(width, height, ColorSpace::default(), Default::default())
       .and_then(|surface| surface.make_image_snapshot())
       .expect("snapshot")
   }
@@ -632,6 +726,7 @@ mod tests {
         8.0,
         ColorSpace::default(),
         true,
+        false,
       );
     });
     assert_eq!(recorder.content_version(), 1);
@@ -707,6 +802,7 @@ mod tests {
         16.0,
         ColorSpace::default(),
         true,
+        false,
       );
     });
     // A second paint leaves pending record bytes promote_layer can finalize.
@@ -745,6 +841,7 @@ mod tests {
         16.0,
         ColorSpace::default(),
         true,
+        false,
       );
     });
     assert!(recorder.layer_count() > 0);
@@ -785,6 +882,7 @@ mod tests {
         16.0,
         ColorSpace::default(),
         true,
+        false,
       );
     });
     let version = recorder.content_version();

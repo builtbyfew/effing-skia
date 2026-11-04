@@ -482,16 +482,15 @@ void add_content(ParagraphBuilder* builder,
       const size_t a = std::max(range->first, from);
       const size_t b = std::min(range->second, to);
       if (a > from) {
-        effing::add_text(builder, text + from, a - from,
-                         effing::TextKind::kCss);
+        effing::add_text(builder, text + from, a - from);
       }
       builder->pushStyle(*unspaced_style);
-      effing::add_text(builder, text + a, b - a, effing::TextKind::kCss);
+      effing::add_text(builder, text + a, b - a);
       builder->pop();
       from = b;
     }
     if (to > from) {
-      effing::add_text(builder, text + from, to - from, effing::TextKind::kCss);
+      effing::add_text(builder, text + from, to - from);
     }
   };
   const auto add_run = [&](size_t from, size_t to) {
@@ -501,7 +500,7 @@ void add_content(ParagraphBuilder* builder,
         add_spaced(from, *cr);
       }
       builder->pushStyle(*cr_style);
-      effing::add_text(builder, text + *cr, 3, effing::TextKind::kCss);
+      effing::add_text(builder, text + *cr, 3);
       builder->pop();
       from = *cr + 3;
     }
