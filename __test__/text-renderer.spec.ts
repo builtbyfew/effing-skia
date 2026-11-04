@@ -627,9 +627,9 @@ function macProbe(script: string, env: Record<string, string> = {}) {
   return JSON.parse(stdout)
 }
 
-// Installed fonts register first, so a registered font under an installed
-// family name comes after the installed faces, before and after a switch.
-macTest('installed fonts stay before registered fonts across a switch on macOS', (t) => {
+// effing: a registered font under an installed family name shadows the
+// installed faces (docs/effing.md), before and after a switch.
+macTest('registered fonts shadow installed fonts across a switch on macOS', (t) => {
   const helvetica = (steps: string[]) => macProbe(HELVETICA_PROBE, { PROBE_STEPS: steps.join(',') })
   const [portable] = helvetica(['register', 'state'])
   const [system] = helvetica(['switch:system', 'register', 'state'])

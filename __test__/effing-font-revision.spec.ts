@@ -84,8 +84,8 @@ test.serial('is a whole number', (t) => {
 test.serial('reads leave it as it is', (t) => {
   reads(t, 'Lato')
   // index.js has loaded the system fonts already, so this loads nothing.
-  // On macOS upstream lists the installed fonts again on each call, and
-  // counts that as a change.
+  // On macOS upstream's loadSystemFonts() counts every call as a change,
+  // though it registers nothing new after the first.
   if (process.platform !== 'darwin') {
     keeps(t, () => GlobalFonts.loadSystemFonts(), 'loadSystemFonts() again')
   }

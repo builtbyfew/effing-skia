@@ -1121,13 +1121,15 @@ would miss a mutator added later. These change it:
   the rebuild of the collection they do;
 - `loadFontsFromDir`, `loadSystemFonts()` and `loadSystemFontsFromDir`, at
   every font they load, including the system fonts `index.js` loads at
-  startup, which `fontRevision()` waits for.
+  startup, which `fontRevision()` waits for. On macOS, `loadSystemFonts()`
+  instead bumps it once per call, and its fonts register later, at the
+  first lookup, without a bump.
 
 Reads don't change it: `families`, `has`, `getVariationAxes`, measuring,
 laying out and drawing text. Nor does a call that fails (returns `null`,
 `false` or 0), or `loadSystemFonts()` after its first call, except on
-macOS, where upstream (from 1.1.0) lists the installed fonts again on every
-call. A call that succeeds but turns out to change nothing may still bump
+macOS, where upstream's `loadSystemFonts()` (from 1.1.0) bumps it on every
+call, though it registers nothing new after the first. A call that succeeds but turns out to change nothing may still bump
 it: registering the
 same buffer or path again, `loadFontsFromDir` of the same directory again
 (once per file), or repeating a `setAlias`. For a cache key that is harmless,
@@ -1137,7 +1139,8 @@ typefaces it charges for on, read atomically without the collection's lock: abou
 Apple M-series Mac, where `GlobalFonts.families`, which lists every family,
 takes 0.3ms with the 381 families there. It starts at 0 in each process and
 only grows, by one or more at each change (by one at each font
-`loadSystemFonts()` loads, so it is in the hundreds after startup).
+`loadSystemFonts()` loads, so it is in the hundreds after startup, except
+on macOS).
 
 It is a function in `@effing/skia/extensions` rather than a property of
 `GlobalFonts`, so that `GlobalFonts` and its type stay upstream's.
@@ -1397,6 +1400,8 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   throwing.
 - `loadFontsFromDir` loads installed fonts, as upstream does now, which still
   shadow the system's fonts.
+- On macOS, `fontRevision()` grows at every `loadSystemFonts()` call, as
+  upstream's `loadSystemFonts()` now counts each call as a change.
 - `convertToBlob` takes `type`, as the spec has it, rather than `mime`
   (upstream's change).
 - Registered fonts over system fonts, CSS font matching, every face of a
