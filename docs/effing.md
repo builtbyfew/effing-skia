@@ -1121,17 +1121,17 @@ would miss a mutator added later. These change it:
   the rebuild of the collection they do;
 - `loadFontsFromDir`, `loadSystemFonts()` and `loadSystemFontsFromDir`, at
   every font they load, including the system fonts `index.js` loads at
-  startup, which `fontRevision()` waits for. On macOS, `loadSystemFonts()`
-  instead bumps it once per call, and its fonts register later, at the
-  first lookup, without a bump.
+  startup, which `fontRevision()` waits for. On macOS the startup load
+  bumps it once and registers its fonts at the first lookup, without a
+  bump, and `loadSystemFonts()` bumps it once per call.
 
 Reads don't change it: `families`, `has`, `getVariationAxes`, measuring,
 laying out and drawing text. Nor does a call that fails (returns `null`,
 `false` or 0), or `loadSystemFonts()` after its first call, except on
 macOS, where upstream's `loadSystemFonts()` (from 1.1.0) bumps it on every
-call, though it registers nothing new after the first. A call that succeeds but turns out to change nothing may still bump
-it: registering the
-same buffer or path again, `loadFontsFromDir` of the same directory again
+call, though it registers nothing new after the first. A call that succeeds
+but turns out to change nothing may still bump it: registering the same
+buffer or path again, `loadFontsFromDir` of the same directory again
 (once per file), or repeating a `setAlias`. For a cache key that is harmless,
 a needless miss and never a stale hit. It is upstream's generation
 counter for the font collection, which the deferred recording keys the

@@ -628,8 +628,9 @@ function macProbe(script: string, env: Record<string, string> = {}) {
 }
 
 // effing: a registered font under an installed family name shadows the
-// installed faces (docs/effing.md), before and after a switch.
-macTest('registered fonts shadow installed fonts across a switch on macOS', (t) => {
+// installed faces (docs/effing.md) under the portable renderer, and a switch
+// to the system renderer and back leaves the same states as a fresh start.
+macTest('registered fonts shadow installed fonts, and a switch keeps the states, on macOS', (t) => {
   const helvetica = (steps: string[]) => macProbe(HELVETICA_PROBE, { PROBE_STEPS: steps.join(',') })
   const [portable] = helvetica(['register', 'state'])
   const [system] = helvetica(['switch:system', 'register', 'state'])
