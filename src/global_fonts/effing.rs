@@ -16,8 +16,9 @@ static STARTUP_DIRS: OnceLock<Vec<String>> = OnceLock::new();
 /// directory) are loaded.
 static STARTUP_FONTS: OnceLock<()> = OnceLock::new();
 
-/// Loads the system's fonts as `GlobalFonts.loadSystemFonts()` does, then the
-/// fonts in `user_dirs` as `loadSystemFontsFromDir` does, once per process
+/// Loads the system's fonts as `GlobalFonts.enableSystemFonts()` does (the
+/// system font directory as `loadSystemFonts()` loads it, then the fonts in
+/// `user_dirs` as `loadSystemFontsFromDir` does), once per process
 /// and on a thread of its own: `index.js` calls it at startup. The first call
 /// starts the load; later ones, from any JS thread, do nothing. Every
 /// `GlobalFonts` call and every text draw, measure or layout that comes
@@ -75,10 +76,7 @@ pub(super) fn wait_for_startup_fonts() {
     // thread (a JS thread), and if it poisoned the collection's lock, every
     // later use reports that.
     let _ = panic::catch_unwind(|| {
-      let _ = super::load_system_font_dir();
-      for dir in dirs {
-        let _ = super::load_fonts_from_dir(dir.as_str(), true);
-      }
+      let _ = super::enable_system_fonts(dirs.clone());
     });
   });
 }

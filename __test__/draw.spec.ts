@@ -608,7 +608,7 @@ test('createPattern-no-transform', async (t) => {
   const image = new Image()
   image.src = imageSrc
   await image.decode()
-  const pattern = ctx.createPattern(image, 'repeat')
+  const pattern = ctx.createPattern(image, 'repeat')!
   ctx.fillStyle = pattern
   ctx.fillRect(0, 0, 300, 300)
   await snapshotImage(t)
@@ -619,7 +619,7 @@ test('createPattern-no-transform-imagedata', async (t) => {
   const imageSrc = await promises.readFile(join(__dirname, 'canvas_createpattern.png'))
   const imageMeta = png.decoders['image/png'](imageSrc)
   const imageData = new ImageData(new Uint8ClampedArray(imageMeta.data), imageMeta.width, imageMeta.height)
-  const pattern = ctx.createPattern(imageData, 'repeat')
+  const pattern = ctx.createPattern(imageData, 'repeat')!
   ctx.fillStyle = pattern
   ctx.fillRect(0, 0, 300, 300)
   await snapshotImage(t)
@@ -631,12 +631,17 @@ test('createPattern-with-transform', async (t) => {
   const image = new Image()
   image.src = imageSrc
   await image.decode()
-  const pattern = ctx.createPattern(image, 'repeat')
+  const pattern = ctx.createPattern(image, 'repeat')!
   const matrix = new DOMMatrix()
   pattern.setTransform(matrix.rotate(-45).scale(1.5))
   ctx.fillStyle = pattern
   ctx.fillRect(0, 0, 300, 300)
-  await snapshotImage(t)
+  // Chrome 155's CPU canvas itself draws this scene differently on arm64 and
+  // x64: 14.38% of the bytes differ (150766 of 1048576). Ours matches Chrome
+  // byte for byte on each arch. The PNG agrees with the x64 output, so arm64
+  // gets that much room. Every other arch keeps the default: none was
+  // measured.
+  await snapshotImage(t, t.context, 'png', process.arch === 'arm64' ? 14.5 : undefined)
 })
 
 test('createRadialGradient', async (t) => {
@@ -697,8 +702,11 @@ test('drawImage-svg', async (t) => {
   await snapshotImage(t)
 })
 
+// Chrome 155: a viewBox-only SVG has the natural size 150x150 (its ratio
+// against 300x150) and drawImage(image, 0, 0) draws it at the largest size of
+// that ratio that fits the canvas, here all of the 512x512 canvas.
 test('drawImage-svg-with-only-viewBox', async (t) => {
-  const { ctx } = t.context
+  const { ctx, canvas } = t.context
   const filePath = './only-viewbox.svg'
   const file = await promises.readFile(join(__dirname, filePath))
   const image = new Image()
@@ -708,8 +716,14 @@ test('drawImage-svg-with-only-viewBox', async (t) => {
   }
   image.src = file
   await promise
+  t.deepEqual([image.naturalWidth, image.naturalHeight], [150, 150])
   ctx.drawImage(image, 0, 0)
-  await snapshotImage(t)
+  const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data
+  const color = [36, 152, 238, 255]
+  t.true(
+    data.every((value, i) => value === color[i % 4]),
+    'every pixel is the SVG background',
+  )
 })
 
 test('drawImage-svg-resize', async (t) => {
@@ -723,9 +737,8 @@ test('drawImage-svg-resize', async (t) => {
   }
   image.src = file
   await promise
-  image.width = 100
-  image.height = 100
-  ctx.drawImage(image, 0, 0)
+  // As in Chrome, the size is given to drawImage, not set on the image.
+  ctx.drawImage(image, 0, 0, 100, 100)
   await snapshotImage(t, { canvas, ctx }, 'png', 0.2)
 })
 
@@ -739,7 +752,9 @@ test.skip('drawImage-svg-with-css', async (t) => {
   await snapshotImage(t)
 })
 
-test('drawImage-svg without width height should be empty image', async (t) => {
+// Chrome 155: an SVG without width and height has the natural size 300x150
+// and drawImage(image, 0, 0) draws it at the canvas size.
+test('drawImage-svg without width height draws at the canvas size', async (t) => {
   const { ctx, canvas } = t.context
   const filePath = './mountain.svg'
   const svgContent = (await promises.readFile(join(__dirname, filePath))).toString('utf-8')
@@ -753,10 +768,29 @@ test('drawImage-svg without width height should be empty image', async (t) => {
   }
   image.src = Buffer.from(svgContent.replace('width="128"', '').replace('height="128"', ''))
   await promise
+  t.deepEqual([image.naturalWidth, image.naturalHeight], [300, 150])
   ctx.drawImage(image, 0, 0)
-  const output = await canvas.encode('png')
-  const outputData = png.decoders['image/png'](output)
-  t.deepEqual(outputData.data, Buffer.alloc(outputData.width * outputData.height * 4, 0))
+  const { width, height } = canvas
+  const data = ctx.getImageData(0, 0, width, height).data
+  let count = 0
+  const box = [width, height, -1, -1]
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (data[(y * width + x) * 4 + 3]) {
+        count++
+        box[0] = Math.min(box[0], x)
+        box[1] = Math.min(box[1], y)
+        box[2] = Math.max(box[2], x)
+        box[3] = Math.max(box[3], y)
+      }
+    }
+  }
+  const pixel = (x: number, y: number) => Array.from(data.slice((y * width + x) * 4, (y * width + x) * 4 + 4))
+  t.deepEqual([width, height], [512, 512])
+  t.is(count, 190)
+  t.deepEqual(box, [0, 10, 29, 19])
+  t.deepEqual(pixel(15, 18), [0, 0, 0, 255])
+  t.deepEqual(pixel(511, 511), [0, 0, 0, 0])
 })
 
 test('draw-image-svg-noto-emoji', async (t) => {
@@ -867,7 +901,7 @@ test('drawImage-throws-TypeError-for-invalid-image-type', (t) => {
     },
     {
       instanceOf: TypeError,
-      message: /Value is not one of these types/,
+      message: /The provided value is not of type '\(CanvasElement or Image or SVGCanvas\)'/,
     },
   )
 
@@ -879,7 +913,7 @@ test('drawImage-throws-TypeError-for-invalid-image-type', (t) => {
     },
     {
       instanceOf: TypeError,
-      message: /Value is not one of these types/,
+      message: /The provided value is not of type '\(CanvasElement or Image or SVGCanvas\)'/,
     },
   )
 
@@ -891,7 +925,7 @@ test('drawImage-throws-TypeError-for-invalid-image-type', (t) => {
     },
     {
       instanceOf: TypeError,
-      message: /Value is not one of these types/,
+      message: /The provided value is not of type '\(CanvasElement or Image or SVGCanvas\)'/,
     },
   )
 
@@ -903,7 +937,7 @@ test('drawImage-throws-TypeError-for-invalid-image-type', (t) => {
     },
     {
       instanceOf: TypeError,
-      message: /Value is not one of these types/,
+      message: /The provided value is not of type '\(CanvasElement or Image or SVGCanvas\)'/,
     },
   )
 
@@ -915,7 +949,7 @@ test('drawImage-throws-TypeError-for-invalid-image-type', (t) => {
     },
     {
       instanceOf: TypeError,
-      message: /Value is not one of these types/,
+      message: /The provided value is not of type '\(CanvasElement or Image or SVGCanvas\)'/,
     },
   )
 })
@@ -1276,6 +1310,19 @@ test('getContextAttributes', (t) => {
   t.is(customAttrs.desynchronized, false)
 })
 
+// Chrome 155: colorSpace is the one the context was created with, also after
+// a resize.
+test('getContextAttributes reports colorSpace', (t) => {
+  t.is(createCanvas(2, 2).getContext('2d').getContextAttributes().colorSpace, 'srgb')
+  for (const colorSpace of ['srgb', 'display-p3'] as const) {
+    const canvas = createCanvas(2, 2)
+    const ctx = canvas.getContext('2d', { colorSpace })
+    t.is(ctx.getContextAttributes().colorSpace, colorSpace)
+    canvas.width = 3
+    t.is(ctx.getContextAttributes().colorSpace, colorSpace)
+  }
+})
+
 test('getImageData', async (t) => {
   const { ctx } = t.context
   ctx.rect(10, 10, 100, 100)
@@ -1356,28 +1403,46 @@ test('measureText', (t) => {
   const { ctx } = t.context
   ctx.font = '50px Iosevka Slab'
   const metrics = ctx.measureText('@napi-rs/canvas')
-  t.is(metrics.actualBoundingBoxLeft, -3)
-  t.is(metrics.actualBoundingBoxAscent, 42)
-  t.is(metrics.actualBoundingBoxDescent, 10)
-  t.true(Math.abs(metrics.actualBoundingBoxRight - 372) < 0.001)
+  // Chrome 155 Linux: whole-pixel glyph boxes, on every OS by default.
+  // system-font-renderer.spec.ts holds the macOS values.
+  const [left, ascent, descent, right] = [-3, 42, 10, 372]
+  t.true(Math.abs(metrics.actualBoundingBoxLeft - left) < 0.001)
+  t.true(Math.abs(metrics.actualBoundingBoxAscent - ascent) < 0.001)
+  t.true(Math.abs(metrics.actualBoundingBoxDescent - descent) < 0.001)
+  t.true(Math.abs(metrics.actualBoundingBoxRight - right) < 0.001)
   t.notThrows(() => {
     ctx.measureText('\u200b')
   })
 })
 
-test('measureText with empty string should not throw', (t) => {
+test('measureText with empty string keeps the font metrics', (t) => {
   const { ctx } = t.context
   ctx.font = '50px Iosevka Slab'
-  t.deepEqual(ctx.measureText(''), {
-    actualBoundingBoxAscent: 0,
+  // TextMetrics is a class with prototype getters: compare its fields.
+  // Chrome 155 Linux; emHeight* with ExtendedTextMetrics on macOS.
+  const metrics = ctx.measureText('')
+  const fields = [
+    'actualBoundingBoxAscent',
+    'actualBoundingBoxDescent',
+    'actualBoundingBoxLeft',
+    'actualBoundingBoxRight',
+    'fontBoundingBoxAscent',
+    'fontBoundingBoxDescent',
+    'alphabeticBaseline',
+    'emHeightAscent',
+    'emHeightDescent',
+    'width',
+  ] as const
+  t.deepEqual(Object.fromEntries(fields.map((field) => [field, metrics[field]])), {
+    actualBoundingBoxAscent: -0,
     actualBoundingBoxDescent: 0,
     actualBoundingBoxLeft: 0,
     actualBoundingBoxRight: 0,
-    fontBoundingBoxAscent: 0,
-    fontBoundingBoxDescent: 0,
-    alphabeticBaseline: 0,
-    emHeightAscent: 0,
-    emHeightDescent: 0,
+    fontBoundingBoxAscent: 49,
+    fontBoundingBoxDescent: 14,
+    alphabeticBaseline: -0,
+    emHeightAscent: 39.078125,
+    emHeightDescent: 10.921875,
     width: 0,
   })
 })
@@ -1525,7 +1590,7 @@ test('reset', async (t) => {
   t.is(ctx.strokeStyle, '#000000')
   t.is(ctx.lineWidth, 1)
   t.is(ctx.globalAlpha, 1)
-  t.is(ctx.shadowColor, '#000000')
+  t.is(ctx.shadowColor, 'rgba(0, 0, 0, 0)')
   t.is(ctx.shadowBlur, 0)
   t.is(ctx.shadowOffsetX, 0)
   t.is(ctx.shadowOffsetY, 0)
@@ -1566,7 +1631,7 @@ test('reset', async (t) => {
   // Verify state stack is cleared (restore should not change anything)
   ctx.fillStyle = 'yellow'
   ctx.restore()
-  t.is(ctx.fillStyle, 'yellow') // Should still be yellow, not restored
+  t.is(ctx.fillStyle, '#ffff00') // Should still be yellow, not restored
 
   // Draw a rect with default styles to verify canvas was cleared
   ctx.fillStyle = 'blue'

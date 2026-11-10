@@ -21,7 +21,7 @@ use std::str::FromStr;
 use napi::bindgen_prelude::*;
 
 use super::super::{Backend, CanvasRenderingContext2D, Context};
-use crate::filter::{CssTrim, css_filter, css_filters_to_image_filter};
+use crate::filter::{FontUnits, css_filters_to_image_filter, filter_lengths, parse_filter};
 use crate::sk::effing::group::GroupLayer;
 use crate::sk::{BlendMode, ImageFilter, Paint};
 
@@ -41,19 +41,6 @@ pub struct GroupOptions {
   pub bounds: Option<Vec<f64>>,
 }
 
-/// A CSS filter list as an image filter; `None` for `none`, empty or invalid.
-fn parse_filter(value: Option<&str>) -> Option<ImageFilter> {
-  let value = value?.css_trim();
-  if value.is_empty() || value.eq_ignore_ascii_case("none") {
-    return None;
-  }
-  let (rest, filters) = css_filter(value).ok()?;
-  if filters.is_empty() || !rest.css_trim().is_empty() {
-    return None;
-  }
-  css_filters_to_image_filter(filters)
-}
-
 /// A group's options, parsed. `paint` carries what the group's layer
 /// composites with; it is `None` when there is nothing to composite (opacity
 /// 1, source-over, no filters), where a plain save does.
@@ -67,7 +54,7 @@ fn invalid(message: String) -> Error {
   Error::new(Status::GenericFailure, format!("beginGroup(): {message}"))
 }
 
-fn parse_group(options: &GroupOptions) -> Result<Group> {
+fn parse_group(ctx: &mut Context, options: &GroupOptions) -> Result<Group> {
   let opacity = options.opacity.unwrap_or(1.0);
   if !opacity.is_finite() {
     return Err(invalid(format!("opacity must be a number, got {opacity}")));
@@ -78,8 +65,8 @@ fn parse_group(options: &GroupOptions) -> Result<Group> {
     Some(mode) => BlendMode::from_str(mode)?,
     None => BlendMode::SourceOver,
   };
-  let filter = parse_filter(options.filter.as_deref());
-  let backdrop = parse_filter(options.backdrop_filter.as_deref());
+  let filter = ctx.group_filter(options.filter.as_deref());
+  let backdrop = ctx.group_filter(options.backdrop_filter.as_deref());
   let bounds = match options.bounds.as_deref() {
     None => None,
     Some(&[x, y, w, h]) if [x, y, w, h].iter().all(|v| v.is_finite()) => {
@@ -110,7 +97,25 @@ fn parse_group(options: &GroupOptions) -> Result<Group> {
 }
 
 impl Context {
-  fn begin_group(&mut self, group: Group) -> Result<()> {
+  /// A CSS filter list as an image filter, parsed and resolved as
+  /// `ctx.filter` would be now (`Context::set_filter`): font-relative
+  /// lengths against the canvas font. `None` for `none`, empty or invalid.
+  fn group_filter(&mut self, value: Option<&str>) -> Option<ImageFilter> {
+    let value = value?;
+    let mut lengths = filter_lengths(FontUnits::default());
+    let mut parsed = parse_filter(value, &lengths)?;
+    let reads = parsed.font_reads();
+    if reads.any() {
+      lengths = filter_lengths(self.filter_font_units(reads));
+      if let Some(reparsed) = parse_filter(value, &lengths) {
+        parsed = reparsed;
+      }
+    }
+    css_filters_to_image_filter(parsed.resolve(&lengths))
+  }
+
+  fn begin_group(&mut self, options: &GroupOptions) -> Result<()> {
+    let group = parse_group(self, options)?;
     if group.paint.is_some() && self.backend == Backend::Svg {
       // SkSVGDevice has no layers: whatever is drawn into one is lost.
       return Err(invalid(
@@ -138,13 +143,14 @@ impl Context {
     }
     self.group_saves.push(self.states.len() - 1);
     if let Some(ref recorder) = self.page_recorder {
+      let mut recorder = recorder.borrow_mut();
       let layer = GroupLayer {
         paint,
         bounds,
         transform: self.state.transform.clone(),
-        clip: self.state.clip_path.clone(),
+        clip: recorder.clip_bounds(),
       };
-      recorder.borrow_mut().begin_group(layer, fits_content);
+      recorder.begin_group(layer, fits_content);
     }
     // save()'s closing flush, now that a flush would reopen the layer.
     self.flush_if_recording_limit_exceeded();
@@ -181,7 +187,7 @@ pub fn begin_group(
     backdrop_filter: None,
     bounds: None,
   });
-  ctx.context.begin_group(parse_group(&options)?)
+  ctx.context.begin_group(&options)
 }
 
 /// Ends the innermost group started by `beginGroup` on `ctx`, compositing it.
@@ -204,7 +210,7 @@ mod tests {
 
   fn alpha_at(ctx: &mut Context, x: f32, y: f32) -> u8 {
     ctx
-      .get_image_data(x, y, 1.0, 1.0, ColorSpace::default())
+      .get_image_data(x as i32, y as i32, 1, 1, ColorSpace::default())
       .expect("pixels")[3]
   }
 
@@ -225,9 +231,7 @@ mod tests {
     let mut ctx = Context::new(4, 4, ColorSpace::default()).expect("raster context");
     let pending = ctx.page_recorder.as_ref().unwrap().borrow().pending_bytes();
     set_recording_limit(&ctx, pending + 1);
-    ctx
-      .begin_group(parse_group(&translucent()).unwrap())
-      .unwrap();
+    ctx.begin_group(&translucent()).unwrap();
     ctx.fill_rect(0.0, 0.0, 4.0, 4.0).unwrap();
     ctx.restore();
     let alpha = alpha_at(&mut ctx, 1.0, 1.0);
@@ -285,7 +289,7 @@ mod tests {
       if rotated {
         ctx.rotate(0.3);
       }
-      ctx.begin_group(parse_group(&options).unwrap()).unwrap();
+      ctx.begin_group(&options).unwrap();
       let recorder = ctx.page_recorder.as_ref().unwrap().borrow();
       assert_eq!(
         recorder.groups_fitting_content(),
@@ -304,9 +308,7 @@ mod tests {
   #[test]
   fn the_recording_limit_waits_for_an_open_group() {
     let mut ctx = Context::new(4, 4, ColorSpace::default()).expect("raster context");
-    ctx
-      .begin_group(parse_group(&translucent()).unwrap())
-      .unwrap();
+    ctx.begin_group(&translucent()).unwrap();
     set_recording_limit(&ctx, 1);
     ctx.fill_rect(0.0, 0.0, 4.0, 4.0).unwrap();
     ctx.state.fill_style = crate::pattern::Pattern::from_color("#00f").unwrap();
@@ -316,7 +318,7 @@ mod tests {
     ctx.flush_if_recording_limit_exceeded();
     assert_eq!(consolidations(&ctx), 1, "the flush comes once it ends");
     let data = ctx
-      .get_image_data(1.0, 1.0, 1.0, 1.0, ColorSpace::default())
+      .get_image_data(1, 1, 1, 1, ColorSpace::default())
       .expect("pixels");
     assert_eq!(data[0], 0, "no black from the first rect: {data:?}");
     assert!((127..=129).contains(&data[3]), "alpha: {data:?}");

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 import ava, { TestFn } from 'ava'
 
-import { PDFDocument, GlobalFonts } from '../index'
+import { PDFDocument, GlobalFonts, createCanvas, loadImage, type SKRSContext2D } from '../index'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -253,6 +253,63 @@ test('should handle empty PDF document', (t) => {
   t.true(pdfBuffer.length == 0)
 })
 
+// The spec has no 8-bit step for globalAlpha. The raster backend rounds it to
+// k/255 for drawImage and image patterns, as Chrome's CPU canvas does
+// (index.spec.ts "globalAlpha is rounded to 8 bits ..."). A PDF has no raster
+// sampling to match, so those paints keep the float, like solid and gradient
+// fills (/ca .5, not .502).
+test('drawImage and image patterns keep the exact globalAlpha on PDF', async (t) => {
+  const source = createCanvas(4, 4)
+  const sourceContext = source.getContext('2d')
+  sourceContext.fillStyle = '#ff0000'
+  sourceContext.fillRect(0, 0, 4, 4)
+  const image = await loadImage(source.toBuffer('image/png'))
+  const draws: [string, (ctx: SKRSContext2D) => void][] = [
+    ['color', (ctx) => ctx.fillRect(0, 0, 10, 10)],
+    [
+      'gradient',
+      (ctx) => {
+        const gradient = ctx.createLinearGradient(0, 0, 10, 0)
+        gradient.addColorStop(0, '#ff0000')
+        gradient.addColorStop(1, '#0000ff')
+        ctx.fillStyle = gradient
+        ctx.fillRect(0, 0, 10, 10)
+      },
+    ],
+    [
+      'fill pattern',
+      (ctx) => {
+        ctx.fillStyle = ctx.createPattern(source, 'repeat')
+        ctx.fillRect(0, 0, 10, 10)
+      },
+    ],
+    [
+      'stroke pattern',
+      (ctx) => {
+        ctx.strokeStyle = ctx.createPattern(source, 'repeat')
+        ctx.lineWidth = 4
+        ctx.strokeRect(2, 2, 10, 10)
+      },
+    ],
+    ['drawImage canvas', (ctx) => ctx.drawImage(source, 0, 0)],
+    ['drawImage image', (ctx) => ctx.drawImage(image, 0, 0)],
+  ]
+  for (const alpha of [0.5, 0.3, 0.501]) {
+    for (const [name, draw] of draws) {
+      const doc = new PDFDocument({ compressionLevel: 0 })
+      const ctx = doc.beginPage(20, 20)
+      ctx.globalAlpha = alpha
+      draw(ctx)
+      doc.endPage()
+      const pdf = doc.close().toString('latin1')
+      // An image pattern also writes the /ca 1 of its tile.
+      const opacities = new Set([...pdf.matchAll(/\/(?:ca|CA) ([0-9.]+)/g)].map((match) => Number(match[1])))
+      opacities.delete(1)
+      t.deepEqual([...opacities], [alpha], `${name} ${alpha}`)
+    }
+  }
+})
+
 function countPdfImages(pdf: Buffer): number {
   return (pdf.toString('latin1').match(/\/Subtype \/Image/g) ?? []).length
 }
@@ -379,4 +436,28 @@ test('a spatial ctx.filter with a shadow keeps its device-space layer', (t) => {
 
   const pdf = doc.close()
   t.true(countPdfImages(pdf) > 0, 'a blur has to go through the filter layer')
+})
+
+// A sprite sheet: one canvas source drawn through many source rects. On the
+// raster backend drawImage uses drawImageRect, but SkPDFDevice turns each
+// distinct source rect into its own subset image. The page keeps one image
+// XObject for the whole sheet, drawn under a clip per sprite.
+test('canvas sprites share one image XObject', (t) => {
+  const sheet = createCanvas(256, 256)
+  const sheetContext = sheet.getContext('2d')
+  for (let y = 0; y < 256; y += 8) {
+    for (let x = 0; x < 256; x += 8) {
+      sheetContext.fillStyle = `rgb(${x},${y},${(x * y) & 255})`
+      sheetContext.fillRect(x, y, 8, 8)
+    }
+  }
+  const { doc } = t.context
+  const ctx = doc.beginPage(400, 400)
+  for (let k = 0; k < 64; k++) {
+    const col = k % 8
+    const row = Math.floor(k / 8)
+    ctx.drawImage(sheet, col * 32, row * 32, 32, 32, col * 48, row * 48, 40, 40)
+  }
+  doc.endPage()
+  t.is(countPdfImages(doc.close()), 1)
 })

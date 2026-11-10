@@ -162,7 +162,7 @@ test('every method that takes a mime type encodes image/qoi to the same bytes', 
   t.true(canvas.toBuffer('image/qoi').equals(qoi))
   t.is(canvas.toDataURL('image/qoi'), dataUrl)
   t.is(await canvas.toDataURLAsync('image/qoi'), dataUrl)
-  const blob = await canvas.convertToBlob({ mime: 'image/qoi' })
+  const blob = await canvas.convertToBlob({ type: 'image/qoi' })
   t.true(Buffer.from(await blob.arrayBuffer()).equals(qoi))
   const callbackBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/qoi'))
   t.true(Buffer.from(await callbackBlob!.arrayBuffer()).equals(qoi))
@@ -170,8 +170,8 @@ test('every method that takes a mime type encodes image/qoi to the same bytes', 
 
 test('a canvas without alpha encodes opaque, in four channels', (t) => {
   const canvas = createCanvas(64, 64)
-  canvas.getContext('2d', { alpha: false }) // filled white
+  canvas.getContext('2d', { alpha: false }) // filled opaque black
   const qoi = canvas.encodeSync('qoi')
   t.is(qoi[12], 4)
-  t.true(decode(qoi).pixels.every((value) => value === 255))
+  t.true(decode(qoi).pixels.every((value, i) => value === (i % 4 === 3 ? 255 : 0)))
 })

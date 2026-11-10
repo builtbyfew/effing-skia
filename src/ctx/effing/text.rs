@@ -69,7 +69,7 @@ mod tests {
       fonts.register_from_path("__test__/fonts/COLR-v1.ttf", Some("Colrv1".to_owned()));
     }
     let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
-    ctx.set_font(font.to_owned()).unwrap();
+    ctx.set_font(font).unwrap();
     ctx.state.text_rendering = text_rendering;
     ctx
   }

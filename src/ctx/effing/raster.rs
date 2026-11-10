@@ -15,31 +15,34 @@
 
 use napi::bindgen_prelude::*;
 
-use crate::avif::Config;
-use crate::ctx::{CanvasRenderingContext2D, Context, ContextData};
-use crate::gif::GifConfig;
+use crate::ctx::{CanvasRenderingContext2D, Context};
+use crate::encoding::{ContextData, Encoding};
+use crate::image_metadata::MetadataPatch;
 use crate::sk::{SkImage, SkPicture, Surface};
 
 /// What `encode()` encodes to: `ContextData` without the image, which an
 /// async encode may only have once the pool has rasterised it.
-pub(crate) enum EncodeFormat {
-  Png,
-  Jpeg(u8),
-  Webp(u8),
-  Avif(Config, u32, u32),
-  Gif(GifConfig, u32, u32),
-  Qoi,
+pub(crate) struct EncodeJob {
+  pub(crate) encoding: Encoding,
+  pub(crate) width: u32,
+  pub(crate) height: u32,
+  pub(crate) metadata: MetadataPatch,
 }
 
-impl EncodeFormat {
+impl EncodeJob {
   pub(crate) fn with_image(self, image: SkImage) -> ContextData {
-    match self {
-      EncodeFormat::Png => ContextData::Png(image),
-      EncodeFormat::Jpeg(quality) => ContextData::Jpeg(image, quality),
-      EncodeFormat::Webp(quality) => ContextData::Webp(image, quality),
-      EncodeFormat::Avif(config, width, height) => ContextData::Avif(image, config, width, height),
-      EncodeFormat::Gif(config, width, height) => ContextData::Gif(image, config, width, height),
-      EncodeFormat::Qoi => ContextData::Qoi(image),
+    let EncodeJob {
+      encoding,
+      width,
+      height,
+      metadata,
+    } = self;
+    ContextData {
+      image,
+      encoding,
+      width,
+      height,
+      metadata,
     }
   }
 }
@@ -268,7 +271,7 @@ mod tests {
 
   fn alpha_at(ctx: &mut Context, x: f32, y: f32) -> u8 {
     ctx
-      .get_image_data(x, y, 1.0, 1.0, ColorSpace::default())
+      .get_image_data(x as i32, y as i32, 1, 1, ColorSpace::default())
       .expect("pixels")[3]
   }
 

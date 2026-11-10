@@ -164,6 +164,26 @@ fn finite_f32(value: f64) -> Option<f32> {
   narrowed.is_finite().then_some(narrowed)
 }
 
+/// A `textAlign`: the canvas's `CanvasTextAlign` values, which `TextAlign`
+/// parses, and `justify`, which a paragraph takes too.
+fn parse_text_align(align: &str) -> std::result::Result<TextAlign, SkError> {
+  match align {
+    "justify" => Ok(TextAlign::Justify),
+    _ => TextAlign::from_str(align),
+  }
+}
+
+fn parse_font_style(style: &str) -> Result<FontStyle> {
+  match style {
+    "normal" => Ok(FontStyle::Normal),
+    "italic" => Ok(FontStyle::Italic),
+    "oblique" => Ok(FontStyle::Oblique),
+    _ => Err(invalid(format!(
+      "fontStyle must be normal, italic or oblique, not {style:?}"
+    ))),
+  }
+}
+
 fn invalid(message: String) -> Error {
   Error::new(Status::InvalidArg, message)
 }
@@ -378,7 +398,7 @@ impl Paragraph {
       style: style
         .font_style
         .as_deref()
-        .map_or(Ok(FontStyle::Normal), FontStyle::from_str)?,
+        .map_or(Ok(FontStyle::Normal), parse_font_style)?,
       letter_spacing,
       line_height: match style.line_height {
         Some(Either::A(height)) => match finite_f32(height) {
@@ -394,7 +414,7 @@ impl Paragraph {
       align: style
         .text_align
         .as_deref()
-        .map_or(Ok(TextAlign::Left), TextAlign::from_str)?,
+        .map_or(Ok(TextAlign::Left), parse_text_align)?,
       direction: style
         .direction
         .as_deref()
@@ -495,6 +515,10 @@ impl Context {
       paint,
       DrawContent::Glyphs,
       shadow_paint.as_ref(),
+      // No bounds: an alpha:false canvas resets the whole clip for a
+      // paragraph drawn with an operation that needs it.
+      None,
+      false,
       |shadow_canvas, shadow_paint, device_ctm| {
         shadow_canvas.save();
         Self::apply_shadow_offset_matrix_to_canvas(
@@ -529,7 +553,7 @@ impl Context {
     match source {
       ShadowSource::Fill => self.account_paint_resources(&self.state.fill_style),
       ShadowSource::Stroke => self.account_paint_resources(&self.state.stroke_style),
-      ShadowSource::Image => unreachable!("draw_paragraph is only reached via fill/stroke"),
+      ShadowSource::Image { .. } => unreachable!("draw_paragraph is only reached via fill/stroke"),
     }
     for pass in passes {
       self.account_painted(pass);

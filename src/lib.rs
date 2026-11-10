@@ -7,11 +7,14 @@
 extern crate napi_derive;
 #[macro_use]
 extern crate serde_derive;
+// The Rust half of Skia's Fontations scaler, which skia-c's
+// libskiac_fontations calls into (build.rs). Named so that it gets linked.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+extern crate skia_fontations;
 
 use std::{
   ffi::{CString, c_void},
   mem, slice,
-  str::FromStr,
 };
 
 use napi::{
@@ -22,20 +25,28 @@ use napi::{
 };
 
 use ctx::{
-  CanvasRenderingContext2D, Context, ContextData, ContextOutputData, EncodeFormat, EncodedCanvas,
-  FILL_STYLE_HIDDEN_NAME, STROKE_STYLE_HIDDEN_NAME, SvgExportFlag, encode_surface,
+  CANVAS_HIDDEN_NAME, CanvasRenderingContext2D, Context, EncodeJob, EncodedCanvas, SvgExportFlag,
+  is_valid_image_size, truncate_style_objects,
 };
-use font::{FONT_REGEXP, init_font_regexp};
-use sk::{AlphaType, ColorSpace, SkImage, SkiaDataRef};
-
-use avif::AvifConfig;
+use encoding::{
+  BlobQuality, ContextData, ContextOutputData, EncodeQuality, EncodeType, Encoding,
+  ImageEncodeOptions, ImageType, NodeEncodeOptions, NodeQuality, ToBlobSite, ToDataUrlAsyncSite,
+  ToDataUrlSite, encode_image, encode_surface, node_encode_error, with_metadata,
+};
+use sk::{ColorSpace, SkImage, SkiaDataRef};
 
 #[global_allocator]
 static ALLOC: mimalloc_safe::MiMalloc = mimalloc_safe::MiMalloc;
 
 mod avif;
+mod avif_yuv;
+mod color;
+mod css_math;
 mod ctx;
-mod encode_pool;
+mod data_url;
+mod decode_cache;
+mod encode_pool; // effing
+mod encoding;
 mod error;
 mod filter;
 mod font;
@@ -43,120 +54,189 @@ mod gif;
 pub mod global_fonts;
 mod gradient;
 mod image;
+mod image_metadata;
 pub mod lottie;
+mod num;
 mod page_recorder;
 pub mod path;
 mod pattern;
 pub mod picture_recorder;
-mod qoi;
+mod qoi; // effing
 #[allow(dead_code)]
 mod sk;
 mod state;
 pub mod svg;
+mod svg_doc;
+mod svg_image;
+mod svg_path;
+mod svg_size;
 mod unpremul;
-
-const MIME_WEBP: &str = "image/webp";
-const MIME_PNG: &str = "image/png";
-const MIME_JPEG: &str = "image/jpeg";
-const MIME_AVIF: &str = "image/avif";
-const MIME_GIF: &str = "image/gif";
-const MIME_QOI: &str = "image/qoi"; // effing
-
-// Consistent with the default value of JPEG quality in Blink
-// https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/platform/image-encoders/image_encoder.cc;l=85;drc=81c6f843fdfd8ef660d733289a7a32abe68e247a
-const DEFAULT_JPEG_QUALITY: u8 = 92;
-
-// Consistent with the default value of WebP quality in Blink
-// https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/platform/image-encoders/image_encoder.cc;l=100;drc=81c6f843fdfd8ef660d733289a7a32abe68e247a
-const DEFAULT_WEBP_QUALITY: u8 = 80;
-
-#[napi_derive::module_init]
-fn init() {
-  // pre init font regexp
-  FONT_REGEXP.get_or_init(init_font_regexp);
-}
-
-#[napi(object, object_to_js = false)]
-pub struct ConvertToBlobOptions {
-  pub mime: Option<String>,
-  pub quality: Option<f64>,
-}
-
-impl Default for ConvertToBlobOptions {
-  fn default() -> Self {
-    Self {
-      mime: Some(MIME_PNG.to_owned()),
-      quality: None,
-    }
-  }
-}
-
-#[napi(object)]
-pub struct CanvasRenderingContext2DAttributes {
-  pub alpha: Option<bool>,
-  pub color_space: Option<String>,
-}
+mod webidl;
 
 #[napi]
 pub struct CanvasElement<'scope> {
   pub(crate) width: u32,
   pub(crate) height: u32,
   pub(crate) ctx: ClassInstance<'scope, CanvasRenderingContext2D>,
+  context_initialized: bool,
+}
+
+/// The width a canvas takes for a `width` attribute value (already ToUint32):
+/// HTML's reflection of a non-negative `unsigned long` gives the default 300
+/// for a value above 2147483647. 0 stays 0: a canvas without pixels.
+fn canvas_width(width: u32) -> u32 {
+  if width > i32::MAX as u32 { 300 } else { width }
+}
+
+/// As `canvas_width`, for `height`: the default is 150.
+fn canvas_height(height: u32) -> u32 {
+  if height > i32::MAX as u32 {
+    150
+  } else {
+    height
+  }
+}
+
+/// A width or height given to a canvas constructor (no Chrome counterpart):
+/// missing (undefined) is the default, as for a `<canvas>` without the
+/// attribute; any other value is converted as the setter converts it, with
+/// the setter's error prefix, except that NaN, an infinity, or a non-zero
+/// number that ToUint32 makes 0 (0.5, 2**32) is the default too. A value
+/// whose ToNumber is 0 stays 0.
+fn constructor_size<S: webidl::Site>(
+  env: &Env,
+  value: Unknown,
+  size: fn(u32) -> u32,
+) -> Result<u32> {
+  // `size` gives the default for any value above 2147483647.
+  if value.get_type()? == ValueType::Undefined {
+    return Ok(size(u32::MAX));
+  }
+  let number = webidl::to_number(env.raw(), value.raw(), S::PREFIX)?;
+  let converted = webidl::to_uint32(number);
+  // Not the setters' rule (Chrome's 0): pdf.js calls createCanvas(NaN, h) or
+  // (0.5, h) for malformed PDFs and draws the canvas; main gave 350 x 150.
+  if !number.is_finite() || (number != 0.0 && converted == 0) {
+    return Ok(size(u32::MAX));
+  }
+  Ok(size(converted))
+}
+
+/// What the Node-only encoders throw, or reject with, as an IndexSizeError, on
+/// a canvas without pixels (no Chrome counterpart).
+const NO_PIXELS: &str = "The canvas has no pixels.";
+
+/// convertToBlob() on a canvas without pixels: Chrome's OffscreenCanvas
+/// IndexSizeError (offscreen_canvas.cc:551-555, with the binding's prefix).
+const CONVERT_TO_BLOB_NO_PIXELS: &str = "Failed to execute 'convertToBlob' on 'OffscreenCanvas': The size of the OffscreenCanvas is zero.";
+
+fn no_pixels_error(env: &Env) -> Error {
+  webidl::dom_exception(env.raw(), "IndexSizeError", NO_PIXELS)
+}
+
+/// A promise rejected with an IndexSizeError: what the async encoders give
+/// on a canvas without pixels. `dom_exception` throws the error; it is taken
+/// back from the pending exception.
+fn rejected_with_index_size_error<'env>(env: &'env Env, message: &str) -> Result<Unknown<'env>> {
+  let _ = webidl::dom_exception(env.raw(), "IndexSizeError", message);
+  let raw = env.raw();
+  let mut exception = std::ptr::null_mut();
+  check_status!(unsafe { sys::napi_get_and_clear_last_exception(raw, &mut exception) })?;
+  let mut deferred = std::ptr::null_mut();
+  let mut promise = std::ptr::null_mut();
+  check_status!(unsafe { sys::napi_create_promise(raw, &mut deferred, &mut promise) })?;
+  check_status!(unsafe { sys::napi_reject_deferred(raw, deferred, exception) })?;
+  Ok(unsafe { Unknown::from_raw_unchecked(raw, promise) })
+}
+
+/// Puts `new` in place of a canvas's Context, and reports the change in
+/// pixel bytes to V8: every add and subtract uses `surface_bytes`, so they
+/// match also for a canvas without pixels.
+fn replace_context(env: &Env, context: &mut Context, new: Context) -> Result<()> {
+  let delta = new.surface_bytes() - context.surface_bytes();
+  *context = new;
+  env.adjust_external_memory(delta)?;
+  Ok(())
+}
+
+// Setting width or height resets the context to its default state (spec "set
+// bitmap dimensions"; Chrome: HTMLCanvasElement::Reset), so the saved style
+// objects go. The context object is read from the canvas's `ctx` property:
+// the napi_value inside `self.ctx` belongs to the constructor's handle scope
+// and must not be used in a later call.
+fn reset_ctx_style_getters(canvas: &This) -> Result<()> {
+  truncate_style_objects(&canvas.get_named_property::<Object>("ctx")?, 0)
 }
 
 #[napi]
 impl<'c> CanvasElement<'c> {
+  // Setting width or height resets the bitmap but keeps the context's
+  // settings (alpha, color space, color type).
+  fn resized_context(old: &Context, width: u32, height: u32) -> Result<Context> {
+    let mut context =
+      Context::new_with_alpha(width, height, old.color_space, old.alpha, old.pixel_format)?;
+    // A lost context stays lost while the size is not valid (Chrome:
+    // InitializeResourceProvider fails again). A valid size restores it here
+    // at once; Chrome restores it two tasks later, with contextrestored.
+    context.context_lost =
+      old.context_lost && !is_valid_image_size(width, height, old.pixel_format);
+    Ok(context)
+  }
+
   fn create_context(
     env: &Env,
     width: u32,
     height: u32,
   ) -> Result<ClassInstance<'_, CanvasRenderingContext2D>> {
+    let context = Context::new(width, height, ColorSpace::default())?;
+    let bytes = context.surface_bytes();
     let ctx = CanvasRenderingContext2D {
-      context: Context::new(width, height, ColorSpace::default())?,
+      context,
+      reported_settings: Default::default(),
     }
     .into_instance(env)?;
-    ctx.as_object(env).define_properties(&[
-      Property::new()
-        .with_utf8_name(FILL_STYLE_HIDDEN_NAME)?
-        .with_napi_value(env, "#000000")?
-        .with_property_attributes(PropertyAttributes::Writable | PropertyAttributes::Configurable),
-      Property::new()
-        .with_utf8_name(STROKE_STYLE_HIDDEN_NAME)?
-        .with_napi_value(env, "#000000")?
-        .with_property_attributes(PropertyAttributes::Writable | PropertyAttributes::Configurable),
-    ])?;
-    env.adjust_external_memory((width * height * 4) as i64)?;
+    env.adjust_external_memory(bytes)?;
     Ok(ctx)
   }
 
   #[napi(constructor)]
-  pub fn new<'env>(env: &'env Env, mut this: This<'c>, width: i32, height: i32) -> Result<Self> {
-    // Default fallback of canvas on browser and skia-canvas is 350x150
-    let width = (if width <= 0 { 350 } else { width }) as u32;
-    let height = (if height <= 0 { 150 } else { height }) as u32;
+  pub fn new<'env>(
+    env: &'env Env,
+    mut this: This<'c>,
+    width: Unknown,
+    height: Unknown,
+  ) -> Result<Self> {
+    let width = constructor_size::<webidl::CanvasSetWidth>(env, width, canvas_width)?;
+    let height = constructor_size::<webidl::CanvasSetHeight>(env, height, canvas_height)?;
     let ctx = Self::create_context(env, width, height)?;
     let ctx = ctx.assign_to_this_with_attributes("ctx", PropertyAttributes::Default, &mut this)?;
     let mut ctx_obj = ctx.as_object(env);
+    // For the read-only `canvas` getter: not writable, enumerable or
+    // configurable.
     ctx_obj.define_properties(&[Property::new()
-      .with_utf8_name("canvas")?
+      .with_utf8_name(CANVAS_HIDDEN_NAME)?
       .with_value(&this)
-      .with_property_attributes(
-        PropertyAttributes::Default | PropertyAttributes::Writable | PropertyAttributes::Enumerable,
-      )])?;
-    Ok(Self { width, height, ctx })
+      .with_property_attributes(PropertyAttributes::Default)])?;
+    Ok(Self {
+      width,
+      height,
+      ctx,
+      context_initialized: false,
+    })
   }
 
   #[napi(setter)]
-  pub fn set_width(&mut self, env: Env, width: i32) -> Result<()> {
-    let width = (if width <= 0 { 350 } else { width }) as u32;
+  pub fn set_width(
+    &mut self,
+    env: Env,
+    this: This,
+    width: webidl::UnsignedLong<webidl::CanvasSetWidth>,
+  ) -> Result<()> {
+    let width = canvas_width(width.0);
+    let new_ctx = Self::resized_context(&self.ctx.context, width, self.height)?;
+    replace_context(&env, &mut self.ctx.context, new_ctx)?;
     self.width = width;
-    let height = self.height;
-    let old_ctx = mem::replace(
-      &mut self.ctx.context,
-      Context::new(width, height, ColorSpace::default())?,
-    );
-    env.adjust_external_memory((width as i64 - old_ctx.width as i64) * (height as i64) * 4)?;
-    Ok(())
+    reset_ctx_style_getters(&this)
   }
 
   #[napi(getter)]
@@ -165,16 +245,17 @@ impl<'c> CanvasElement<'c> {
   }
 
   #[napi(setter)]
-  pub fn set_height(&mut self, env: Env, height: i32) -> Result<()> {
-    let height = (if height <= 0 { 150 } else { height }) as u32;
+  pub fn set_height(
+    &mut self,
+    env: Env,
+    this: This,
+    height: webidl::UnsignedLong<webidl::CanvasSetHeight>,
+  ) -> Result<()> {
+    let height = canvas_height(height.0);
+    let new_ctx = Self::resized_context(&self.ctx.context, self.width, height)?;
+    replace_context(&env, &mut self.ctx.context, new_ctx)?;
     self.height = height;
-    let width = self.width;
-    let old_ctx = mem::replace(
-      &mut self.ctx.context,
-      Context::new(width, height, ColorSpace::default())?,
-    );
-    env.adjust_external_memory((height as i64 - old_ctx.height as i64) * (width as i64) * 4)?;
-    Ok(())
+    reset_ctx_style_getters(&this)
   }
 
   #[napi(getter)]
@@ -182,38 +263,49 @@ impl<'c> CanvasElement<'c> {
     self.height
   }
 
+  /// getContext(contextId, options): the 2d context, or null for any other
+  /// id, as Chrome does for an id it does not know
+  /// (html_canvas_element.cc). The index.js wrapper checks the argument
+  /// count.
   #[napi]
   pub fn get_context<'env>(
     &mut self,
+    env: &Env,
     this: This,
-    context_type: String,
-    attrs: Option<CanvasRenderingContext2DAttributes>,
-  ) -> Result<Unknown<'env>> {
-    if context_type != "2d" {
-      return Err(Error::new(
-        Status::InvalidArg,
-        format!("{context_type} is not supported"),
-      ));
+    context_type: webidl::DomString<webidl::CanvasGetContext>,
+    // Converted (and may throw) on every call, also once the context exists
+    // and for an unsupported id (HTMLCanvasElementModule::getContext).
+    attrs: webidl::CanvasContextOptions,
+  ) -> Result<Option<Unknown<'env>>> {
+    let attrs = attrs.0;
+    if context_type.0 != "2d" {
+      return Ok(None);
     }
+    if self.context_initialized {
+      return this.get_named_property("ctx").map(Some);
+    }
+    self.ctx.reported_settings = attrs.reported;
     let context_2d = &mut self.ctx.context;
-    if !attrs.as_ref().and_then(|a| a.alpha).unwrap_or(true) {
-      let mut fill_paint = context_2d.fill_paint()?;
-      fill_paint.set_color(255, 255, 255, 255);
-      context_2d.alpha = false;
-      let (width, height) = (self.width as f32, self.height as f32);
-      // The base fill bypasses the deferred recording, so it must flush
-      // pending ops under it and bump the content version
-      // (Context::with_surface_canvas).
-      context_2d.with_surface_canvas(|canvas| {
-        canvas.draw_rect(0f32, 0f32, width, height, &fill_paint);
-      });
+    // The first acquisition fixes the backing surface's color space, color
+    // type and alpha. alpha:false always gets a fresh kOpaque surface, so
+    // nothing set through the internal `canvas.ctx` before this call reaches
+    // the base.
+    if attrs.color_space != context_2d.color_space
+      || attrs.color_type != context_2d.pixel_format
+      || !attrs.alpha
+    {
+      let new_ctx = Context::new_with_alpha(
+        self.width,
+        self.height,
+        attrs.color_space,
+        attrs.alpha,
+        attrs.color_type,
+      )?;
+      replace_context(env, context_2d, new_ctx)?;
+      reset_ctx_style_getters(&this)?;
     }
-    let color_space = attrs
-      .and_then(|a| a.color_space)
-      .and_then(|cs| ColorSpace::from_str(&cs).ok())
-      .unwrap_or_default();
-    context_2d.color_space = color_space;
-    this.get_named_property("ctx")
+    self.context_initialized = true;
+    this.get_named_property("ctx").map(Some)
   }
 
   #[napi(ts_return_type = "Promise<Buffer>")]
@@ -221,12 +313,15 @@ impl<'c> CanvasElement<'c> {
     &mut self,
     env: &'env Env,
     format: String,
-    quality_or_config: Either3<u32, AvifConfig, Unknown>,
-  ) -> Result<Object<'env>> {
-    // effing: the recording is rasterised on the pool when the surface is
-    // still blank, else flushed here; the canvas may take the rendered image
-    // back (src/ctx/effing/raster.rs)
-    let format = self.encode_format(format, quality_or_config)?;
+    options: NodeEncodeOptions,
+  ) -> Result<Either<Object<'env>, Unknown<'env>>> {
+    if !self.ctx.context.has_pixels() {
+      return rejected_with_index_size_error(env, NO_PIXELS).map(Either::B);
+    }
+    // effing: encoded on the encode pool; the recording is rasterised there
+    // too when the surface is still blank, else flushed here, and the canvas
+    // may take the rendered image back (src/ctx/effing/raster.rs)
+    let job = self.encode_job(env.raw(), format, options)?;
     let source = self.ctx.context.encode_source()?;
     let canvas = source
       .consolidates()
@@ -236,7 +331,7 @@ impl<'c> CanvasElement<'c> {
       env,
       move || {
         let (image, replayed) = source.into_image()?;
-        Ok((encode_surface(&format.with_image(image))?, replayed))
+        Ok((encode_surface(&job.with_image(image))?, replayed))
       },
       move |env, (output, replayed)| {
         if let (Some(canvas), Some(replayed)) = (canvas, replayed) {
@@ -247,6 +342,7 @@ impl<'c> CanvasElement<'c> {
           .and_then(|slice| slice.into_buffer(&env))
       },
     )
+    .map(Either::A)
   }
 
   #[napi]
@@ -254,11 +350,14 @@ impl<'c> CanvasElement<'c> {
     &'env mut self,
     env: Env,
     format: String,
-    quality_or_config: Either3<u32, AvifConfig, Unknown>,
+    options: NodeEncodeOptions,
   ) -> Result<BufferSlice<'env>> {
+    if !self.ctx.context.has_pixels() {
+      return Err(no_pixels_error(&env));
+    }
     // Flush deferred rendering before encoding
     self.ctx.context.flush();
-    let data = self.encode_inner(format, quality_or_config)?;
+    let data = self.encode_inner(env.raw(), format, options)?;
     let output = encode_surface(&data)?;
     output.into_buffer_slice(env)
   }
@@ -268,67 +367,44 @@ impl<'c> CanvasElement<'c> {
     &'env mut self,
     env: Env,
     mime: String,
-    quality_or_config: Either3<u32, AvifConfig, Unknown>,
+    options: NodeEncodeOptions,
   ) -> Result<BufferSlice<'env>> {
+    if !self.ctx.context.has_pixels() {
+      return Err(no_pixels_error(&env));
+    }
     // Flush deferred rendering before encoding
     self.ctx.context.flush();
-    let mime = mime.as_str();
-    let image = self
-      .ctx
-      .context
-      .surface
-      .make_image_snapshot()
-      .ok_or_else(|| {
-        Error::new(
-          Status::GenericFailure,
-          "Create image snapshot failed".to_owned(),
-        )
-      })?;
-    let context_data = get_data_ref(
+    let ty = ImageType::from_mime(&mime)
+      .ok_or_else(|| Error::new(Status::InvalidArg, format!("{mime} is not valid mime")))?;
+    let metadata = options
+      .metadata
+      .plan(ty)
+      .map_err(|msg| webidl::context_range_error(env.raw(), "", &msg))?;
+    let image = self.snapshot()?.ok_or_else(|| no_pixels_error(&env))?;
+    let encoding = node_encoding(ty, options.quality, true);
+    encode_image(
       &image,
-      mime,
-      &match quality_or_config {
-        Either3::A(q) => Either::A(q),
-        Either3::B(s) => Either::B(s),
-        Either3::C(_) => Either::A(DEFAULT_JPEG_QUALITY as u32),
-      },
+      &encoding,
       self.ctx.context.width,
       self.ctx.context.height,
-    )?;
-    match context_data {
-      ContextOutputData::Skia(data_ref) => unsafe {
-        BufferSlice::from_external(
-          &env,
-          data_ref.0.ptr,
-          data_ref.0.size,
-          data_ref,
-          |_, data: SkiaDataRef| mem::drop(data),
-        )
-      },
-      ContextOutputData::Avif(output) => unsafe {
-        BufferSlice::from_external(
-          &env,
-          output.as_ptr().cast_mut(),
-          output.len(),
-          output,
-          |_, data| mem::drop(data),
-        )
-      },
-      ContextOutputData::Gif(output) | ContextOutputData::Qoi(output) => unsafe {
-        // effing: QOI output is plain bytes, as GIF's is
-        BufferSlice::from_external(
-          &env,
-          output.as_ptr().cast_mut(),
-          output.len(),
-          output,
-          |_, data| mem::drop(data),
-        )
-      },
-    }
+      false,
+      false,
+    )
+    .and_then(|output| with_metadata(output, &metadata))
+    .map_err(|detail| node_encode_error(ty, detail, true))?
+    .into_buffer_slice(env)
   }
 
   #[napi]
-  pub fn data(&mut self) -> Result<Buffer> {
+  pub fn data(&mut self, env: &Env) -> Result<Buffer> {
+    // A 0 side has no pixels to give: an empty buffer. Any other canvas
+    // without pixels has some it cannot give.
+    if self.width == 0 || self.height == 0 {
+      return Ok(Vec::new().into());
+    }
+    if !self.ctx.context.has_pixels() {
+      return Err(no_pixels_error(env));
+    }
     // Flush deferred rendering before reading data
     self.ctx.context.flush();
     let ctx2d = &self.ctx.context;
@@ -350,131 +426,76 @@ impl<'c> CanvasElement<'c> {
   pub fn to_data_url_async<'env>(
     &mut self,
     env: &'env Env,
-    mime: Option<String>,
-    quality_or_config: Either3<f64, AvifConfig, Unknown>,
+    mime: EncodeType<ToDataUrlAsyncSite>,
+    quality: EncodeQuality,
   ) -> Result<Object<'env>> {
     // Flush deferred rendering before encoding
     self.ctx.context.flush();
-    let mut task = self.to_data_url_inner(mime.as_deref(), quality_or_config)?;
+    let mut task = self.to_data_url_inner(mime.0, quality)?;
+    // effing: on the encode pool
     encode_pool::spawn(env, move || Task::compute(&mut task), |_, url| Ok(url))
   }
 
+  /// toDataURL(type, quality): the type is converted to a string and picked
+  /// as Chrome picks it (an unknown type is PNG); the quality counts only
+  /// when it is a number in [0, 1]. A failed encode is "data:,".
   #[napi(js_name = "toDataURL")]
   pub fn to_data_url(
     &mut self,
-    mime: Option<String>,
-    quality_or_config: Either3<f64, AvifConfig, Unknown>,
+    mime: EncodeType<ToDataUrlSite>,
+    quality: EncodeQuality,
   ) -> Result<String> {
     // Flush deferred rendering before encoding
     self.ctx.context.flush();
-    Task::compute(&mut self.to_data_url_inner(mime.as_deref(), quality_or_config)?)
+    Task::compute(&mut self.to_data_url_inner(mime.0, quality)?)
   }
 
-  #[napi]
-  pub fn to_blob(
-    &mut self,
-    env: &Env,
-    // Called with a Uint8Array (see `BlobBytes`) or null.
-    callback: Function<Either<BlobBytes, Null>, Unknown<'static>>,
-    mime: Option<String>,
-    quality: Option<f64>,
-  ) -> Result<()> {
-    // Flush deferred rendering before encoding
-    self.ctx.context.flush();
-    let image = self
-      .ctx
-      .context
-      .surface
-      .make_image_snapshot()
-      .ok_or_else(|| {
-        Error::new(
-          Status::GenericFailure,
-          "Create image snapshot failed".to_owned(),
-        )
-      })?;
-    let mime = mime.unwrap_or_else(|| MIME_PNG.to_owned());
-    let quality_value = quality.unwrap_or(0.92).clamp(0.0, 1.0);
-    let quality_or_config = if mime == MIME_AVIF {
-      Either::B(AvifConfig {
-        quality: Some((quality_value * 100.0) as u32),
-        ..Default::default()
-      })
-    } else {
-      Either::A((quality_value * 100.0) as u32)
-    };
-    let width = self.ctx.context.width;
-    let height = self.ctx.context.height;
-    let callback_ref = callback.create_ref()?;
-    let async_blob_task = AsyncBlob {
-      image,
-      mime,
-      quality_or_config,
-      width,
-      height,
-    };
-
-    // A failed encode calls back with null, as browsers do, so the encode
-    // always resolves and the callback is called from the resolver, on the
-    // JS thread. (Upstream chained `.then` and `.catch` on the task's
-    // promise instead, which crashed the process when the encode failed.)
-    encode_pool::spawn(
-      env,
-      move || Ok(async_blob_task.encode().ok()),
-      move |env, output| {
-        let callback = callback_ref.borrow_back(&env)?;
-        match output {
-          Some(output) => callback.call(Either::A(BlobBytes(output)))?,
-          None => callback.call(Either::B(Null))?,
-        };
-        Ok(())
-      },
-    )?;
-
-    Ok(())
-  }
-
-  #[napi(ts_return_type = "Promise<Uint8Array>")]
-  pub fn convert_to_blob<'env>(
+  /// toBlob(type, quality) without the callback: index.js checks the
+  /// callback, calls this, and makes the Blob. Resolves { data, type }, or
+  /// null when the canvas has no pixels or the encoder fails (Chrome calls
+  /// back null then).
+  #[napi(ts_return_type = "Promise<{ data: Uint8Array; type: string } | null>")]
+  pub fn to_blob<'env>(
     &mut self,
     env: &'env Env,
-    options: Option<ConvertToBlobOptions>,
+    mime: EncodeType<ToBlobSite>,
+    quality: BlobQuality,
   ) -> Result<Object<'env>> {
     // Flush deferred rendering before encoding
     self.ctx.context.flush();
-    let image = self
-      .ctx
-      .context
-      .surface
-      .make_image_snapshot()
-      .ok_or_else(|| {
-        Error::new(
-          Status::GenericFailure,
-          "Create image snapshot failed".to_owned(),
-        )
-      })?;
-    let options = options.unwrap_or_default();
-    let mime = options.mime.unwrap_or_else(|| MIME_PNG.to_owned());
-    let quality = options.quality.unwrap_or(0.92).clamp(0.0, 1.0);
-    let quality_or_config = if mime == MIME_AVIF {
-      Either::B(AvifConfig {
-        quality: Some((quality * 100.0) as u32),
-        ..Default::default()
-      })
-    } else {
-      Either::A((quality * 100.0) as u32)
-    };
-    let blob = AsyncBlob {
-      image,
-      mime,
-      quality_or_config,
+    AsyncBlob {
+      image: self.snapshot()?,
+      encoding: Encoding::web(mime.0, quality.0, None),
       width: self.ctx.context.width,
       height: self.ctx.context.height,
-    };
-    encode_pool::spawn(
-      env,
-      move || blob.encode(),
-      |_, output| Ok(BlobBytes(output)),
-    )
+      reject_on_failure: false,
+    }
+    .spawn(env) // effing: on the encode pool
+  }
+
+  /// OffscreenCanvas.convertToBlob(options): ImageEncodeOptions `type`
+  /// (default "image/png") and `quality` (default 1.0). Resolves { data,
+  /// type }; index.js makes the Blob.
+  #[napi(ts_return_type = "Promise<{ data: Uint8Array; type: string }>")]
+  pub fn convert_to_blob<'env>(
+    &mut self,
+    env: &'env Env,
+    options: ImageEncodeOptions,
+  ) -> Result<Either<Object<'env>, Unknown<'env>>> {
+    if !self.ctx.context.has_pixels() {
+      return rejected_with_index_size_error(env, CONVERT_TO_BLOB_NO_PIXELS).map(Either::B);
+    }
+    // Flush deferred rendering before encoding
+    self.ctx.context.flush();
+    AsyncBlob {
+      image: self.snapshot()?,
+      encoding: Encoding::web(options.ty, Some(options.quality), None),
+      width: self.ctx.context.width,
+      height: self.ctx.context.height,
+      reject_on_failure: true,
+    }
+    .spawn(env) // effing: on the encode pool
+    .map(Either::A)
   }
 
   #[napi]
@@ -482,15 +503,21 @@ impl<'c> CanvasElement<'c> {
     &'env mut self,
     env: &Env,
     mime: Option<String>,
-    quality: Option<u8>,
+    quality: Option<u32>,
   ) -> Result<ReadableStream<'env, BufferSlice<'env>>> {
+    if !self.ctx.context.has_pixels() {
+      return Err(no_pixels_error(env));
+    }
     // Flush deferred rendering before encoding
     self.ctx.context.flush();
-    let mime = match mime.as_deref() {
-      Some("webp") => sk::SkEncodedImageFormat::Webp,
-      Some("jpeg") => sk::SkEncodedImageFormat::Jpeg,
-      Some("png") | None => sk::SkEncodedImageFormat::Png,
+    let ty = match mime.as_deref() {
+      Some("webp") => ImageType::Webp,
+      Some("jpeg") => ImageType::Jpeg,
+      Some("png") | None => ImageType::Png,
       _ => return Err(Error::new(Status::InvalidArg, "Invalid mime")),
+    };
+    let Some((format, quality, lossless)) = Encoding::node(ty, quality).skia() else {
+      unreachable!("png, jpeg and webp are Skia encoders");
     };
     let (tx, rx) = channel(1024);
     let callback = |buffer: &[u8]| match tx.try_send(Ok(buffer.to_vec())) {
@@ -499,7 +526,7 @@ impl<'c> CanvasElement<'c> {
         eprintln!("encode_image_stream_callback: channel is full");
       }
     };
-    if !self.encode_image_inner(mime, quality.unwrap_or(DEFAULT_JPEG_QUALITY), callback) {
+    if !self.encode_image_inner(format, quality, lossless, callback) {
       return Err(Error::new(
         Status::GenericFailure,
         "Encode image stream failed",
@@ -511,14 +538,16 @@ impl<'c> CanvasElement<'c> {
   // let the compiler infer the type of the callback
   fn encode_image_inner<F: Fn(&[u8])>(
     &self,
-    mime: sk::SkEncodedImageFormat,
-    quality: u8,
+    format: sk::SkEncodedImageFormat,
+    quality: f32,
+    lossless: bool,
     callback: F,
   ) -> bool {
     let ptr = Box::into_raw(Box::new(callback));
     let result = self.ctx.context.surface.encode_stream(
-      mime,
+      format,
       quality,
+      lossless,
       Some(encode_image_stream_callback::<F>),
       ptr.cast(),
     );
@@ -529,103 +558,100 @@ impl<'c> CanvasElement<'c> {
   }
 
   #[napi]
-  pub fn save_png(&mut self, path: String) {
+  pub fn save_png(&mut self, env: &Env, path: String) -> Result<()> {
+    if !self.ctx.context.has_pixels() {
+      return Err(no_pixels_error(env));
+    }
     // Flush deferred rendering before saving
     self.ctx.context.flush();
     let ctx2d = &self.ctx.context;
     ctx2d.surface.save_png(&path);
+    Ok(())
+  }
+
+  /// The pixels for an encoder, or None when the canvas has none.
+  fn snapshot(&self) -> Result<Option<SkImage>> {
+    if !self.ctx.context.has_pixels() {
+      return Ok(None);
+    }
+    self
+      .ctx
+      .context
+      .surface
+      .make_image_snapshot()
+      .map(Some)
+      .ok_or_else(|| {
+        Error::new(
+          Status::GenericFailure,
+          "Create image snapshot failed".to_owned(),
+        )
+      })
   }
 
   fn encode_inner(
     &self,
+    env: sys::napi_env,
     format: String,
-    quality_or_config: Either3<u32, AvifConfig, Unknown>,
+    options: NodeEncodeOptions,
   ) -> Result<ContextData> {
-    let format = self.encode_format(format, quality_or_config)?;
-    let image = self
-      .ctx
-      .context
-      .surface
-      .make_image_snapshot()
-      .ok_or_else(|| {
-        Error::new(
-          Status::GenericFailure,
-          "Create image snapshot failed".to_owned(),
-        )
-      })?;
-    Ok(format.with_image(image))
+    let job = self.encode_job(env, format, options)?; // effing
+    let image = self.snapshot()?.ok_or_else(|| {
+      Error::new(
+        Status::GenericFailure,
+        "Create image snapshot failed".to_owned(),
+      )
+    })?;
+    Ok(job.with_image(image))
   }
 
-  fn encode_format(
+  // effing: what encode_inner encodes, short of the image, which encode()
+  // may only have once the pool has rasterised it.
+  fn encode_job(
     &self,
+    env: sys::napi_env,
     format: String,
-    quality_or_config: Either3<u32, AvifConfig, Unknown>,
-  ) -> Result<EncodeFormat> {
-    let format_str = format.as_str();
-    let quality = match &quality_or_config {
-      Either3::A(q) => (*q) as u8,
-      Either3::B(s) => s.quality.map(|q| q as u8).unwrap_or(DEFAULT_JPEG_QUALITY),
-      Either3::C(_) => DEFAULT_JPEG_QUALITY,
-    };
-    let ctx2d = &self.ctx.context;
-
-    let task = match format_str {
-      "webp" => EncodeFormat::Webp(quality),
-      "jpeg" => EncodeFormat::Jpeg(quality),
-      "png" => EncodeFormat::Png,
-      "qoi" => EncodeFormat::Qoi, // effing
-      "avif" => {
-        let cfg = AvifConfig::from(&quality_or_config);
-        EncodeFormat::Avif(cfg.into(), ctx2d.width, ctx2d.height)
-      }
-      "gif" => {
-        let cfg = gif::GifConfig {
-          quality: match &quality_or_config {
-            Either3::A(q) => Some(*q),
-            _ => None,
-          },
-        };
-        EncodeFormat::Gif(cfg, ctx2d.width, ctx2d.height)
-      }
-      _ => {
-        return Err(Error::new(
-          Status::InvalidArg,
-          format!("{format_str} is not valid format"),
-        ));
-      }
-    };
-
-    Ok(task)
+    options: NodeEncodeOptions,
+  ) -> Result<EncodeJob> {
+    let ty = ImageType::from_format(&format)
+      .ok_or_else(|| Error::new(Status::InvalidArg, format!("{format} is not valid format")))?;
+    let metadata = options
+      .metadata
+      .plan(ty)
+      .map_err(|msg| webidl::context_range_error(env, "", &msg))?;
+    Ok(EncodeJob {
+      encoding: node_encoding(ty, options.quality, false),
+      width: self.ctx.context.width,
+      height: self.ctx.context.height,
+      metadata,
+    })
   }
 
-  fn to_data_url_inner(
-    &self,
-    mime: Option<&str>,
-    quality_or_config: Either3<f64, AvifConfig, Unknown>,
-  ) -> Result<AsyncDataUrl> {
-    let mime = mime.unwrap_or(MIME_PNG);
-    let image = self
-      .ctx
-      .context
-      .surface
-      .make_image_snapshot()
-      .ok_or_else(|| {
-        Error::new(
-          Status::GenericFailure,
-          "Create image snapshot failed".to_owned(),
-        )
-      })?;
+  fn to_data_url_inner(&self, ty: ImageType, quality: EncodeQuality) -> Result<AsyncDataUrl> {
     Ok(AsyncDataUrl {
-      image,
-      mime: mime.to_owned(),
-      quality_or_config: match quality_or_config {
-        Either3::A(q) => Either::A((q * 100.0) as u32),
-        Either3::B(s) => Either::B(s),
-        Either3::C(_) => Either::A(DEFAULT_JPEG_QUALITY as u32),
-      },
+      image: self.snapshot()?,
+      encoding: Encoding::web(ty, quality.quality, quality.avif),
       width: self.ctx.context.width,
       height: self.ctx.context.height,
     })
+  }
+}
+
+/// The encoding of a Node method (toBuffer, or encode/encodeSync): a number
+/// is the 0-100 quality (a larger one is 100), an AvifConfig the AVIF
+/// settings. Without either, the defaults each method has always used.
+fn node_encoding(ty: ImageType, quality: NodeQuality, to_buffer: bool) -> Encoding {
+  match quality {
+    NodeQuality::Number(quality) => Encoding::node(ty, Some(quality)),
+    NodeQuality::Config(config) => match ty {
+      ImageType::Avif => Encoding::Avif(config),
+      // toBuffer has used Blink's default WebP quality for an AvifConfig.
+      ImageType::Webp if to_buffer => Encoding::node(ty, Some(80)),
+      ImageType::Jpeg | ImageType::Webp if !to_buffer => Encoding::node(ty, config.quality),
+      _ => Encoding::node(ty, None),
+    },
+    // toBuffer('image/gif') has passed 92 as the GIF quality.
+    NodeQuality::Other if to_buffer && ty == ImageType::Gif => Encoding::node(ty, Some(92)),
+    NodeQuality::Other => Encoding::node(ty, None),
   }
 }
 
@@ -634,73 +660,10 @@ pub struct ContextAttr {
   pub alpha: Option<bool>,
 }
 
-fn get_data_ref(
-  image: &SkImage,
-  mime: &str,
-  quality_or_config: &Either<u32, AvifConfig>,
-  width: u32,
-  height: u32,
-) -> Result<ContextOutputData> {
-  let quality = quality_or_config.to_quality(mime);
-
-  if let Some(data_ref) = match mime {
-    MIME_WEBP => image.encode_data(sk::SkEncodedImageFormat::Webp, quality),
-    MIME_JPEG => image.encode_data(sk::SkEncodedImageFormat::Jpeg, quality),
-    MIME_PNG => image.encode_data(sk::SkEncodedImageFormat::Png, 100),
-    MIME_AVIF => {
-      let pixels = image
-        .read_pixels(AlphaType::Unpremultiplied)
-        .ok_or_else(|| {
-          Error::new(
-            Status::GenericFailure,
-            "Encode to avif error, failed to get surface pixels".to_owned(),
-          )
-        })?;
-      let config = AvifConfig::from(quality_or_config).into();
-      let output = avif::encode(&pixels, width, height, &config)
-        .map_err(|e| Error::new(Status::GenericFailure, format!("{e}")))?;
-      return Ok(ContextOutputData::Avif(output));
-    }
-    MIME_QOI => return qoi::encode_image(image).map(ContextOutputData::Qoi), // effing
-    MIME_GIF => {
-      let config = gif::GifConfig {
-        quality: match quality_or_config {
-          Either::A(q) => Some(*q),
-          _ => None,
-        },
-      };
-      let pixels = image
-        .read_pixels(AlphaType::Unpremultiplied)
-        .ok_or_else(|| {
-          Error::new(
-            Status::GenericFailure,
-            "Encode to gif error, failed to get surface pixels".to_owned(),
-          )
-        })?;
-      let output = gif::encode(&pixels, width, height, &config)
-        .map_err(|e| Error::new(Status::GenericFailure, format!("{e}")))?;
-      return Ok(ContextOutputData::Gif(output));
-    }
-    _ => {
-      return Err(Error::new(
-        Status::InvalidArg,
-        format!("{mime} is not valid mime"),
-      ));
-    }
-  } {
-    Ok(ContextOutputData::Skia(data_ref))
-  } else {
-    Err(Error::new(
-      Status::InvalidArg,
-      format!("encode {mime} output failed"),
-    ))
-  }
-}
-
 pub struct AsyncDataUrl {
-  image: SkImage,
-  quality_or_config: Either<u32, AvifConfig>,
-  mime: String,
+  /// None: the canvas has no pixels.
+  image: Option<SkImage>,
+  encoding: Encoding,
   width: u32,
   height: u32,
 }
@@ -710,27 +673,17 @@ impl Task for AsyncDataUrl {
   type Output = String;
   type JsValue = String;
 
+  /// No pixels or a failed encode give "data:,"
+  /// (HTMLCanvasElement::ToDataURLInternal, html_canvas_element.cc:1329-1384).
   fn compute(&mut self) -> Result<Self::Output> {
-    let mut output = format!("data:{};base64,", self.mime);
-    let surface_data = get_data_ref(
-      &self.image,
-      &self.mime,
-      &self.quality_or_config,
-      self.width,
-      self.height,
-    )?;
-    match surface_data {
-      ContextOutputData::Skia(data_ref) => {
-        base64_simd::STANDARD.encode_append(data_ref.slice(), &mut output);
-      }
-      ContextOutputData::Avif(data_ref) => {
-        base64_simd::STANDARD.encode_append(data_ref.as_ref(), &mut output);
-      }
-      ContextOutputData::Gif(data_ref) | ContextOutputData::Qoi(data_ref) => {
-        // effing: QOI output is plain bytes, as GIF's is
-        base64_simd::STANDARD.encode_append(&data_ref, &mut output);
-      }
-    }
+    let Some(image) = &self.image else {
+      return Ok("data:,".to_owned());
+    };
+    let Ok(data) = encode_image(image, &self.encoding, self.width, self.height, false, true) else {
+      return Ok("data:,".to_owned());
+    };
+    let mut output = format!("data:{};base64,", self.encoding.image_type().mime());
+    base64_simd::STANDARD.encode_append(data.as_slice(), &mut output);
     Ok(output)
   }
 
@@ -740,87 +693,76 @@ impl Task for AsyncDataUrl {
 }
 
 pub struct AsyncBlob {
-  image: SkImage,
-  mime: String,
-  quality_or_config: Either<u32, AvifConfig>,
+  /// None: the canvas has no pixels.
+  image: Option<SkImage>,
+  encoding: Encoding,
   width: u32,
   height: u32,
+  /// convertToBlob rejects a failed encode; toBlob resolves null.
+  reject_on_failure: bool,
+}
+
+#[napi(object, object_from_js = false)]
+pub struct BlobData<'env> {
+  pub data: Uint8ArraySlice<'env>,
+  /// The type of the encoded image (blob.type).
+  #[napi(js_name = "type")]
+  pub mime: String,
 }
 
 impl AsyncBlob {
-  fn encode(&self) -> Result<ContextOutputData> {
-    get_data_ref(
-      &self.image,
-      &self.mime,
-      &self.quality_or_config,
-      self.width,
-      self.height,
+  /// effing: encodes on the encode pool (src/encode_pool.rs), where upstream
+  /// ran an AsyncTask on libuv's threadpool; settles as that did.
+  fn spawn(self, env: &Env) -> Result<Object<'_>> {
+    let AsyncBlob {
+      image,
+      encoding,
+      width,
+      height,
+      reject_on_failure,
+    } = self;
+    let mime = encoding.image_type().mime();
+    encode_pool::spawn(
+      env,
+      move || {
+        let Some(image) = &image else {
+          return Ok(None);
+        };
+        Ok(encode_image(image, &encoding, width, height, true, false).ok())
+      },
+      move |env, output| {
+        let Some(output) = output else {
+          // CanvasAsyncBlobCreator::CreateNullAndReturnResult
+          // (canvas_async_blob_creator.cc:458-480).
+          if reject_on_failure {
+            return Err(webidl::dom_exception(
+              env.raw(),
+              "EncodingError",
+              "Encoding of the source image has failed.",
+            ));
+          }
+          return Ok(None);
+        };
+        Ok(Some(BlobOutput { output, mime }))
+      },
     )
   }
 }
 
-/// Encoded blob bytes, turned into a `Uint8Array` over the native buffer once
-/// they're back on the JS thread.
-pub struct BlobBytes(ContextOutputData);
+/// effing: an encoded blob, made into `BlobData` on the JS thread.
+struct BlobOutput {
+  output: ContextOutputData,
+  mime: &'static str,
+}
 
-impl ToNapiValue for BlobBytes {
+impl ToNapiValue for BlobOutput {
   unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
     let env = Env::from_raw(raw_env);
-    let slice = blob_slice(&env, val.0)?;
-    unsafe { Uint8ArraySlice::to_napi_value(raw_env, slice) }
-  }
-}
-
-fn blob_slice(env: &Env, output: ContextOutputData) -> Result<Uint8ArraySlice<'_>> {
-  match output {
-    ContextOutputData::Skia(data_ref) => unsafe {
-      Uint8ArraySlice::from_external(env, data_ref.0.ptr, data_ref.0.size, data_ref, |_, d| {
-        mem::drop(d)
-      })
-    },
-    ContextOutputData::Avif(data_ref) => unsafe {
-      let data_slice = data_ref.as_slice();
-      Uint8ArraySlice::from_external(
-        env,
-        data_slice.as_ptr().cast_mut(),
-        data_slice.len(),
-        data_ref,
-        |_, d| mem::drop(d),
-      )
-    },
-    ContextOutputData::Gif(data_ref) | ContextOutputData::Qoi(data_ref) => unsafe {
-      // effing: QOI output is plain bytes, as GIF's is
-      Uint8ArraySlice::from_external(
-        env,
-        data_ref.as_ptr().cast_mut(),
-        data_ref.len(),
-        data_ref,
-        |_, d| mem::drop(d),
-      )
-    },
-  }
-}
-
-trait ToQuality {
-  fn to_quality(&self, mime: &str) -> u8;
-}
-
-impl ToQuality for &Either<u32, AvifConfig> {
-  fn to_quality(&self, mime_or_format: &str) -> u8 {
-    if let Either::A(q) = &self {
-      *q as u8
-    } else {
-      match mime_or_format {
-        MIME_WEBP | "webp" => DEFAULT_WEBP_QUALITY,
-        _ => DEFAULT_JPEG_QUALITY, // https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/toDataURL
-      }
-    }
-  }
-}
-
-impl ToQuality for Either<u32, AvifConfig> {
-  fn to_quality(&self, mime: &str) -> u8 {
-    ToQuality::to_quality(&self, mime)
+    let data = BlobData {
+      data: val.output.into_uint8_array_slice(&env)?,
+      mime: val.mime.to_owned(),
+    };
+    unsafe { BlobData::to_napi_value(raw_env, data) }
   }
 }
 
@@ -830,6 +772,7 @@ pub struct SVGCanvas<'scope> {
   pub height: u32,
   pub(crate) ctx: ClassInstance<'scope, CanvasRenderingContext2D>,
   pub(crate) flag: SvgExportFlag,
+  context_initialized: bool,
 }
 
 #[napi]
@@ -838,80 +781,90 @@ impl<'scope> SVGCanvas<'scope> {
   pub fn new(
     env: &Env,
     mut this: This<'scope>,
-    width: i32,
-    height: i32,
+    width: Unknown,
+    height: Unknown,
     flag: SvgExportFlag,
   ) -> Result<SVGCanvas<'scope>> {
-    // Default fallback of canvas on browser and skia-canvas is 350x150
-    let width = (if width <= 0 { 350 } else { width }) as u32;
-    let height = (if height <= 0 { 150 } else { height }) as u32;
+    let width = constructor_size::<webidl::SvgCanvasSetWidth>(env, width, canvas_width)?;
+    let height = constructor_size::<webidl::SvgCanvasSetHeight>(env, height, canvas_height)?;
+    let context = Context::new_svg(
+      width,
+      height,
+      flag.into(),
+      ColorSpace::default(),
+      Default::default(),
+    )?;
+    let bytes = context.surface_bytes();
     let ctx = CanvasRenderingContext2D::into_instance(
       CanvasRenderingContext2D {
-        context: Context::new_svg(width, height, flag.into(), ColorSpace::default())?,
+        context,
+        reported_settings: Default::default(),
       },
       env,
     )?;
     let mut ctx_obj = ctx.as_object(env);
     ctx_obj.define_properties(&[
+      // For the read-only `canvas` getter, as on a Canvas.
       Property::new()
-        .with_utf8_name(FILL_STYLE_HIDDEN_NAME)?
-        .with_value(&env.create_string("#000000")?)
-        .with_property_attributes(PropertyAttributes::Writable | PropertyAttributes::Configurable),
-      Property::new()
-        .with_utf8_name(STROKE_STYLE_HIDDEN_NAME)?
-        .with_value(&env.create_string("#000000")?)
-        .with_property_attributes(PropertyAttributes::Writable | PropertyAttributes::Configurable),
-      Property::new()
-        .with_utf8_name("canvas")?
+        .with_utf8_name(CANVAS_HIDDEN_NAME)?
         .with_value(&this)
-        .with_property_attributes(
-          PropertyAttributes::Default
-            | PropertyAttributes::Writable
-            | PropertyAttributes::Enumerable,
-        ),
+        .with_property_attributes(PropertyAttributes::Default),
     ])?;
-    env.adjust_external_memory((width * height * 4) as i64)?;
+    env.adjust_external_memory(bytes)?;
 
     Ok(Self {
       width,
       height,
       flag,
       ctx: ctx.assign_to_this_with_attributes("ctx", PropertyAttributes::Default, &mut this)?,
+      context_initialized: false,
     })
   }
 
+  /// getContext(contextId, options): the 2d context, or null for any other
+  /// id, as for Canvas.
   #[napi]
   pub fn get_context<'env>(
     &'env mut self,
+    env: &Env,
     this: This<'env>,
-    context_type: String,
-    attrs: Option<CanvasRenderingContext2DAttributes>,
-  ) -> Result<Unknown<'env>> {
-    if context_type != "2d" {
-      return Err(Error::new(
-        Status::InvalidArg,
-        format!("{context_type} is not supported"),
-      ));
+    context_type: webidl::DomString<webidl::SvgCanvasGetContext>,
+    // Converted on every call, as for Canvas.
+    attrs: webidl::SvgCanvasContextOptions,
+  ) -> Result<Option<Unknown<'env>>> {
+    let attrs = attrs.0;
+    if context_type.0 != "2d" {
+      return Ok(None);
     }
+    if self.context_initialized {
+      return this.get_named_property("ctx").map(Some);
+    }
+    self.ctx.reported_settings = attrs.reported;
     let context_2d = &mut self.ctx.context;
-    if !attrs.as_ref().and_then(|a| a.alpha).unwrap_or(true) {
-      let mut fill_paint = context_2d.fill_paint()?;
-      fill_paint.set_color(255, 255, 255, 255);
-      context_2d.alpha = false;
-      let (width, height) = (self.width as f32, self.height as f32);
-      // The base fill bypasses the deferred recording, so it must flush
-      // pending ops under it and bump the content version
-      // (Context::with_surface_canvas).
-      context_2d.with_surface_canvas(|canvas| {
-        canvas.draw_rect(0f32, 0f32, width, height, &fill_paint);
-      });
+    // The first acquisition fixes the color space and color type of the
+    // raster surface that reads see, as on a CanvasElement. The SVG output
+    // does not use them. alpha:false always gets a fresh context: state set
+    // through the internal `canvas.ctx` (matrix, clip, paint) must not reach
+    // the base.
+    if attrs.color_space != context_2d.color_space
+      || attrs.color_type != context_2d.pixel_format
+      || !attrs.alpha
+    {
+      let new_ctx = Context::new_svg(
+        self.width,
+        self.height,
+        self.flag.into(),
+        attrs.color_space,
+        attrs.color_type,
+      )?;
+      replace_context(env, context_2d, new_ctx)?;
+      reset_ctx_style_getters(&this)?;
     }
-    let color_space = attrs
-      .and_then(|a| a.color_space)
-      .and_then(|cs| ColorSpace::from_str(&cs).ok())
-      .unwrap_or_default();
-    context_2d.color_space = color_space;
-    this.get_named_property("ctx")
+    if !attrs.alpha {
+      context_2d.set_opaque();
+    }
+    self.context_initialized = true;
+    this.get_named_property("ctx").map(Some)
   }
 
   #[napi]
@@ -934,11 +887,17 @@ impl<'scope> SVGCanvas<'scope> {
       self.ctx.context.height,
       self.ctx.context.surface.alpha_type(),
       self.flag.into(),
-      ColorSpace::default(),
+      self.ctx.context.color_space,
+      self.ctx.context.pixel_format,
     )
     .ok_or_else(|| Error::new(Status::GenericFailure, "Failed to create surface"))?;
     self.ctx.context.surface = surface;
     self.ctx.context.stream = Some(stream);
+    // The next document starts from the alpha:false base again, as a fresh
+    // bitmap would (spec: opaque black).
+    if !self.ctx.context.alpha {
+      self.ctx.context.surface.canvas.fill(0, 0, 0, 255);
+    }
     // The backing surface was replaced: bump the content version so drawImage
     // dedup keys for this source cannot alias the new raster under the
     // pre-replacement charge.
@@ -950,17 +909,35 @@ impl<'scope> SVGCanvas<'scope> {
     }
   }
 
+  // Setting width or height resets the drawing but keeps the context's
+  // settings (alpha, color space, color type).
+  fn resized_context(&self, width: u32, height: u32) -> Result<Context> {
+    let old = &self.ctx.context;
+    let mut context_2d = Context::new_svg(
+      width,
+      height,
+      self.flag.into(),
+      old.color_space,
+      old.pixel_format,
+    )?;
+    if !old.alpha {
+      context_2d.set_opaque();
+    }
+    Ok(context_2d)
+  }
+
   #[napi(setter)]
-  pub fn set_width(&mut self, env: Env, width: i32) -> Result<()> {
-    let width = (if width <= 0 { 350 } else { width }) as u32;
+  pub fn set_width(
+    &mut self,
+    env: Env,
+    this: This,
+    width: webidl::UnsignedLong<webidl::SvgCanvasSetWidth>,
+  ) -> Result<()> {
+    let width = canvas_width(width.0);
+    let new_ctx = self.resized_context(width, self.height)?;
+    replace_context(&env, &mut self.ctx.context, new_ctx)?;
     self.width = width;
-    let height = self.height;
-    let old_ctx = mem::replace(
-      &mut self.ctx.context,
-      Context::new_svg(width, height, self.flag.into(), ColorSpace::default())?,
-    );
-    env.adjust_external_memory((width as i64 - old_ctx.width as i64) * (height as i64) * 4)?;
-    Ok(())
+    reset_ctx_style_getters(&this)
   }
 
   #[napi(getter)]
@@ -969,16 +946,17 @@ impl<'scope> SVGCanvas<'scope> {
   }
 
   #[napi(setter)]
-  pub fn set_height(&mut self, env: Env, height: i32) -> Result<()> {
-    let height = (if height <= 0 { 150 } else { height }) as u32;
+  pub fn set_height(
+    &mut self,
+    env: Env,
+    this: This,
+    height: webidl::UnsignedLong<webidl::SvgCanvasSetHeight>,
+  ) -> Result<()> {
+    let height = canvas_height(height.0);
+    let new_ctx = self.resized_context(self.width, height)?;
+    replace_context(&env, &mut self.ctx.context, new_ctx)?;
     self.height = height;
-    let width = self.width;
-    let old_ctx = mem::replace(
-      &mut self.ctx.context,
-      Context::new_svg(width, height, self.flag.into(), ColorSpace::default())?,
-    );
-    env.adjust_external_memory((width as i64) * (height as i64 - old_ctx.height as i64) * 4)?;
-    Ok(())
+    reset_ctx_style_getters(&this)
   }
 
   #[napi(getter)]
@@ -1131,9 +1109,12 @@ impl PDFDocument {
     let surface = sk::Surface::from_borrowed_canvas(canvas);
     let context = Context::new_from_surface(surface, width as u32, height as u32);
 
-    env.adjust_external_memory((width as i64) * (height as i64) * 4)?;
+    env.adjust_external_memory(context.surface_bytes())?;
 
-    Ok(CanvasRenderingContext2D { context })
+    Ok(CanvasRenderingContext2D {
+      context,
+      reported_settings: Default::default(),
+    })
   }
 
   #[napi]
