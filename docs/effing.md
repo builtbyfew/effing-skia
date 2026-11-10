@@ -1378,10 +1378,11 @@ the CI matrix.
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
-### 1.1.0-effing.1 (unreleased)
+### 1.1.0-effing.1
 
-- On upstream 1.1.0 (from 1.0.11), with what upstream changed there: among
-  others, a new text engine for `fillText`, `strokeText` and `measureText`,
+- On upstream 1.1.0 (from 1.0.10, by way of 1.0.11), with what upstream
+  changed there: among others, a new text engine for `fillText`,
+  `strokeText` and `measureText`,
   `setTextRenderer('portable' | 'system')`, `ctx.font` and `ctx.filter`
   read as Chrome reads them, and `drop-shadow()`'s blur as a standard
   deviation. See upstream's changelog.

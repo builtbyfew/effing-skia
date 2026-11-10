@@ -1,3 +1,11 @@
+# [1.1.0-effing.1](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.9...v1.1.0-effing.1) (2026-11-10)
+
+
+### Features
+
+* merge upstream napi-rs/canvas 1.1.0 ([#66](https://github.com/builtbyfew/effing-skia/issues/66)) ([8818666](https://github.com/builtbyfew/effing-skia/commit/8818666e18942f1e6480e9c1140f818b84042e3b)), and 1.0.11 ([#65](https://github.com/builtbyfew/effing-skia/issues/65)) ([edf9d6c](https://github.com/builtbyfew/effing-skia/commit/edf9d6c76b39d1ccc3243c2fc99bde63db593ca7)). Upstream's new text engine draws text the same on every OS by default, with `setTextRenderer('portable' | 'system')`; the fork's `geometricPrecision` text, registered-font precedence, CSS font matching, font collections, encode pool, async rasterising, QOI and compositing groups are re-hooked into it. See the 1.1.0-effing.1 section of `docs/effing.md` for the changes `@effing/canvas` has to follow, among them `convertToBlob({ type })`, an ignored invalid `ctx.font`, and `loadFontsFromDir` loading installed fonts.
+
+
 # [1.1.0](https://github.com/Brooooooklyn/canvas/compare/v1.0.13...v1.1.0) (2026-10-30)
 
 
