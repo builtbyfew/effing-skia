@@ -784,7 +784,7 @@ value) and CSS `filter`. That is what CSS `opacity`, `mix-blend-mode` and
 `backdropFilter` starts the group from the filtered content behind it,
 clamped at the edges like a browser does at the viewport edge, for CSS
 `backdrop-filter`. `bounds` (`[x, y, width, height]` in the current
-coordinate space) clips the group's content. A non-numeric `opacity`, an
+coordinate space) clips the group's content, anti-aliased like `ctx.clip()`. A non-numeric `opacity`, an
 unknown `blendMode` or malformed `bounds` throw; `opacity` outside 0 to 1 is
 clamped.
 
@@ -1377,6 +1377,12 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### Unreleased
+
+- A group's `bounds` clip is anti-aliased, as `ctx.clip()` is. It had a
+  hard, pixel-stepped edge where it fell between pixels or under a rotation
+  or skew; on whole-pixel, axis-aligned bounds the pixels are unchanged.
 
 ### 1.1.0-effing.1
 
