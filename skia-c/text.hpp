@@ -13,13 +13,66 @@
 #include "hb_api.h"
 #include "skia_c.hpp"
 
-// The families skparagraph should use for `request`, like Blink's
+// The families the shaper uses for `request`, like Blink's
 // FontFallbackList: each family of the font resolved to the spelling the
 // collection knows (case-insensitive, generic families through the platform
 // defaults) and, last, the standard font. Families that resolve to nothing
-// are left out.
-std::vector<SkString> ResolveFontFamilies(skiac_font_collection* c_collection,
-                                          const skiac_text_request& request);
+// are left out. `generic`, when given, gets for each resolved family whether
+// it came through the font selector as a generic family (the standard font
+// too) rather than by name. `locale`, when given, holds the font settings
+// of the locale's script to use in place of the common ones
+// (LocaleFontFamilies).
+struct LocaleFamilies;
+std::vector<SkString> ResolveFontFamilies(
+    skiac_font_collection* c_collection,
+    const skiac_text_request& request,
+    std::vector<bool>* generic = nullptr,
+    const LocaleFamilies* locale = nullptr);
+
+// FontCache::GetLastResortFallbackFont's family for `request`: on macOS with
+// the system renderer Times (else Lucida Grande); empty when none resolves
+// (font_families.cpp).
+std::string LastResortFamily(skiac_font_collection* c_collection,
+                             const skiac_text_request& request);
+
+// The standard font of a locale (`lang`, a language tag; the shaper passes
+// LocaleOrDefault's), where it is not the common one:
+// FontFallbackList::GetFontData's -webkit-standard, which
+// FontSelector::FamilyNameFromSettings takes from the settings for the
+// locale's script (GenericFontFamilySettings::Standard). On macOS with the
+// system renderer, for a locale whose script is Japanese, Korean, Simplified
+// or Traditional Han, or Devanagari, and is not the script of the host's UI
+// language `host_language` (Chrome has no per-script default for that one);
+// else empty (font_families.cpp).
+std::string LocaleStandardFamily(skiac_font_collection* c_collection,
+                                 std::string_view lang,
+                                 std::string_view host_language);
+
+// The generic font family settings of a locale's script
+// (GenericFontFamilySettings: FontSelector::FamilyNameFromSettings takes
+// Serif(script), SansSerif(script), ... for a generic family, and
+// Standard(script) for the description's -webkit-body): the script's own
+// default where Chrome has one, else the common entry of the host's UI
+// language `host_language` (its locale_settings_mac_<ui>.xtb, macOS); an
+// empty entry is the en common setting. The same scripts and host rule as
+// LocaleStandardFamily (font_families.cpp).
+struct LocaleFamilies {
+  // Standard(script), already resolved: LocaleStandardFamily, else the
+  // host's common standard font; empty for the en one.
+  std::string standard;
+  // By skiac_font_family::generic (1 serif ... 8 math): the settings family
+  // name, looked up like the common one (SettingsFamily). For -webkit-body
+  // (as a family that is not the description's generic family) the common
+  // standard font of the host.
+  std::string generic[9];
+};
+LocaleFamilies LocaleFontFamilies(skiac_font_collection* c_collection,
+                                  std::string_view lang,
+                                  std::string_view host_language);
+
+// LayoutLocale::GetScriptForHan of `lang` (a UScriptCode: Katakana or
+// Hiragana, Hangul, Simplified or Traditional Han), on every OS.
+int HanScriptForLocale(std::string_view lang);
 
 // The primary font's metrics TextMetrics reads, in px, y up
 // (text_metrics.cpp).
@@ -77,42 +130,68 @@ void FillFontMetrics(const PrimaryFontMetrics& metrics,
 // destroys it.
 hb_face_t* CreateHbFace(SkTypeface* typeface);
 
-// The canvas text preparation (PlainTextNode::NormalizeSpacesAndMaybeBidi
-// for a canvas): U+0009 to U+000D are spaces, U+2028 and U+2029 draw as
-// spaces and U+FFFC as a zero width space. Returns `text` itself, or the
-// prepared copy in `storage`.
-std::string_view PrepareCanvasText(std::string_view text, std::string* storage);
-
-// Blink's PlainTextNode::SegmentWord: the [start, end) byte ranges of the
-// words HarfBuzz shapes one by one (text_words.cpp).
-std::vector<std::pair<size_t, size_t>> SplitWords(std::string_view text);
-
-// The [start, end) byte ranges of `text` (UTF-8) whose characters Blink
-// gives no letter spacing (ShapeResultSpacing skips
-// Character::TreatAsZeroWidthSpace: the default ignorable code points, form
-// feed, carriage return and U+FFFC), in order, adjacent ones merged.
-// `piece_starts` are the byte starts of the pieces shaped on their own, in
-// order: a tag or variation selector above U+FFFF that starts one is spaced.
-std::vector<std::pair<size_t, size_t>> NoLetterSpacingRanges(
-    std::string_view text,
-    const std::vector<size_t>& piece_starts);
-
 // FontFallbackList::CanShapeWordByWord: false when the request turns on
 // kerning or ligatures and the first family with a space glyph has the
 // space in a GPOS (kerning) or GSUB (ligatures) lookup. `faces` are the
-// request's families' faces, in order.
+// request's families' faces, in order. `space_glyph` looks the space up
+// (HarfBuzz's cmap).
 bool CanShapeWordByWord(skiac_font_collection* c_collection,
                         const std::vector<sk_sp<SkTypeface>>& faces,
-                        const skiac_text_request& request);
+                        const skiac_text_request& request,
+                        SkGlyphID (*space_glyph)(skiac_font_collection*,
+                                                 SkTypeface*));
+
+// plain_text_node.cc NextWordEndIndex on the normalized UTF-16 text: the end
+// of the word that starts at `start`. `is_8bit`: the text is Blink's 8-bit
+// string (PreparedText::is_8bit).
+size_t NextWordEndIndex(const char16_t* text,
+                        size_t length,
+                        size_t start,
+                        bool is_8bit);
 
 // The variation coordinates for `request` when `faces` (the request's
 // families' faces before font arguments) vary or the request has its own
 // variations, else none: wght, wdth and slnt from the weight, stretch and
-// slope, the request's variations, then opsz at the font size
-// (text_styles.cpp).
+// slope, the request's variations, then, for font-optical-sizing: auto and
+// no opsz of the request's own, opsz at `opsz_size` (UsedSizes::opsz), and
+// for none with the system renderer on Apple the axis default of the first
+// of `faces` with the axis (text_styles.cpp).
 std::vector<SkFontArguments::VariationPosition::Coordinate> FontVariations(
     const std::vector<sk_sp<SkTypeface>>& faces,
-    const skiac_text_request& request);
+    const skiac_text_request& request,
+    float opsz_size);
+
+// The font sizes font-size-adjust gives (FontBuilder::UpdateAdjustedSize,
+// FontDescription::EffectiveFontSize, CSSFontFace::GetFontData and
+// CSSFontSelector::GetFontData; text_styles.cpp).
+struct UsedSizes {
+  // The primary font's size: the adjusted size (the request's size without
+  // font-size-adjust) floored to 1/100 px (EffectiveFontSize).
+  float effective;
+  // The adjusted size (the request's size without font-size-adjust) before
+  // the floor, for opsz (font-optical-sizing: auto); for none with the
+  // system renderer on Apple, the opsz default of the first face with the
+  // axis, which FontVariations sets.
+  float opsz;
+  // Only when a family's own aspect gives it another size or opsz than the
+  // primary, or (font-optical-sizing none with the system renderer on
+  // Apple) its own opsz default differs from `opsz`: the resolved families'
+  // faces (before font arguments), in order, with their effective sizes and
+  // opsz. A character no face has (system fallback) gets `effective` and
+  // `opsz`.
+  std::vector<sk_sp<SkTypeface>> faces;
+  std::vector<float> face_sizes;
+  std::vector<float> face_opsz;
+};
+
+// `base_faces` are the request's families' faces before font arguments
+// (FontCollection::findTypefaces of `families`); `locale`, when given, is the
+// locale's font settings those families were resolved with
+// (ResolveFontFamilies).
+UsedSizes ComputeUsedSizes(skiac_font_collection* c_collection,
+                           const std::vector<sk_sp<SkTypeface>>& base_faces,
+                           const skiac_text_request& request,
+                           const LocaleFamilies* locale = nullptr);
 
 // FontPlatformData's synthetic bold (SkFont embolden) and italic (skew).
 struct SyntheticStyle {
@@ -127,34 +206,64 @@ SyntheticStyle SynthesizeStyle(skiac_font_collection* c_collection,
                                SkTypeface* base,
                                const skiac_text_request& request);
 
-// A piece of a word skparagraph shapes on its own for font-variant-caps:
-// its text (case mapped for synthesized small caps), the variant caps whose
-// OpenType features it turns on, and whether it is drawn at the small caps
-// size (text_caps.cpp).
-struct CapsPiece {
-  std::string text;
-  int caps;
-  bool small;
+// font-variant-caps per font, for the Blink shaper (text_caps.cpp): Blink's
+// OpenTypeCapsSupport of one font for request.variant_caps and a script.
+struct CapsSupport {
+  enum class Font : uint8_t { kFull, kFallback, kNone };
+  enum class Synthesis : uint8_t {
+    kNone,
+    kLowerToSmallCaps,
+    kUpperToSmallCaps,
+    kBoth,
+  };
+  Font font = Font::kFull;
+  Synthesis synthesis = Synthesis::kNone;
 };
 
-// The pieces of `word` (UTF-8) for request.variant_caps, with `face` the
-// primary font: the word itself with the requested features when the face
-// has them, else its case runs.
-std::vector<CapsPiece> SplitCaps(skiac_font_collection* c_collection,
-                                 SkTypeface* face,
-                                 std::string_view word,
-                                 const skiac_text_request& request);
+// SmallCapsIterator::SmallCapsBehavior: kInvalid for a run of combining
+// marks only.
+enum class CaseRun { kInvalid, kUppercaseNeeded, kSameCase };
 
-// How far each text blob of `paragraph`'s first line moves right to sit
-// where Blink draws it, in the order visit() and paint() give the blobs;
-// empty when none moves (text.cpp). TextLine puts each run after the runs
-// before it, counting a run whose clusters advance less than nothing
-// (negative letter or word spacing past their advances) as 0 wide; Blink
-// adds the advances as they are.
-std::vector<float> LineRunShifts(ParagraphImpl* paragraph);
+// CaseMapIntend.
+enum class CaseMapIntend { kKeepSameCase, kUpperCase, kLowerCase };
 
-// Turns on the OpenType features of a variant caps value.
-void AddCapsFeatures(TextStyle* style, int caps);
+// OpenTypeCapsSupport(face, caps, auto synthesis, script): the caps
+// features `face` has for `script` (cached in caps_features).
+CapsSupport FontCapsSupport(skiac_font_collection* c_collection,
+                            SkTypeface* face,
+                            int caps,
+                            hb_script_t script);
+// OpenTypeCapsSupport::NeedsRunCaseSplitting.
+bool NeedsRunCaseSplitting(const CapsSupport& support, int caps);
+// OpenTypeCapsSupport::FontFeatureToUse.
+int CapsFeatureToUse(const CapsSupport& support, int caps, CaseRun run);
+// OpenTypeCapsSupport::NeedsCaseChange.
+CaseMapIntend NeedsCaseChange(const CapsSupport& support, CaseRun run);
+// OpenTypeCapsSupport::NeedsSyntheticFont.
+bool NeedsSyntheticFont(const CapsSupport& support, int caps, CaseRun run);
+// SmallCapsIterator::Consume once over text[0, length): the end of the
+// first run of characters that change when uppercased, or do not (combining
+// marks go with the run they are in), and that run's behavior.
+uint32_t NextCaseRun(const char16_t* text, uint32_t length, CaseRun* run);
+// CapsFeatureSettingsScopedOverlay: the OpenType features of a variant caps
+// value, put before `features` in Blink's order.
+void PrependCapsFeatures(std::vector<hb_feature_t>* features, int caps);
+// CaseMap::Locale of a language tag (the shaper's LocaleOrDefault): "tr",
+// "el", "lt", "nl", or root ("").
+const char* CaseMapLocale(std::string_view lang);
+// `text` upper or lower cased with ICU for `locale`.
+std::u16string MapCase(CaseMapIntend intend,
+                       const char* locale,
+                       const std::u16string& text);
+
+// The OpenType features of `request` as HarfBuzz features over the whole
+// buffer, after the caps ones, in Blink's order
+// (FontFeatureRange::FromFontDescription): kern 0 for fontKerning none, the
+// font-variant-ligatures / textRendering / letterSpacing ligature rules,
+// font-variant-numeric, font-feature-settings, Blink's default `chws 1`
+// unless they set `chws` or a non-zero `halt` / `palt` (text-spacing-trim
+// normal, font_features.cc), then font-variant-position (text_styles.cpp).
+std::vector<hb_feature_t> BlinkFeatures(const skiac_text_request& request);
 
 // The synthesized small caps font size for a font of `size` px.
 float SmallCapsSize(float size);
@@ -168,7 +277,24 @@ struct skiac_font_units {
   float lh;
 };
 
+// The primary font's x-height (0 when the font has none), "0" advance, cap
+// height and U+6C34 advance (when it has the glyph), in px
+// (skiac_font_collection_primary_font_units).
+struct skiac_primary_font_units {
+  float x_height;
+  float zero_width;
+  float cap_height;
+  float ideographic_advance;
+  bool has_ideographic_advance;
+};
+
 extern "C" {
+// The ex, ch, cap and ic metrics of the primary font of `request`, read off
+// the font without shaping; false when it has no family font (shaper.cpp).
+bool skiac_font_collection_primary_font_units(
+    skiac_font_collection* c_collection,
+    const skiac_text_request* request,
+    skiac_primary_font_units* units);
 // The font-relative units of the font the canvas resolves `font` against,
 // at `size` px; false when the collection has no such font.
 bool skiac_font_collection_default_font_units(

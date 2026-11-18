@@ -1,0 +1,366 @@
+# Builds the probe fonts of the Blink shaper fixture
+# (__test__/fixtures/text-fonts/blink-shaper.json) with fontTools:
+#
+#   uv run --with fonttools --with brotli python __test__/fonts/build-probe-fonts.py \
+#     <NotoSansDevanagari-Regular source (.ttf/.woff2)> <Noto CJK subset-halt .otf>
+#
+# `build-probe-fonts.py nominal` builds only NominalProbe.ttf,
+# `build-probe-fonts.py lowx` only LowXProbe.ttf, `build-probe-fonts.py ic`
+# only IcWghtProbe.ttf and IcOpszProbe.ttf, `build-probe-fonts.py batak`
+# only BatakBoldProbe.ttf, and `build-probe-fonts.py named` only
+# NamedInstanceProbe.ttf.
+#
+# Sources:
+# - Lato-Regular.ttf, Harmattan-Regular.ttf: in this folder.
+# - Noto Sans Devanagari: @fontsource/noto-sans-devanagari 5.3.0,
+#   files/noto-sans-devanagari-devanagari-400-normal.woff2 (OFL 1.1, no
+#   Reserved Font Name).
+# - NotoSansCJKjp-Regular-subset-halt.otf: WPT fonts/noto/cjk (OFL 1.1),
+#   copied as is.
+# - ScienceGothic-VariableFont.ttf, Newsreader-opsz-only.ttf: in this folder
+#   (OFL 1.1).
+#
+# Lato has the Reserved Font Name "Lato" and Harmattan "Fouta" (and the
+# trademark "Harmattan"), so each modified copy gets a new family name.
+import copy
+import os
+import shutil
+import sys
+
+from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
+from fontTools.otlLib.builder import buildStatTable
+from fontTools.subset import Options, Subsetter
+from fontTools.ttLib import TTFont, newTable
+from fontTools.ttLib.tables._c_m_a_p import CmapSubtable, cmap_format_4
+from fontTools.ttLib.tables._t_r_a_k import TrackData, TrackTableEntry
+from fontTools.varLib.instancer import instantiateVariableFont
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+LATO = os.path.join(HERE, 'Lato-Regular.ttf')
+HARMATTAN = os.path.join(HERE, 'Harmattan-Regular.ttf')
+SCIENCE_GOTHIC = os.path.join(HERE, 'ScienceGothic-VariableFont.ttf')
+NEWSREADER_OPSZ = os.path.join(HERE, 'Newsreader-opsz-only.ttf')
+
+
+def rename(font, family):
+    # Keeps the copyright (0), license (13, 14) and trademark (7) notices.
+    for rec in font['name'].names:
+        if rec.nameID in (1, 4, 16, 18, 21):
+            rec.string = family
+        elif rec.nameID == 6:
+            rec.string = family.replace(' ', '')
+        elif rec.nameID == 3:
+            rec.string = family + ';probe'
+        elif rec.nameID in (17, 22):
+            rec.string = 'Regular'
+
+
+def save(font, name):
+    font.recalcTimestamp = False
+    font.save(os.path.join(HERE, name))
+
+
+def locl_probe():
+    # locl maps 'a' to another glyph per OpenType language system, so the
+    # width of "a" tells which language HarfBuzz used.
+    f = TTFont(LATO)
+    cmap = f.getBestCmap()
+    g = {ch: cmap[ord(ch)] for ch in 'amwiMWxzk'}
+    langs = [('ENG', 'm'), ('DEU', 'w'), ('FRA', 'i'), ('JAN', 'M'), ('ZHS', 'W'), ('NLD', 'x'), ('TRK', 'z'), ('ESP', 'k')]
+    fea = ['languagesystem DFLT dflt;']
+    fea += [f'languagesystem DFLT {t};' for t, _ in langs]
+    fea += ['languagesystem latn dflt;']
+    fea += [f'languagesystem latn {t};' for t, _ in langs]
+    fea.append('feature locl {')
+    for script in ('DFLT', 'latn'):
+        fea.append(f'  script {script};')
+        for t, ch in langs:
+            fea.append(f'  language {t} exclude_dflt; sub {g["a"]} by {g[ch]};')
+    fea.append('} locl;')
+    del f['GSUB']
+    addOpenTypeFeaturesFromString(f, '\n'.join(fea), tables=['GSUB'])
+    rename(f, 'LoclProbe')
+    save(f, 'LoclProbe.ttf')
+
+
+def script_probe():
+    # ccmp maps '1' to 'm' under DFLT and to 'w' under latn, so the width of
+    # "1" tells whether HarfBuzz got script Latin or Common.
+    f = TTFont(LATO)
+    cmap = f.getBestCmap()
+    g = lambda ch: cmap[ord(ch)]
+    fea = f"""languagesystem DFLT dflt;
+languagesystem latn dflt;
+feature ccmp {{
+  script DFLT; language dflt; sub {g('1')} by {g('m')};
+  script latn; language dflt; sub {g('1')} by {g('w')};
+}} ccmp;"""
+    del f['GSUB']
+    addOpenTypeFeaturesFromString(f, fea, tables=['GSUB'])
+    rename(f, 'ScriptProbe')
+    save(f, 'ScriptProbe.ttf')
+
+
+def nominal_probe():
+    # ccmp maps '0' to 'W' and 'x' to 'X' (DFLT and latn), so the shaped
+    # "0" and "x" are not the nominal glyphs that the ch and ex units read.
+    f = TTFont(LATO)
+    cmap = f.getBestCmap()
+    g = lambda ch: cmap[ord(ch)]
+    fea = f"""languagesystem DFLT dflt;
+languagesystem latn dflt;
+feature ccmp {{
+  sub {g('0')} by {g('W')};
+  sub {g('x')} by {g('X')};
+}} ccmp;"""
+    del f['GSUB']
+    addOpenTypeFeaturesFromString(f, fea, tables=['GSUB'])
+    rename(f, 'NominalProbe')
+    save(f, 'NominalProbe.ttf')
+
+
+def low_x_probe():
+    # cmap maps 'x' to the underscore glyph, which is all below the
+    # baseline, so on macOS the top of the "x" glyph gives a negative
+    # x-height, which the ex unit does not use (FontMetrics::HasXHeight).
+    f = TTFont(LATO)
+    underscore = f.getBestCmap()[ord('_')]
+    for table in f['cmap'].tables:
+        if table.isUnicode():
+            table.cmap[ord('x')] = underscore
+    rename(f, 'LowXProbe')
+    save(f, 'LowXProbe.ttf')
+
+
+def ic_probe(src, pin, family, name):
+    # The ASCII subset of a variable font, the axes of `pin` pinned, and
+    # U+6C34 mapped to the "M" glyph, whose advance moves with the axis left,
+    # so the ic unit tells which instance of the font it was read from.
+    f = TTFont(src)
+    opts = Options()
+    opts.layout_features = ['*']
+    opts.name_IDs = ['*']
+    opts.name_languages = ['*']
+    opts.notdef_outline = True
+    s = Subsetter(opts)
+    s.populate(unicodes=range(0x20, 0x7F))
+    s.subset(f)
+    if pin:
+        f = instantiateVariableFont(f, pin)
+    m = f.getBestCmap()[ord('M')]
+    for table in f['cmap'].tables:
+        if table.isUnicode():
+            table.cmap[0x6C34] = m
+    rename(f, family)
+    save(f, name)
+
+
+def ic_probes():
+    # IcWghtProbe: Science Gothic's wght axis (100..900), "M" 1930/1986/2188
+    # units at 100/400/900. IcOpszProbe: Newsreader's opsz axis (6..72),
+    # "M" 2196/1910/2048 units at 6/18/72.
+    ic_probe(SCIENCE_GOTHIC, {'CTRS': 0, 'slnt': 0, 'wdth': 100}, 'IcWghtProbe',
+             'IcWghtProbe.ttf')
+    ic_probe(NEWSREADER_OPSZ, None, 'IcOpszProbe', 'IcOpszProbe.ttf')
+
+
+def chws_probe(halt_src):
+    # The Noto CJK halt subset plus a `chws` feature that reuses the `halt`
+    # lookups, so chws on == halt everywhere.
+    f = TTFont(halt_src)
+    g = f['GPOS'].table
+    old = list(g.FeatureList.FeatureRecord)
+    new = list(old)
+    added = {}
+    for i, r in enumerate(old):
+        if r.FeatureTag in ('halt', 'vhal'):
+            c = copy.deepcopy(r)
+            c.FeatureTag = 'chws' if r.FeatureTag == 'halt' else 'vchw'
+            new.append(c)
+            added[i] = c
+    order = sorted(range(len(new)), key=lambda k: (new[k].FeatureTag, k))
+    pos = {k: n for n, k in enumerate(order)}
+    g.FeatureList.FeatureRecord = [new[k] for k in order]
+    g.FeatureList.FeatureCount = len(new)
+    idx_of = {id(new[k]): k for k in range(len(new))}
+    for sr in g.ScriptList.ScriptRecord:
+        for ls in [sr.Script.DefaultLangSys] + [l.LangSys for l in sr.Script.LangSysRecord]:
+            if ls is None:
+                continue
+            fi = list(ls.FeatureIndex)
+            extra = [idx_of[id(added[i])] for i in fi if i in added]
+            ls.FeatureIndex = sorted(pos[i] for i in fi + extra)
+            ls.FeatureCount = len(ls.FeatureIndex)
+    rename(f, 'ChwsProbe')
+    save(f, 'ChwsProbe.otf')
+
+
+def arabic_split():
+    # ArA: Harmattan without U+0644 in its cmap (GSUB/GPOS untouched).
+    f = TTFont(HARMATTAN)
+    for t in f['cmap'].tables:
+        t.cmap.pop(0x644, None)
+    rename(f, 'ArA')
+    save(f, 'ArA.ttf')
+    # ArB: Harmattan with upem 2048 -> 1536: everything 4/3 bigger.
+    f = TTFont(HARMATTAN)
+    f['head'].unitsPerEm = 1536
+    rename(f, 'ArB')
+    save(f, 'ArB.ttf')
+
+
+def sym_cmap_probe():
+    # Lato's U+0020..U+00FF glyphs behind a (3,0) symbol cmap at
+    # U+F020..U+F0FF, and no other cmap subtable.
+    f = TTFont(LATO)
+    best = f.getBestCmap()
+    sub = cmap_format_4(4)
+    sub.platformID, sub.platEncID, sub.language = 3, 0, 0
+    sub.cmap = {0xF000 + cp: best[cp] for cp in range(0x20, 0x100) if cp in best}
+    f['cmap'].tables = [sub]
+    os2 = f['OS/2']
+    os2.ulCodePageRange1 = 1 << 31  # Symbol character set
+    os2.ulCodePageRange2 = 0
+    os2.usFirstCharIndex, os2.usLastCharIndex = 0xF020, 0xF0FF
+    rename(f, 'SymCmapProbe')
+    save(f, 'SymCmapProbe.ttf')
+
+
+def trak_probe():
+    # Lato with an AAT `trak` table (track 0: +200 units at 12 pt, 0 at 24 pt,
+    # -100 at 40 pt) and a STAT table, which HarfBuzz needs to apply trak.
+    f = TTFont(LATO)
+    trak = newTable('trak')
+    trak.version = 1.0
+    trak.format = 0
+    trak.horizData = TrackData({0.0: TrackTableEntry({12.0: 200, 24.0: 0, 40.0: -100}, nameIndex=256)})
+    trak.vertData = TrackData()
+    f['trak'] = trak
+    f['name'].setName('Normal', 256, 3, 1, 0x409)
+    rename(f, 'TrakProbe')
+    buildStatTable(f, [], elidedFallbackName=2)
+    save(f, 'TrakProbe.ttf')
+
+
+def batak_bold_probe():
+    # NotoSansDevanagari-subset.ttf (this folder) as a bold face of the family
+    # "Noto Sans Batak", without the Batak characters: a loaded face of a
+    # family the host (macOS) also installs (installed-fallback.spec.ts).
+    f = TTFont(os.path.join(HERE, 'NotoSansDevanagari-subset.ttf'))
+    opts = Options()
+    opts.name_IDs = ['*']
+    opts.notdef_outline = True
+    s = Subsetter(opts)
+    s.populate(unicodes=[0x20, 0x915])
+    s.subset(f)
+    family = 'Noto Sans Batak'
+    names = f['name']
+    names.names = [rec for rec in names.names if rec.nameID not in (16, 17, 21, 22)]
+    for rec in names.names:
+        if rec.nameID == 1:
+            rec.string = family
+        elif rec.nameID == 2:
+            rec.string = 'Bold'
+        elif rec.nameID == 3:
+            rec.string = family + ' Bold;probe'
+        elif rec.nameID == 4:
+            rec.string = family + ' Bold'
+        elif rec.nameID == 6:
+            rec.string = family.replace(' ', '') + '-Bold'
+    os2 = f['OS/2']
+    os2.usWeightClass = 700
+    os2.fsSelection = (os2.fsSelection & ~(1 << 6)) | (1 << 5)
+    f['head'].macStyle |= 1
+    save(f, 'BatakBoldProbe.ttf')
+
+
+def named_instance_probe():
+    # Science Gothic with only its "m" glyph, at U+1E290 (TOTO LETTER PA, a
+    # script no fallback list names, so the scan reaches this font), and its
+    # Bold named instance (wght 700, slnt 0) moved to CTRS 85: that instance
+    # taken as it is draws "m" 2.58px wider at 32px than the face at wght
+    # 700, CTRS 0 (installed-fallback.spec.ts).
+    f = TTFont(SCIENCE_GOTHIC)
+    opts = Options()
+    opts.layout_features = []
+    opts.name_IDs = ['*']
+    opts.name_languages = ['*']
+    opts.notdef_outline = True
+    s = Subsetter(opts)
+    s.populate(unicodes=[ord('m')])
+    s.subset(f)
+    m = f.getBestCmap()[ord('m')]
+    # A format 12 subtable for the astral character, and an empty format 4
+    # one beside it.
+    cmap = f['cmap']
+    cmap.tables = []
+    for platform, encoding, fmt in ((0, 4, 12), (3, 1, 4), (3, 10, 12)):
+        table = CmapSubtable.newSubtable(fmt)
+        table.platformID = platform
+        table.platEncID = encoding
+        table.language = 0
+        table.cmap = {0x1E290: m} if fmt == 12 else {}
+        cmap.tables.append(table)
+    for instance in f['fvar'].instances:
+        if instance.coordinates['wght'] == 700 and instance.coordinates['slnt'] == 0:
+            instance.coordinates['CTRS'] = 85.0
+    rename(f, 'Named Instance Probe')
+    save(f, 'NamedInstanceProbe.ttf')
+
+
+def deva_subset(src):
+    f = TTFont(src)
+    f.flavor = None
+    opts = Options()
+    opts.layout_features = ['*']
+    opts.name_IDs = ['*']
+    opts.name_languages = ['*']
+    opts.notdef_outline = True
+    opts.glyph_names = False
+    s = Subsetter(opts)
+    unicodes = [0x20, 0x200C, 0x200D, 0x25CC] + list(range(0x900, 0x980))
+    s.populate(unicodes=unicodes)
+    s.subset(f)
+    save(f, 'NotoSansDevanagari-subset.ttf')
+
+
+def main():
+    if sys.argv[1:] == ['nominal']:
+        # Only NominalProbe.ttf, which needs no outside source.
+        nominal_probe()
+        return
+    if sys.argv[1:] == ['lowx']:
+        # Only LowXProbe.ttf, which needs no outside source.
+        low_x_probe()
+        return
+    if sys.argv[1:] == ['ic']:
+        # Only IcWghtProbe.ttf and IcOpszProbe.ttf, which need no outside
+        # source.
+        ic_probes()
+        return
+    if sys.argv[1:] == ['batak']:
+        # Only BatakBoldProbe.ttf, from NotoSansDevanagari-subset.ttf.
+        batak_bold_probe()
+        return
+    if sys.argv[1:] == ['named']:
+        # Only NamedInstanceProbe.ttf, from ScienceGothic-VariableFont.ttf.
+        named_instance_probe()
+        return
+    deva_src, halt_src = sys.argv[1], sys.argv[2]
+    locl_probe()
+    script_probe()
+    nominal_probe()
+    low_x_probe()
+    ic_probes()
+    chws_probe(halt_src)
+    arabic_split()
+    sym_cmap_probe()
+    trak_probe()
+    deva_subset(deva_src)
+    batak_bold_probe()
+    named_instance_probe()
+    shutil.copyfile(halt_src, os.path.join(HERE, 'NotoSansCJKjp-Regular-subset-halt.otf'))
+
+
+if __name__ == '__main__':
+    main()

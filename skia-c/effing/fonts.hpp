@@ -26,6 +26,9 @@ namespace effing {
 // Whether `faces` holds `typeface` itself.
 bool has_face(const sk_sp<SkFontStyleSet>& faces, const SkTypeface& typeface);
 
+// Whether `faces` holds the typeface `id`.
+bool lists_face(const std::vector<sk_sp<SkTypeface>>& faces, SkTypefaceID id);
+
 // The faces after the first of the font collection (.ttc, .otc, or a WOFF2
 // of one) at `path`, or in `data` when `path` is empty, made by FreeType as
 // the canvas makes a registered font's first face by default
@@ -43,6 +46,7 @@ class ShadowableFaces {
  public:
   void add(const SkString& family, const SkTypeface& typeface);
   void remove(const SkString& family, const SkTypeface& typeface);
+  bool contains(const SkString& family, const SkTypeface& typeface) const;
 
   // The provider's `faces` of `family`, without the shadowable ones when the
   // family has registered faces too: a family registered under a name

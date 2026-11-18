@@ -1,4 +1,5 @@
 use crate::color::Color;
+use crate::css_math::Unit;
 use crate::sk::{BlendMode, ImageFilter, Matrix};
 
 use super::{
@@ -10,9 +11,37 @@ use super::{
   },
 };
 
+use crate::font_props::{
+  FontFeatureSettings, FontOpticalSizing, FontSizeAdjust, FontVariantLigatures, FontVariantNumeric,
+  FontVariantPosition,
+};
 use crate::sk::FontVariation;
 
 pub const BLINK_IDENTITY: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+/// A letterSpacing / wordSpacing value as Blink keeps it: the float number
+/// and its unit (letter_spacing_ and letter_spacing_unit_,
+/// canvas_rendering_context_2d_state.h:425-433). The px value is resolved
+/// from it when it is set and again on every font change.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpacingLength {
+  pub value: f32,
+  pub unit: Unit,
+  /// The unit as typed, lowercased. Blink compares unit types, and `Unit`
+  /// merges some (vw and vi, em and __qem), so the early return compares
+  /// this name.
+  pub name: String,
+}
+
+impl Default for SpacingLength {
+  fn default() -> Self {
+    SpacingLength {
+      value: 0.0,
+      unit: Unit::Px,
+      name: "px".to_owned(),
+    }
+  }
+}
 
 #[derive(Debug, Clone)]
 pub struct Context2dRenderingState {
@@ -36,13 +65,26 @@ pub struct Context2dRenderingState {
   pub font_style: ComputedFont,
   pub font_variation_settings: String,
   pub font_variations: Vec<FontVariation>,
+  /// The six non-standard CSS font properties, parsed; the getters serialize
+  /// them (`font_props.rs`). `ctx.font` keeps them.
+  pub font_feature_settings: FontFeatureSettings,
+  pub font_variant_ligatures: FontVariantLigatures,
+  pub font_variant_numeric: FontVariantNumeric,
+  pub font_variant_position: FontVariantPosition,
+  pub font_size_adjust: FontSizeAdjust,
+  pub font_optical_sizing: FontOpticalSizing,
   pub text_align: TextAlign,
   pub text_baseline: TextBaseline,
   pub text_direction: TextDirection,
+  /// The spacing in px that text uses.
   pub letter_spacing: f32,
+  /// The getter string, Blink's parsed_letter_spacing_: the number and the
+  /// unit name, "0px" at first, "" after save() (see `copy_for_save`).
   pub letter_spacing_raw: String,
+  pub letter_spacing_len: SpacingLength,
   pub word_spacing: f32,
   pub word_spacing_raw: String,
+  pub word_spacing_len: SpacingLength,
   pub font_stretch: FontStretch,
   pub font_stretch_raw: String,
   pub font_kerning: FontKerning,
@@ -97,13 +139,21 @@ impl Default for Context2dRenderingState {
       font_style: ComputedFont::default(),
       font_variation_settings: "normal".to_owned(),
       font_variations: vec![],
+      font_feature_settings: FontFeatureSettings::default(),
+      font_variant_ligatures: FontVariantLigatures::default(),
+      font_variant_numeric: FontVariantNumeric::default(),
+      font_variant_position: FontVariantPosition::Normal,
+      font_size_adjust: FontSizeAdjust::None,
+      font_optical_sizing: FontOpticalSizing::Auto,
       text_align: TextAlign::default(),
       text_baseline: TextBaseline::default(),
       text_direction: TextDirection::default(),
       letter_spacing: 0.0,
       letter_spacing_raw: "0px".to_owned(),
+      letter_spacing_len: SpacingLength::default(),
       word_spacing: 0.0,
       word_spacing_raw: "0px".to_owned(),
+      word_spacing_len: SpacingLength::default(),
       font_stretch: FontStretch::Normal,
       font_stretch_raw: "normal".to_owned(),
       font_kerning: FontKerning::Auto,
@@ -119,5 +169,20 @@ impl Default for Context2dRenderingState {
       global_composite_operation: BlendMode::default(),
       has_clip: false,
     }
+  }
+}
+
+impl Context2dRenderingState {
+  /// The state save() puts on top. Blink's copy constructor
+  /// (canvas_rendering_context_2d_state.cc:183-236) copies the spacing
+  /// numbers and units but not parsed_letter_spacing_ / parsed_word_spacing_,
+  /// so after save() both getters are "" until a new value is set. Chrome 157
+  /// does this; restore() gives the saved strings back. Clone keeps them, as
+  /// the saved state must.
+  pub fn copy_for_save(&self) -> Self {
+    let mut top = self.clone();
+    top.letter_spacing_raw = String::new();
+    top.word_spacing_raw = String::new();
+    top
   }
 }

@@ -63,8 +63,22 @@ bool has_face(const sk_sp<SkFontStyleSet>& faces, const SkTypeface& typeface) {
   return false;
 }
 
+bool lists_face(const std::vector<sk_sp<SkTypeface>>& faces, SkTypefaceID id) {
+  for (const auto& face : faces) {
+    if (face != nullptr && face->uniqueID() == id) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void ShadowableFaces::add(const SkString& family, const SkTypeface& typeface) {
   faces_.emplace(std::string(family.c_str()), typeface.uniqueID());
+}
+
+bool ShadowableFaces::contains(const SkString& family,
+                               const SkTypeface& typeface) const {
+  return faces_.count({std::string(family.c_str()), typeface.uniqueID()}) > 0;
 }
 
 void ShadowableFaces::remove(const SkString& family,
