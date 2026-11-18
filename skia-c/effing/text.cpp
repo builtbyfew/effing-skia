@@ -136,8 +136,11 @@ void draw_run_as_paths(SkCanvas* canvas,
 }
 
 // What paint_glyphs_unsnapped drew on this thread, until
-// effing_take_text_painted reports it.
-thread_local Painted text_painted;
+// effing_take_text_painted reports it and frees it. A pointer: a
+// thread_local with a destructor makes the addon import
+// __cxa_thread_atexit_impl, which the glibc 2.17 the Linux build targets
+// lacks (CI's undefined-symbol check).
+thread_local Painted* text_painted = nullptr;
 
 }  // namespace
 
@@ -234,8 +237,9 @@ void paint_glyphs_unsnapped(SkCanvas* canvas,
                             SkScalar y,
                             const SkPaint& paint) {
   if (count > 0) {
-    draw_run_as_paths(canvas, font, glyphs, positions, count, x, y, paint,
-                      &text_painted);
+    draw_run_as_paths(
+        canvas, font, glyphs, positions, count, x, y, paint,
+        text_painted ? text_painted : (text_painted = new Painted()));
   }
 }
 
@@ -244,7 +248,12 @@ void paint_glyphs_unsnapped(SkCanvas* canvas,
 extern "C" {
 
 void effing_take_text_painted(effing_painted* painted) {
-  effing::text_painted.export_to(painted);
-  effing::text_painted = {};
+  if (effing::text_painted == nullptr) {
+    *painted = {};
+    return;
+  }
+  effing::text_painted->export_to(painted);
+  delete effing::text_painted;
+  effing::text_painted = nullptr;
 }
 }
