@@ -476,9 +476,9 @@ class FamilyResolver {
               !c_collection_->assets->isShadowable(spelling, *face);
           const bool keep =
               kind == FaceKind::kAll ? true
-              : web ? alias || own_registered ||
-                          (!own && (!system || AliasArg(spelling, folded,
-                                                        face.get())))
+              : web                  ? alias || own_registered ||
+                          (!own &&
+                           (!system || AliasArg(spelling, folded, face.get())))
                     : system && own;
           if (keep) {
             const uint64_t order =
