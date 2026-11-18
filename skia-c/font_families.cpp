@@ -479,12 +479,14 @@ class FamilyResolver {
           const bool own_registered =
               own && !system &&
               !c_collection_->assets->isShadowable(spelling, *face);
-          const bool keep =
-              kind == FaceKind::kAll ? true
-              : web                  ? alias || own_registered ||
-                          (!own &&
-                           (!system || AliasArg(spelling, folded, face.get())))
-                    : system && own;
+          bool keep = system && own;
+          if (kind == FaceKind::kAll) {
+            keep = true;
+          } else if (web) {
+            keep =
+                alias || own_registered ||
+                (!own && (!system || AliasArg(spelling, folded, face.get())));
+          }
           if (keep) {
             const uint64_t order =
                 web     ? Order(spelling, face->uniqueID(), true)
