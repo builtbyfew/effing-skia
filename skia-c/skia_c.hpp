@@ -235,6 +235,12 @@ struct RegisteredFont {
   // effing: the faces after the first of a font collection (.ttc, .otc),
   // which a rebuild registers again as they are.
   std::vector<sk_sp<SkTypeface>> more_faces;
+  // effing: the faces registered afresh under their own family names when a
+  // shadowable font was registered again under its own name
+  // (promoteOwnName). A rebuild registers the font's own faces there instead,
+  // as registered faces (its shadowable_names no longer list those names);
+  // these stay the faces of the setAlias calls made from them (keptFaceOf).
+  std::vector<sk_sp<SkTypeface>> promoted;
   // When each alias was registered (parallel to aliases). A rebuild
   // registers every (face, alias) pair again in this order, so the
   // provider's first family (its fallback, onLegacyMakeTypeface) and the
@@ -370,6 +376,24 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   sk_sp<SkFontStyleSet> onCreateStyleSet(int index) const override {
     return effing::with_css_matching(
         TypefaceFontProvider::onCreateStyleSet(index));
+  }
+
+  // effing: the face `typeface_id` of the font `id` when it is one of the
+  // faces a rebuild keeps as they are (RegisteredFont::more_faces and
+  // promoted) rather than making them again; null otherwise.
+  sk_sp<SkTypeface> keptFaceOf(uint32_t id, SkTypefaceID typeface_id) const {
+    auto it = registered_fonts.find(id);
+    if (it == registered_fonts.end()) {
+      return nullptr;
+    }
+    for (const auto* faces : {&it->second.more_faces, &it->second.promoted}) {
+      for (const auto& face : *faces) {
+        if (face && face->uniqueID() == typeface_id) {
+          return face;
+        }
+      }
+    }
+    return nullptr;
   }
 
   // effing: whether `typeface` joins the family `family` without shadowing
@@ -685,7 +709,8 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
       if (web ||
           (font_info.typeface &&
            font_info.typeface->uniqueID() == typeface_id) ||
-          effing::lists_face(font_info.more_faces, typeface_id)) {  // effing
+          effing::lists_face(font_info.more_faces, typeface_id) ||  // effing
+          effing::lists_face(font_info.promoted, typeface_id)) {
         if (web_face) {
           *web_face = web;
         }
@@ -726,6 +751,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     // other faces of a collection, registered again as they were.
     font_info.shadowable_names = old.shadowable_names;
     font_info.more_faces = old.more_faces;
+    font_info.promoted = old.promoted;
     registered_fonts[id] = std::move(font_info);
 
     // Update secondary index
@@ -760,6 +786,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
       shadowable_faces.add(SkString(name.c_str()), *font_info.typeface);
     }
     replayMoreFaces(font_info, name);
+
   }
 
   /**
@@ -1030,6 +1057,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
       if (face != nullptr) {
         promoted.insert(name.c_str());
         shadowable_faces.remove(name, *face);
+        font.promoted.push_back(face);
         this->registerTypeface(std::move(face), name);
       }
     }
@@ -1100,6 +1128,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
         // A copy, as promoteOwnName registers.
         if (sk_sp<SkTypeface> copy = face->makeClone(SkFontArguments())) {
           shadowable_faces.remove(own, *copy);
+          font.promoted.push_back(copy);
           this->registerTypeface(std::move(copy), own);
           promoted = true;
         }
@@ -1187,6 +1216,10 @@ struct skiac_font_collection {
     // loadFontsFromDir loaded: RegisteredFont::web_typeface), so a rebuild
     // gives the alias the twin made again.
     bool web_face = false;
+    // effing: the face, when it is one a rebuild keeps as it is (a font
+    // collection's later face, or a promoted one: keptFaceOf), so the
+    // alias keeps it rather than the font's first face made again.
+    sk_sp<SkTypeface> kept_face;
   };
   std::vector<SetAlias> set_aliases;
 
@@ -1223,12 +1256,14 @@ struct skiac_font_collection {
           entry.face_id = face_id;
           entry.font_key = font_key;
           entry.web_face = web_face;
+          entry.kept_face = assets->keptFaceOf(font_key, face_id);  // effing
           return changed;
         }
       }
     }
     set_aliases.push_back({family, alias, assets->nextOrder(), installed, true,
-                           face_id, font_key, web_face});
+                           face_id, font_key, web_face,
+                           assets->keptFaceOf(font_key, face_id)});  // effing
     return true;
   }
   // Set when the dynamic provider gains a face or an alias. FontCollection
@@ -1614,6 +1649,9 @@ struct skiac_font_collection {
               entry.web_face ? made_web.find(entry.font_key) : made_web.end();
           if (web != made_web.end() && web->second) {
             typeface = web->second;
+          }
+          if (entry.kept_face) {
+            typeface = entry.kept_face;  // effing
           }
         } else {
           sk_sp<TypefaceFontProviderCustom> old_assets =

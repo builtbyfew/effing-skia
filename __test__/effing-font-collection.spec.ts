@@ -160,6 +160,18 @@ test.serial('remove() drops the setAlias mappings of every face of a font collec
   t.true(GlobalFonts.remove(lato!))
 })
 
+test.serial("a setAlias of a collection's later face keeps that face after a rebuild", (t) => {
+  const key = GlobalFonts.registerFromPath(COLLECTION, 'Collection Later Faces')
+  t.truthy(key)
+  t.true(GlobalFonts.setAlias('Effing Collection Serif', 'Collection Later Alias'))
+  near(t, measure('20px "Collection Later Alias"'), SERIF)
+  // GlobalFonts.remove rebuilds the provider.
+  const other = GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Oswald.ttf'), 'Collection Rebuild')
+  t.true(GlobalFonts.remove(other!))
+  near(t, measure('20px "Collection Later Alias"'), SERIF)
+  t.true(GlobalFonts.remove(key!))
+})
+
 // Last: system fonts can't be removed.
 test.serial('loadSystemFontsFromDir loads every face of a font collection as a system font', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'effing-system-collection-'))

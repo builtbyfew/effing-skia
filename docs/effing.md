@@ -383,8 +383,11 @@ top:
   as `white-space: pre` does (CSS `nowrap` collapses them, so a caller after
   that collapses them itself). Such text is laid out in pieces, as below, a
   piece ending at the hard break before such spaces.
-- Glyphs are unhinted and painted unsnapped, exactly as `fillText` does under
-  `geometricPrecision`; the two agree pixel for pixel.
+- Glyphs are unhinted and painted unsnapped, as `fillText` does under
+  `geometricPrecision`. The two lay a line out to the same width, but
+  upstream's shaper places each word's run as Chrome does, which can be a
+  few thousandths of a pixel from where a `Paragraph` puts it, so their
+  edge pixels can differ by a few levels.
 - `letterSpacing` follows each character, as in Chrome, except the ones
   Chrome adds none after (below).
 - A line that starts after the space it wraps at carries no kerning against
@@ -514,12 +517,8 @@ Where the fork still differs from Chrome, as before:
   one: with a ZWSP between each two of 1000 words, a layout takes 4.6ms
   instead of 0.9ms, and with 4000 words 77ms instead of 3.6ms. Calling
   `layout()` again on the same `Paragraph` is cheap, as its text isn't
-  shaped again, but SkParagraph's cache doesn't always spare a new one with
-  the same text: it leaves out a text of 40 or more characters whose first
-  or last 40 are those of the last text it cached
-  (`ParagraphCache::isPossiblyTextEditing`), so two long captions that
-  share their start or end, laid out in turn each frame, are shaped anew
-  every time.
+  shaped again; a new `Paragraph` shapes its text anew, since SkParagraph's
+  cache is off for the font collection (upstream turns it off from 1.1.0).
 
 #### Justification
 
@@ -635,9 +634,10 @@ breaks them (`__test__/effing-paragraph-placeholders.spec.ts`):
   an `emoji` placeholder at no opportunity, the text is laid out in pieces
   (below), the line ending at its last opportunity instead.
 
-The two mix in a paragraph. SkParagraph's cache keys a paragraph on its
-placeholders' sizes but not their `lineBreak`, so the strut's font families
-carry a tag for the paragraphs with `emoji` ones.
+The two mix in a paragraph. (The strut's font families carry a tag for the
+paragraphs with `emoji` ones, for SkParagraph's cache, which keys a
+paragraph on its placeholders' sizes but not their `lineBreak`; the cache is
+off from upstream 1.1.0.)
 
 Skia places a placeholder along its line; effing places it vertically by its
 `verticalAlign`, the CSS `vertical-align` keywords, in effing's line box:
@@ -740,12 +740,9 @@ How:
   before the window's last line, and the next piece starts there. The work
   then grows with the text, rather than with its square, as laying out all
   the text after each such line again would.
-- SkParagraph caches the opportunities with the shaped text, under a key
-  that leaves them out, so the strut's font families carry a tag for each
-  set of them. SkParagraph also leaves out of its cache a paragraph whose
-  first or last 40 bytes are those of the last one it cached (it takes it
-  for text being edited), so laying out the same long text under two modes
-  in turn shapes it anew each time.
+- The strut's font families carry a tag for each set of opportunities, for
+  SkParagraph's cache, which keys the shaped text without them; the cache
+  is off from upstream 1.1.0.
 
 The tests in `__test__/effing-word-break.spec.ts` hold Chrome's line breaks.
 Known differences from Chrome:
@@ -941,9 +938,12 @@ registered faces.
   from 1.1.0 (their metrics follow Chrome's rules for installed fonts rather
   than web fonts), but they shadow the system's fonts as registered ones do
   (`effing_font_collection_register_installed_font`).
-- Fallback for characters no family of the list has is unchanged: it comes
-  from the system font directory's font manager, whichever fonts are
-  registered.
+- In a `Paragraph`, fallback for characters no family of the list has is
+  unchanged: it comes from the system font directory's font manager,
+  whichever fonts are registered. Canvas text takes them from upstream's
+  shaper, from 1.1.1: the installed fonts (the system's, the user's font
+  directories and `loadFontsFromDir`'s, every face of a collection among
+  them) and the system font directory's font manager.
 
 ### Canvas text
 
@@ -1075,7 +1075,8 @@ whose `matchStyle` is `effing::match_css` (`effing::with_css_matching`).
 - A variable font is one face, of its default instance's style; its axes
   don't follow the requested weight or width, and its named instances are
   not faces of their own, where CoreText lists those of a system font.
-- Fallback for characters no family of the list has is unchanged.
+- Fallback for characters no family of the list has is unchanged (see
+  registered fonts over system fonts).
 - Lottie text keeps Skia's matching: `skiac_skottie_animation_make` gives
   Skottie a font manager of its own, which isn't wrapped.
 

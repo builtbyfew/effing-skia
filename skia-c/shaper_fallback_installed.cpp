@@ -673,7 +673,17 @@ bool ListInstalledFallbackFamilies(skiac_font_collection* c_collection,
     if (folded.empty() || folded == "lastresort") {
       continue;
     }
-    listed[std::move(folded)].push_back(font.typeface);
+    listed[folded].push_back(font.typeface);
+    // effing: and the other faces of a font collection, by their own
+    // families (docs/effing.md).
+    for (const auto& face : font.more_faces) {
+      SkString more;
+      face->getFamilyName(&more);
+      std::string more_folded = FoldFamilyName({more.c_str(), more.size()});
+      if (!more_folded.empty() && more_folded != "lastresort") {
+        listed[std::move(more_folded)].push_back(face);
+      }
+    }
   }
   // Each family `assets` lists, by its place in `families`.
   std::map<std::string, size_t> in_assets;

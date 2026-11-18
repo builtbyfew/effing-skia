@@ -499,6 +499,20 @@ class FamilyResolver {
         }
       }
     }
+    // effing: an installed family's shadowable faces (the system's) give way
+    // to its other installed ones (loadFontsFromDir), as in the untagged
+    // family (effing::ShadowableFaces; docs/effing.md).
+    if (!web) {
+      const auto shadowable = [&](const sk_sp<SkTypeface>& face) {
+        SkString family;
+        face->getFamilyName(&family);
+        return c_collection_->assets->isShadowable(family.c_str(), *face);
+      };
+      if (!std::all_of(faces.begin(), faces.end(), shadowable)) {
+        faces.erase(std::remove_if(faces.begin(), faces.end(), shadowable),
+                    faces.end());
+      }
+    }
     if (!web && faces.empty() && elsewhere) {
       *elsewhere = InstalledElsewhere(name);
     }
