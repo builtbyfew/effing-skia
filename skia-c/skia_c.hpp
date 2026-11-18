@@ -656,8 +656,11 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     for (const auto& [id, font_info] : registered_fonts) {
       for (size_t i = 0; i < font_info.aliases.size(); ++i) {
         if (font_info.alias_args[i] && font_info.aliases[i] == name &&
-            font_info.NameFace(i) &&
-            font_info.NameFace(i)->uniqueID() == typeface_id) {
+            ((font_info.NameFace(i) &&
+              font_info.NameFace(i)->uniqueID() == typeface_id) ||
+             // effing: a collection's later faces, which the call lists
+             // under the alias too (registerMoreFacesAs).
+             effing::lists_face(font_info.more_faces, typeface_id))) {
           return true;
         }
       }

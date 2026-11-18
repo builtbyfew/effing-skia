@@ -442,6 +442,9 @@ class FamilyResolver {
     if (it != c_collection_->folded_families.end()) {
       // {registration order, face}, merged across the spellings below.
       std::vector<std::pair<uint64_t, sk_sp<SkTypeface>>> listed;
+      // effing: whether each entry of `listed` joins its spelling without
+      // shadowing it (effing::ShadowableFaces).
+      std::vector<bool> shadowable;
       const bool merge = it->second.size() > 1;
       for (const auto& spelling : it->second) {
         // The provider's own family, not a tagged one.
@@ -485,9 +488,24 @@ class FamilyResolver {
                 web     ? Order(spelling, face->uniqueID(), true)
                 : merge ? Order(spelling, face->uniqueID(), false)
                         : 0;
+            shadowable.push_back(
+                c_collection_->assets->isShadowable(spelling, *face));
             listed.emplace_back(order, std::move(face));
           }
         }
+      }
+      // effing: as in the untagged family, the shadowable faces give way
+      // to the family's registered ones, across all its spellings
+      // (effing::ShadowableFaces::shadow; docs/effing.md).
+      if (std::find(shadowable.begin(), shadowable.end(), false) !=
+          shadowable.end()) {
+        size_t kept = 0;
+        for (size_t i = 0; i < listed.size(); ++i) {
+          if (!shadowable[i]) {
+            listed[kept++] = std::move(listed[i]);
+          }
+        }
+        listed.resize(kept);
       }
       std::stable_sort(listed.begin(), listed.end(),
                        [web](const auto& a, const auto& b) {
