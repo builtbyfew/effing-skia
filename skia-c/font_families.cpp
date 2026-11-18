@@ -443,8 +443,10 @@ class FamilyResolver {
       // {registration order, face}, merged across the spellings below.
       std::vector<std::pair<uint64_t, sk_sp<SkTypeface>>> listed;
       // effing: whether each entry of `listed` joins its spelling without
-      // shadowing it (effing::ShadowableFaces).
+      // shadowing it (effing::ShadowableFaces), and whether a setAlias call
+      // named it there.
       std::vector<bool> shadowable;
+      std::vector<bool> named;
       const bool merge = it->second.size() > 1;
       for (const auto& spelling : it->second) {
         // The provider's own family, not a tagged one.
@@ -490,18 +492,21 @@ class FamilyResolver {
                         : 0;
             shadowable.push_back(
                 c_collection_->assets->isShadowable(spelling, *face));
+            named.push_back(alias);
             listed.emplace_back(order, std::move(face));
           }
         }
       }
       // effing: as in the untagged family, the shadowable faces give way
       // to the family's registered ones, across all its spellings
-      // (effing::ShadowableFaces::shadow; docs/effing.md).
+      // (effing::ShadowableFaces::shadow; docs/effing.md). A face a setAlias
+      // call named there stays (setAlias to a font's own family that lists
+      // it already leaves it shadowable in the provider).
       if (std::find(shadowable.begin(), shadowable.end(), false) !=
           shadowable.end()) {
         size_t kept = 0;
         for (size_t i = 0; i < listed.size(); ++i) {
-          if (!shadowable[i]) {
+          if (!shadowable[i] || named[i]) {
             listed[kept++] = std::move(listed[i]);
           }
         }

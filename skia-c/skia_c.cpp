@@ -4783,14 +4783,10 @@ bool skiac_font_collection_set_alias(skiac_font_collection* c_font_collection,
   // face makes the call a no-op. Otherwise the spelling is listed now, as
   // the rebuild replay does, so a font registered under it later goes after
   // the alias (setAlias('Lato', 'lato'), then a font as 'lato').
-  // effing: a face the alias lists only as a shadowable face (a font
-  // registered under another alias, in its own family) becomes a registered
-  // face there, as setAlias to a font's own family makes it (docs/effing.md).
   if (existing_typeface &&
       existing_typeface->uniqueID() == typeface->uniqueID() &&
       ListsFace(c_font_collection->assets->matchFamily(alias),
-                typeface->uniqueID()) &&
-      !c_font_collection->assets->isShadowable(alias, *typeface)) {  // effing
+                typeface->uniqueID())) {
     // Alias already points to the same typeface - true idempotency, no need to
     // re-register. A new or reactivated entry still makes the alias a web
     // font (font_families.cpp IsWebFont): Chrome 157, FontFace "Arial" with
