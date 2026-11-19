@@ -54,11 +54,15 @@ using skia::textlayout::TextDirection;
 // Wide enough for any real layout, small enough to stay exact in float.
 constexpr float kUnbounded = 1e7f;
 
-// What each placeholder is shaped as, and a lone CR (docs/effing.md): U+2063
-// INVISIBLE SEPARATOR, which HarfBuzz hides and the line breaker takes for a
-// letter.
+// What each placeholder is in the text, and what a lone CR is
+// (docs/effing.md): U+2063 INVISIBLE SEPARATOR, which HarfBuzz hides and the
+// line breaker takes for a letter.
 constexpr char kObjectReplacement[] = "\xEF\xBF\xBC";
 constexpr char kInvisibleSeparator[] = "\xE2\x81\xA3";
+// What a placeholder is shaped as (shape_pieces): U+2022 BULLET, of the
+// same length in UTF-8 as U+FFFC, which the shaper takes for a zero width
+// space.
+constexpr char kPlaceholderShape[] = "\xE2\x80\xA2";
 
 // One glyph of a laid-out line, in visual order.
 struct Glyph {
@@ -235,6 +239,9 @@ struct BlinkParagraph {
     float left = 0;
     float baseline = 0;
     Shaped shaped;
+    // Its width before it was justified, which longestLine reports, as
+    // SkParagraph's does; negative when it wasn't.
+    float unjustified_width = -1;
   };
   std::vector<Line> lines;
   std::vector<effing_paragraph_placeholder_box> boxes;
@@ -416,10 +423,20 @@ Shaped shape_pieces(const BlinkParagraph& p, size_t start, size_t end) {
   for (const int32_t k : order) {
     const Piece& piece = pieces[static_cast<size_t>(k)];
     if (piece.end > piece.start) {
-      append(
-          &shaped,
-          shape_string(p, p.text.substr(piece.start, piece.end - piece.start),
-                       piece.start, (piece.level & 1) != 0, p.letter_spacing));
+      std::string text = p.text.substr(piece.start, piece.end - piece.start);
+      // Each placeholder is shaped as a bullet, which the shaper neither
+      // hides nor joins or kerns with the letters around it, as Chrome
+      // shapes the text on either side of an atomic inline apart; the script
+      // of the text around it still carries across, as Chrome resolves the
+      // scripts of the whole paragraph. Its glyph gives way to the box
+      // (shape_range).
+      for (size_t at = piece.start; at < piece.end; at = next_char(p, at)) {
+        if (is_placeholder(p, at)) {
+          text.replace(at - piece.start, 3, kPlaceholderShape);
+        }
+      }
+      append(&shaped, shape_string(p, text, piece.start, (piece.level & 1) != 0,
+                                   p.letter_spacing));
     }
   }
   return shaped;
@@ -829,8 +846,12 @@ bool justify(const BlinkParagraph& p, Line* line, float width) {
   // Walks the glyphs on screen: each cluster widens by its code points'
   // expansions, before them on its left in LTR and on its right in RTL.
   Shaped& shaped = line->shaped;
-  // How far the glyphs before each one on screen moved it.
+  // How far the glyphs before each one on screen moved it, and where it was.
   std::vector<float> moved_before(shaped.glyphs.size(), 0);
+  std::vector<float> pen_before(shaped.glyphs.size(), 0);
+  for (size_t i = 0; i < shaped.glyphs.size(); i++) {
+    pen_before[i] = shaped.glyphs[i].pen;
+  }
   float moved = 0;
   for (size_t i = 0; i < shaped.glyphs.size();) {
     const size_t cluster = shaped.glyphs[i].cluster;
@@ -873,13 +894,14 @@ bool justify(const BlinkParagraph& p, Line* line, float width) {
   for (auto& box : shaped.boxes) {
     float shift = moved;
     for (size_t i = 0; i < shaped.glyphs.size(); i++) {
-      if (shaped.glyphs[i].pen - moved_before[i] >= box.second - 1e-3f) {
+      if (pen_before[i] >= box.second - 1e-3f) {
         shift = moved_before[i];
         break;
       }
     }
     box.second += shift;
   }
+  line->unjustified_width = shaped.width;
   shaped.width = width;
   return true;
 }
@@ -973,6 +995,7 @@ void cut_justified(const BlinkParagraph& p, Line* line, float width) {
     append(&shaped, tail);
   }
   line->end = kept_end;
+  line->unjustified_width = -1;
 }
 
 // Shapes each hard line whole for the advances the lines are broken by, and
@@ -1077,19 +1100,37 @@ bool break_hard_line(BlinkParagraph* p,
                                  hard.end, true, false));
     return false;
   }
+  // Whether a line from `start` that breaks at `brk`, its text ending at
+  // `end`, fits: without the whitespace that hangs at its end, which kept
+  // whitespace does too (CSS pre-wrap's spaces hang).
+  const auto line_fits = [&](const Line& line, size_t end, size_t brk) {
+    const size_t fit_end = without_hanging(*p, start, end);
+    if (fit_end == end) {
+      return fits(line.shaped.width, width);
+    }
+    return fits(
+        make_line(*p, start, fit_end, brk, brk >= hard.end, brk < hard.end)
+            .shaped.width,
+        width);
+  };
   while (start < hard.end) {
     if (full()) {
       return true;
     }
-    // The opportunities that fit by the advances of the whole shape.
+    // The opportunities that fit by the advances of the whole shape. One at
+    // a soft hyphen fits with the hyphen; one where the text without it no
+    // longer fits ends the search, as the hyphen only counts where the line
+    // breaks.
     std::vector<size_t> fitting;
     for (size_t at = next_opportunity(*p, hard, start);;
          at = next_opportunity(*p, hard, at)) {
-      if (!fits(estimate(*p, start, content_end(start, at), at < hard.end),
-                width)) {
+      const size_t text_end = without_hanging(*p, start, at);
+      if (!fits(estimate(*p, start, text_end, false), width)) {
         break;
       }
-      fitting.push_back(at);
+      if (fits(estimate(*p, start, text_end, at < hard.end), width)) {
+        fitting.push_back(at);
+      }
       if (at >= hard.end) {
         break;
       }
@@ -1104,7 +1145,7 @@ bool break_hard_line(BlinkParagraph* p,
         brk = fitting.back();
         end = content_end(start, brk);
         line = make_line(*p, start, end, brk, brk >= hard.end, brk < hard.end);
-        if (fits(line.shaped.width, width) || fitting.size() == 1) {
+        if (fitting.size() == 1 || line_fits(line, end, brk)) {
           break;
         }
         fitting.pop_back();
@@ -1117,21 +1158,19 @@ bool break_hard_line(BlinkParagraph* p,
       brk = next_opportunity(*p, hard, start);
       end = content_end(start, brk);
       if (p->overflow_wrap == OverflowWrap::kBreakWord) {
-        size_t at = next_char(*p, start);
-        while (at < end &&
-               !has_flag(*p, at, SkUnicode::CodeUnitFlags::kGraphemeStart)) {
-          at = next_char(*p, at);
-        }
         // Never before a soft hyphen (UAX #14 LB21).
         const auto breakable = [&](size_t i) {
           return i >= end ||
                  (has_flag(*p, i, SkUnicode::CodeUnitFlags::kGraphemeStart) &&
                   p->chars[i] != 0xAD);
         };
+        size_t at = next_char(*p, start);
         while (!breakable(at)) {
           at = next_char(*p, at);
         }
-        size_t fitted = at;
+        // Where the word may break, the first cluster always, then each
+        // that fits by the advances of the whole shape.
+        std::vector<size_t> cuts = {at};
         while (at < end) {
           at = next_char(*p, at);
           while (!breakable(at)) {
@@ -1140,16 +1179,37 @@ bool break_hard_line(BlinkParagraph* p,
           if (!fits(estimate(*p, start, at, brk < hard.end), width)) {
             break;
           }
-          fitted = at;
+          cuts.push_back(at);
         }
-        if (fitted < end) {
-          brk = end = fitted;
+        if (cuts.back() < end) {
+          // Shaped on its own, the piece can come out wider (other joining
+          // forms at its end): it gives back clusters until it fits.
+          Line line;
+          for (;;) {
+            const size_t cut = cuts.back();
+            line = make_line(*p, start, cut, cut, false, true);
+            if (cuts.size() == 1 || fits(line.shaped.width, width)) {
+              break;
+            }
+            cuts.pop_back();
+          }
+          brk = end = cuts.back();
+          p->lines.push_back(std::move(line));
+          start = brk;
+          continue;
         }
       }
       p->lines.push_back(
           make_line(*p, start, end, brk, brk >= hard.end, brk < hard.end));
     }
     start = brk;
+    // The whitespace a soft wrap leaves at the start of the next line hangs
+    // at the end of this one, unless whitespace is kept.
+    if (!p->keep_trailing_whitespace) {
+      while (start < hard.end && collapses(p->chars[start])) {
+        start = next_char(*p, start);
+      }
+    }
   }
   return false;
 }
@@ -1322,7 +1382,9 @@ BlinkParagraph* blink_paragraph_create(
     // separator, as U+2029 is.
     std::string bidi_text = p->text;
     for (size_t at = 0; at < bidi_text.size(); at++) {
-      if (p->chars[at] == '\r') {
+      // (The CR of a CRLF, a hard break, is a CR in the text too.)
+      if (p->chars[at] == '\r' &&
+          bidi_text.compare(at, 3, kInvisibleSeparator) == 0) {
         bidi_text.replace(at, 3, "\xE2\x80\xA9");
       }
     }
@@ -1495,7 +1557,9 @@ void blink_paragraph_get_metrics(const BlinkParagraph* p,
   m->line_count = static_cast<int>(p->lines.size());
   m->height = static_cast<float>(m->line_count) * p->line_height;
   for (const Line& line : p->lines) {
-    m->longest_line = std::max(m->longest_line, line.shaped.width);
+    m->longest_line = std::max(m->longest_line, line.unjustified_width >= 0
+                                                    ? line.unjustified_width
+                                                    : line.shaped.width);
   }
   m->min_intrinsic_width = p->min_content;
   m->max_intrinsic_width = std::max(p->max_content, p->min_content);

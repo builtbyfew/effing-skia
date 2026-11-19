@@ -807,8 +807,17 @@ How it lays a paragraph out, as Chrome's DOM layout does:
 - A line that ends at a soft wrap keeps the kerning of its last glyph
   against the space it breaks at, when it is start-aligned: it is shaped
   up to the break, then cut before the space, as Chrome hangs the space.
-- Placeholders are U+FFFC in the text, whose glyph gives way to the
-  placeholder's width.
+- Placeholders are U+FFFC in the text, shaped as U+2022 (the shaper takes
+  U+FFFC for a zero width space, which letters join and kern across), whose
+  glyph then gives way to the placeholder's width: the letters on either
+  side of a placeholder neither join nor kern, as in Chrome, which shapes
+  the text on either side of an atomic inline apart, while the script of
+  the text around it carries across, as Chrome resolves the scripts of the
+  whole paragraph.
+- A soft hyphen's opportunity fits with the hyphen; one that doesn't hides
+  no later opportunity, since the hyphen only counts where the line breaks.
+  Whitespace that ends a line hangs, kept whitespace too, and the
+  whitespace after a soft wrap goes with the line before it.
 - The line box comes from the primary font of the family list as the
   shaper picks it (`effing_primary_face`), with the hhea metrics the
   SkParagraph engine reads.
