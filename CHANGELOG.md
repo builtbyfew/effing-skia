@@ -1,3 +1,20 @@
+# [1.1.1-effing.1](https://github.com/builtbyfew/effing-skia/compare/v1.1.0-effing.1...v1.1.1-effing.1) (2026-11-19)
+
+
+### Features
+
+* merge upstream napi-rs/canvas 1.1.1 ([#69](https://github.com/builtbyfew/effing-skia/issues/69)) ([33c8e6b](https://github.com/builtbyfew/effing-skia/commit/33c8e6b248980a0af3e9c66aab296187ecf1fb08)), whose Blink-style shaper now lays out `fillText`, `strokeText` and `measureText`; the fork's `geometricPrecision` text and registered-font precedence are re-hooked into it, and canvas text resolves families as upstream's.
+* **paragraph:** `engine: 'shaper'` lays a `Paragraph` out with that shaper instead of SkParagraph, with the same API, line model, line breaking and ellipsis ([#70](https://github.com/builtbyfew/effing-skia/issues/70)) ([346883b](https://github.com/builtbyfew/effing-skia/commit/346883bbfb4d488a9aee2a695b5c6bb96580e811)). `skparagraph` stays the default.
+
+
+### Bug Fixes
+
+* **group:** anti-alias the bounds clip, as `ctx.clip()` does ([#67](https://github.com/builtbyfew/effing-skia/issues/67)) ([873c695](https://github.com/builtbyfew/effing-skia/commit/873c6951677eb3ef10da615820caa49f69f266d2))
+* upstream image and text fixes since 1.1.0 ([#68](https://github.com/builtbyfew/effing-skia/issues/68)) ([41325a1](https://github.com/builtbyfew/effing-skia/commit/41325a1075a94fc11b107d524508ee88a1a1a889))
+
+See the 1.1.1-effing.1 section of `docs/effing.md` for the changes `@effing/canvas` has to follow.
+
+
 # [1.1.0-effing.1](https://github.com/builtbyfew/effing-skia/compare/v1.0.10-effing.9...v1.1.0-effing.1) (2026-11-10)
 
 

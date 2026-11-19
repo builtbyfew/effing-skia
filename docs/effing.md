@@ -1479,7 +1479,7 @@ the CI matrix.
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
-### Unreleased
+### 1.1.1-effing.1
 
 - On upstream 1.1.1, with what upstream changed there: among others, its
   Blink-style shaper lays out `fillText`, `strokeText` and `measureText`
@@ -1498,7 +1498,7 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   family names match in any case, the face of a style registered last
   draws, and a generic family keeps the installed faces of the family it
   resolves to (see canvas text under registered fonts over system fonts).
-  A `Paragraph` resolves them as before.
+  A `Paragraph` on the default engine resolves them as before.
 - `Paragraph` takes an `engine`: `shaper` lays it out with upstream's
   Blink-style shaper, the one canvas text uses, with the same line model,
   line breaking and ellipsis (see the shaper engine under `Paragraph`).
