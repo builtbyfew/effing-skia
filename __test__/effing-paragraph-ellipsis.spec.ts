@@ -26,6 +26,9 @@ const fonts = join(__dirname, 'fonts')
 const IOSEVKA: ParagraphStyle = { fontFamily: 'WB Iosevka', fontSize: 20, lineHeight: 40 }
 const HARMATTAN: ParagraphStyle = { fontFamily: 'WB Harmattan', fontSize: 20, lineHeight: 40 }
 const box = { width: 15, height: 10 }
+// Whether the paragraphs here are laid out with the shaper engine (see
+// `engine` in ParagraphStyle), which the tests run on too.
+const SHAPER = process.env.EFFING_PARAGRAPH_ENGINE === 'shaper'
 
 test.before((t) => {
   t.truthy(GlobalFonts.registerFromPath(join(fonts, 'iosevka-slab-regular.ttf'), 'WB Iosevka'))
@@ -167,7 +170,11 @@ test('justify with an ellipsis that not even the first cluster fits with', (t) =
         width: 25,
         expected: { lines: [[0, 1, 30, rtl ? -5 : 0]], placeholders: [null] },
       })
-      // On the last of two lines.
+      // On the last of two lines. In RTL the placeholder takes the
+      // direction of the letters around it, and is left of the "c" on
+      // screen: Chrome cuts the line from its end edge, the left one, and
+      // keeps "…c" (Chrome 157, Linux). SkParagraph cuts the text's end.
+      const cutFromLeft = rtl && SHAPER
       cases.push({
         parts: ['ab ', box, 'c d'],
         style: { ...style, maxLines: 2 },
@@ -175,9 +182,9 @@ test('justify with an ellipsis that not even the first cluster fits with', (t) =
         expected: {
           lines: [
             [0, 2, 20, textAlign === 'left' || (textAlign === 'justify' && !rtl) ? 0 : textAlign === 'center' ? 5 : 10],
-            [3, 4, 35, rtl ? -5 : 0],
+            cutFromLeft ? [3, 5, 30, 0] : [3, 4, 35, rtl ? -5 : 0],
           ],
-          placeholders: [rtl ? 15 : 0],
+          placeholders: [cutFromLeft ? null : rtl ? 15 : 0],
         },
       })
       cases.push({

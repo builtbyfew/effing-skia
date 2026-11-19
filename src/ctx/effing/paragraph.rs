@@ -16,8 +16,8 @@ use crate::error::SkError;
 use crate::font::FontStyle;
 use crate::global_fonts::get_font;
 use crate::sk::effing::paragraph::{
-  OverflowWrap, Paragraph as SkParagraph, ParagraphOptions, Placeholder, PlaceholderAlign,
-  PlaceholderLineBreak, WordBreak,
+  OverflowWrap, Paragraph as SkParagraph, ParagraphEngine, ParagraphOptions, Placeholder,
+  PlaceholderAlign, PlaceholderLineBreak, WordBreak,
 };
 use crate::sk::effing::text::Painted;
 use crate::sk::{Paint, TextAlign, TextDirection};
@@ -56,6 +56,8 @@ pub struct ParagraphStyle {
   pub word_break: Option<String>,
   /// CSS `overflow-wrap`: `normal` (the default) or `break-word`.
   pub overflow_wrap: Option<String>,
+  /// `skparagraph` (the default) or `shaper`.
+  pub engine: Option<String>,
 }
 
 /// An inline box in a paragraph's text, e.g. for an image or an emoji: it
@@ -431,6 +433,10 @@ impl Paragraph {
         .overflow_wrap
         .as_deref()
         .map_or(Ok(OverflowWrap::default()), OverflowWrap::from_str)?,
+      engine: match style.engine.as_deref() {
+        Some(engine) => ParagraphEngine::from_str(engine)?,
+        None => ParagraphEngine::from_env()?,
+      },
     };
     // Font lookup goes through the shared collection, which font registration
     // mutates under the same lock.
@@ -634,6 +640,7 @@ mod tests {
       keep_trailing_whitespace: None,
       word_break: None,
       overflow_wrap: None,
+      engine: None,
     }
   }
 

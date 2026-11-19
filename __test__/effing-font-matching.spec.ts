@@ -396,11 +396,13 @@ test('every face of a family is a width of its own', (t) => {
 })
 
 test('of an italic and an oblique face equally good, the first registered wins', (t) => {
-  // Chrome takes the last @font-face rule, 400o.
+  // Chrome takes the last @font-face rule, 400o, as the shaper engine does:
+  // it resolves the families as canvas text does.
   const faces = ['400i', '400o']
   for (const face of faces) GlobalFonts.register(makeFace('FM IO', faceOf(face)))
+  const winner = process.env.EFFING_PARAGRAPH_ENGINE === 'shaper' ? '400o' : '400i'
   for (const style of ['normal', 'italic', 'oblique'] as const) {
     const width = paragraphWidth('FM IO', style, 400)
-    t.true(Math.abs((TEXT.length * advanceOf(faceOf('400i')) * SIZE) / 2000 - width) < 0.01, `${style}: ${width}`)
+    t.true(Math.abs((TEXT.length * advanceOf(faceOf(winner)) * SIZE) / 2000 - width) < 0.01, `${style}: ${width}`)
   }
 })

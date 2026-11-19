@@ -173,6 +173,7 @@ void AppendLineKey(std::string* key, const skiac_text_request& request) {
   put_int(request.size_adjust_metric);
   put_float(request.size_adjust_value);
   put_int(request.size_adjust_from_font);
+  put_int(effing::shaping_whole_runs());  // effing
   put(request.text, request.text_len);
 }
 
@@ -585,6 +586,16 @@ void MeasureOrDraw(skiac_font_collection* c_collection,
 }
 
 }  // namespace
+
+// effing: the line fillText lays out, for the paragraphs laid out with this
+// shaper (effing/paragraph_blink.cpp), which copy it before the next layout.
+const TextCaches::Line& effing_lay_out_text_line(
+    skiac_font_collection* c_collection,
+    const skiac_text_request& request) {
+  const effing::ShapeWholeRuns whole_runs;
+  return *FindOrLayOutLine(c_collection, request);
+}
+
 extern "C" {
 
 void skiac_text_measure(skiac_font_collection* c_collection,

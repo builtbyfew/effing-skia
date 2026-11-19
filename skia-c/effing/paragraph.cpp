@@ -16,15 +16,27 @@
 #include "include/core/SkFontMetrics.h"
 #include "include/core/SkTypeface.h"
 #include "justify.hpp"
+#include "line_box.hpp"
 #include "modules/skparagraph/src/ParagraphBuilderImpl.h"
 #include "modules/skparagraph/src/ParagraphImpl.h"
 #include "modules/skunicode/include/SkUnicode_icu.h"
+#include "paragraph_blink.hpp"
 #include "text.hpp"
 #include "word_break.hpp"
 
 using namespace skia::textlayout;
+using effing::baseline_in_line_box;
+using effing::hhea_metrics;
+using effing::round_metric;
+using effing::split_families;
+using effing::to_layout_units;
+using effing::x_height;
 
 struct effing_paragraph {
+  // Laid out by the shaper instead (EFFING_PARAGRAPH_ENGINE_SHAPER), which
+  // then answers every call; the rest is unused.
+  std::unique_ptr<effing::BlinkParagraph, void (*)(effing::BlinkParagraph*)>
+      shaped{nullptr, effing::blink_paragraph_destroy};
   // One paragraph, except for nowrap text with an ellipsis: that gets one per
   // hard-broken line, each truncated on its own, since Skia stops laying out
   // at the first line it ellipsizes.
@@ -197,84 +209,6 @@ namespace {
 
 // Wide enough for any real layout, small enough to stay exact in float.
 constexpr float kUnbounded = 1e7f;
-
-std::vector<SkString> split_families(const char* font_family) {
-  std::vector<SkString> families;
-  const std::string list(font_family);
-  size_t start = 0;
-  while (start <= list.size()) {
-    size_t end = list.find(',', start);
-    if (end == std::string::npos) {
-      end = list.size();
-    }
-    if (end > start) {
-      families.emplace_back(list.data() + start, end - start);
-    }
-    start = end + 1;
-  }
-  return families;
-}
-
-int16_t read_be_i16(const uint8_t* p) {
-  return static_cast<int16_t>((p[0] << 8) | p[1]);
-}
-
-// The font's hhea ascender, descender and line gap in px, which effing (like
-// satori, through opentype.js) uses for line boxes, as Chrome on macOS
-// (CoreText) does. Skia's own metrics prefer the OS/2 typo values when
-// USE_TYPO_METRICS is set, so read the table directly. A negative line gap is
-// 0, as in Chrome.
-bool hhea_metrics(const sk_sp<SkTypeface>& typeface,
-                  float font_size,
-                  float* ascent,
-                  float* descent,
-                  float* line_gap) {
-  uint8_t buf[6];
-  if (!typeface || typeface->getTableData(SkSetFourByteTag('h', 'h', 'e', 'a'),
-                                          4, 6, buf) != 6) {
-    return false;
-  }
-  const int upem = typeface->getUnitsPerEm();
-  if (upem <= 0) {
-    return false;
-  }
-  *ascent = read_be_i16(buf) / static_cast<float>(upem) * font_size;
-  *descent = -read_be_i16(buf + 2) / static_cast<float>(upem) * font_size;
-  *line_gap = std::max(
-      read_be_i16(buf + 4) / static_cast<float>(upem) * font_size, 0.f);
-  return true;
-}
-
-// A length in px as Chrome lays it out: in LayoutUnits of 1/64px, to which
-// Blink rounds a px line height (ComputedLineHeightAsFixed).
-float to_layout_units(float px) {
-  const float rounded = std::round(px * 64) / 64;
-  return std::isfinite(rounded) ? rounded : px;
-}
-
-// A font's ascent or descent as Chrome's content area has it: rounded half up
-// to whole pixels (FontMetrics::AscentDescentWithHacks).
-float round_metric(float px) {
-  return std::floor(px + 0.5f);
-}
-
-// The baseline's distance from the top of a line box `line_height` tall, by
-// Chrome's half-leading (CalculateLeadingSpace in Blink's inline layout): the
-// leading is the line height less the content area, and the half above it is
-// floored to whole pixels, the odd pixel and any fraction going below. The
-// leading can be negative (a line height smaller than the content area), and
-// is floored the same way. Blink halves in LayoutUnits, truncating towards 0.
-float baseline_in_line_box(float line_height,
-                           float content_ascent,
-                           float content_descent) {
-  // In LayoutUnits: line_height is a whole number of them (to_layout_units),
-  // so the leading is too, and halving it truncates as Blink's integer
-  // division does.
-  const double leading = static_cast<double>(line_height) * 64 -
-                         (content_ascent + content_descent) * 64.0;
-  const double above = std::floor(std::trunc(leading / 2) / 64);
-  return content_ascent + static_cast<float>(above);
-}
 
 // Resolves start and end against the direction; every other value is itself.
 TextAlign resolve_align(TextAlign align, TextDirection direction) {
@@ -561,20 +495,6 @@ std::vector<size_t> hard_break_indices(
     i += step;
   }
   return breaks;
-}
-
-// The font's x-height in px, as CSS `vertical-align: middle` uses it: from
-// the OS/2 table, or else the height of the glyph 'x'.
-float x_height(const sk_sp<SkTypeface>& typeface, float font_size) {
-  SkFont font(typeface, font_size);
-  font.setHinting(SkFontHinting::kNone);
-  SkFontMetrics m;
-  font.getMetrics(&m);
-  if (m.fXHeight != 0) {
-    return std::abs(m.fXHeight);
-  }
-  const SkGlyphID x = font.unicharToGlyph('x');
-  return std::max(0.f, -font.getBounds(x, nullptr).fTop);
 }
 
 // The top of a placeholder of `spec` on a line whose box starts at `top`,
@@ -2675,6 +2595,13 @@ effing_paragraph* effing_paragraph_create(
     const effing_paragraph_style* s,
     const effing_paragraph_placeholder* placeholders,
     size_t placeholder_count) {
+  if (s->engine == EFFING_PARAGRAPH_ENGINE_SHAPER) {
+    auto* out = new effing_paragraph();
+    out->shaped.reset(effing::blink_paragraph_create(
+        text, text_len, c_collection, font_family, s, placeholders,
+        placeholder_count));
+    return out;
+  }
   c_collection->flushCachesIfDirty();
   std::string shown_text;
   std::vector<effing_paragraph_placeholder> shown_placeholders;
@@ -2887,6 +2814,10 @@ effing_paragraph* effing_paragraph_create(
 }
 
 void effing_paragraph_layout(effing_paragraph* p, float width) {
+  if (p->shaped) {
+    effing::blink_paragraph_layout(p->shaped.get(), width);
+    return;
+  }
   const float w = std::isfinite(width) && width > 0
                       ? std::min(width, kUnbounded)
                       : kUnbounded;
@@ -3152,6 +3083,10 @@ void effing_paragraph_layout(effing_paragraph* p, float width) {
 
 void effing_paragraph_get_metrics(effing_paragraph* p,
                                   effing_paragraph_metrics* m) {
+  if (p->shaped) {
+    effing::blink_paragraph_get_metrics(p->shaped.get(), m);
+    return;
+  }
   m->line_count = static_cast<int>(p->lines.size());
   m->height = m->line_count * p->line_height;
   m->longest_line = 0;
@@ -3198,6 +3133,10 @@ void effing_paragraph_get_metrics(effing_paragraph* p,
 void effing_paragraph_get_lines(effing_paragraph* p,
                                 effing_paragraph_line* out,
                                 int count) {
+  if (p->shaped) {
+    effing::blink_paragraph_get_lines(p->shaped.get(), out, count);
+    return;
+  }
   const int n = std::min(count, static_cast<int>(p->lines.size()));
   for (int i = 0; i < n; i++) {
     const LineMetrics& line = p->lines[i];
@@ -3214,6 +3153,10 @@ void effing_paragraph_get_lines(effing_paragraph* p,
 void effing_paragraph_get_placeholders(effing_paragraph* p,
                                        effing_paragraph_placeholder_box* out,
                                        int count) {
+  if (p->shaped) {
+    effing::blink_paragraph_get_placeholders(p->shaped.get(), out, count);
+    return;
+  }
   const int n = std::min(count, static_cast<int>(p->placeholder_boxes.size()));
   std::copy_n(p->placeholder_boxes.begin(), std::max(n, 0), out);
 }
@@ -3224,6 +3167,11 @@ void effing_paragraph_paint(effing_paragraph* p,
                             float x,
                             float y,
                             effing_painted* painted) {
+  if (p->shaped) {
+    effing::blink_paragraph_paint(p->shaped.get(), c_canvas, c_paint, x, y,
+                                  painted);
+    return;
+  }
   *painted = {};
   // Nowhere to put the lines until effing_paragraph_layout has run.
   const auto paragraphs = laid_out(p);

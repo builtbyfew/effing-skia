@@ -9,6 +9,24 @@
 
 namespace effing {
 
+// What a character is to Chrome's justification (Blink's
+// JustificationContext::CheckOpportunity, under text-justify: auto).
+enum class JustificationKind {
+  // A default-ignorable code point: no opportunity, and the one before it
+  // carries on past it.
+  kIgnorable,
+  // A space, a tab, a line feed or a no-break space: an opportunity after
+  // it.
+  kSpace,
+  // A CJK ideograph or symbol (IsCjkIdeographOrSymbol): an opportunity
+  // after it, and one before it unless one is already there.
+  kCjk,
+  // Any other: no opportunity.
+  kOther,
+};
+
+JustificationKind justification_kind(char32_t c);
+
 // Justifies the lines of `paragraph`, laid out start-aligned (TextAlign::kLeft)
 // at `width`, that SkParagraph would justify: those narrower than the width
 // that end at a soft break, without an ellipsis, before the paragraph's

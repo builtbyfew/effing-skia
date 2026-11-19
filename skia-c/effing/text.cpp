@@ -142,7 +142,22 @@ void draw_run_as_paths(SkCanvas* canvas,
 // lacks (CI's undefined-symbol check).
 thread_local Painted* text_painted = nullptr;
 
+// ShapeWholeRuns' flag.
+thread_local bool whole_runs = false;
+
 }  // namespace
+
+bool shaping_whole_runs() {
+  return whole_runs;
+}
+
+ShapeWholeRuns::ShapeWholeRuns() : previous_(whole_runs) {
+  whole_runs = true;
+}
+
+ShapeWholeRuns::~ShapeWholeRuns() {
+  whole_runs = previous_;
+}
 
 void Painted::export_to(effing_painted* out) const {
   *out = {};
