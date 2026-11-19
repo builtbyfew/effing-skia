@@ -1137,21 +1137,28 @@ bool break_hard_line(BlinkParagraph* p,
     }
     size_t brk;
     size_t end;
+    bool placed = false;
     if (!fitting.empty()) {
       // Shaped on its own, a line can come out wider: it gives back words
-      // until it fits, as long as it has one.
+      // until it fits, as long as it has one. Under break-word, a first word
+      // that doesn't fit so is broken as one wider than the line.
       Line line;
       for (;;) {
         brk = fitting.back();
         end = content_end(start, brk);
         line = make_line(*p, start, end, brk, brk >= hard.end, brk < hard.end);
-        if (fitting.size() == 1 || line_fits(line, end, brk)) {
+        const bool line_fit = line_fits(line, end, brk);
+        if (line_fit || fitting.size() == 1) {
+          placed = line_fit || p->overflow_wrap != OverflowWrap::kBreakWord;
           break;
         }
         fitting.pop_back();
       }
-      p->lines.push_back(std::move(line));
-    } else {
+      if (placed) {
+        p->lines.push_back(std::move(line));
+      }
+    }
+    if (!placed) {
       // The first word is wider than the line: it overflows the line, or
       // under overflow-wrap: break-word, is broken between grapheme clusters
       // where the line is full, keeping at least one.
@@ -1181,34 +1188,48 @@ bool break_hard_line(BlinkParagraph* p,
           }
           cuts.push_back(at);
         }
-        if (cuts.back() < end) {
-          // Shaped on its own, the piece can come out wider (other joining
-          // forms at its end): it gives back clusters until it fits.
-          Line line;
-          for (;;) {
-            const size_t cut = cuts.back();
-            line = make_line(*p, start, cut, cut, false, true);
-            if (cuts.size() == 1 || fits(line.shaped.width, width)) {
-              break;
-            }
-            cuts.pop_back();
+        // Shaped on its own, the piece can come out wider (other joining
+        // forms at its end, a hyphen): it gives back clusters until it fits.
+        Line line;
+        for (;;) {
+          const size_t cut = cuts.back();
+          const size_t cut_brk = cut < end ? cut : brk;
+          line = make_line(*p, start, cut, cut_brk, cut_brk >= hard.end,
+                           cut_brk < hard.end);
+          if (cuts.size() == 1 || line_fits(line, cut, cut_brk)) {
+            break;
           }
-          brk = end = cuts.back();
-          p->lines.push_back(std::move(line));
-          start = brk;
-          continue;
+          cuts.pop_back();
         }
+        if (cuts.back() < end) {
+          brk = end = cuts.back();
+        }
+        p->lines.push_back(std::move(line));
+      } else {
+        p->lines.push_back(
+            make_line(*p, start, end, brk, brk >= hard.end, brk < hard.end));
       }
-      p->lines.push_back(
-          make_line(*p, start, end, brk, brk >= hard.end, brk < hard.end));
     }
     start = brk;
     // The whitespace a soft wrap leaves at the start of the next line hangs
-    // at the end of this one, unless whitespace is kept.
-    if (!p->keep_trailing_whitespace) {
-      while (start < hard.end && collapses(p->chars[start])) {
-        start = next_char(*p, start);
+    // at the end of this one (a space and a tab after it have a break
+    // between them). Kept whitespace stays in that line; where it runs to
+    // the end of the hard line, so does the line.
+    size_t after = start;
+    while (after < hard.end && hangs(p->chars[after]) &&
+           !is_placeholder(*p, after)) {
+      after = next_char(*p, after);
+    }
+    if (after > start) {
+      Line& last = p->lines.back();
+      if (after >= hard.end) {
+        last = make_line(*p, last.start,
+                         p->keep_trailing_whitespace ? hard.end : last.end,
+                         hard.end, true, false);
+      } else {
+        last.brk = after;
       }
+      start = after;
     }
   }
   return false;

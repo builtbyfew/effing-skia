@@ -98,14 +98,49 @@ test('kept trailing whitespace hangs and forces no wrap', (t) => {
   )
 })
 
-test('whitespace after a soft wrap hangs, a tab too', (t) => {
-  const layout = layOut('aaa \tbbb ccc', { fontFamily: 'SH Iosevka' }, 25)
+test('whitespace after a soft wrap hangs, a tab and an ideographic space too', (t) => {
+  for (const text of ['aaa \tbbb ccc', 'aaa \u3000bbb ccc']) {
+    const layout = layOut(text, { fontFamily: 'SH Iosevka' }, 25)
+    t.deepEqual(
+      layout.lines.map((line) => [line.startIndex, line.endIndex, line.hardBreak]),
+      [
+        [0, 3, false],
+        [5, 8, false],
+        [9, 12, true],
+      ],
+      JSON.stringify(text),
+    )
+  }
+  // Up to the end of the hard line: the line before it is the last.
+  const last = layOut('aa aaaaaaa \t', { fontFamily: 'SH Iosevka' }, 50)
   t.deepEqual(
-    layout.lines.map((line) => [line.startIndex, line.endIndex]),
+    last.lines.map((line) => [line.startIndex, line.endIndex, line.hardBreak]),
     [
-      [0, 3],
-      [5, 8],
-      [9, 12],
+      [0, 2, false],
+      [3, 10, true],
     ],
   )
+  // Kept whitespace hangs at a soft wrap too.
+  const kept = layOut('ac \t-aa', { fontFamily: 'SH Iosevka', keepTrailingWhitespace: true }, 25)
+  t.deepEqual(
+    kept.lines.map((line) => [line.startIndex, line.endIndex]),
+    [
+      [0, 2],
+      [4, 5],
+      [5, 7],
+    ],
+  )
+})
+
+test('a word broken by break-word at its soft hyphen fits as it is shaped', (t) => {
+  // Joined across the soft hyphen the first piece fits; shaped on its own,
+  // with the hyphen, it doesn't, and is cut further.
+  const layout = layOut(
+    'bbلbث\u00ADثbب',
+    { fontFamily: 'SH Harmattan', direction: 'rtl', overflowWrap: 'break-word', letterSpacing: -1 },
+    45,
+  )
+  for (const line of layout.lines) {
+    t.true(line.width <= 45, `${line.startIndex}-${line.endIndex}: ${line.width}`)
+  }
 })
