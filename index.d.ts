@@ -9,9 +9,17 @@ export type TextRenderer = 'portable' | 'system'
  * Selects how text is drawn.
  *
  * `'portable'` (the default) draws text the same way on every OS: FreeType,
- * Skia's default text gamma, no LCD text and one font family table. The same
- * registered fonts give the same pixels and TextMetrics on macOS, Linux and
- * Windows.
+ * Skia's default text gamma, no LCD text and one font family table. Text gives
+ * the same pixels and TextMetrics on macOS, Linux and Windows when:
+ * - `ctx.font` names only fonts you registered (the default `10px sans-serif`
+ *   and names like `Arial` use installed fonts, unless you registered a font
+ *   under that name);
+ * - your registered fonts have every character you draw (a missing character
+ *   comes from an installed font);
+ * - you set `ctx.lang` (for example `'en'`), because the default `'inherit'`
+ *   follows the host language;
+ * - `FREETYPE_PROPERTIES` is not set.
+ * x64 and arm64 builds can still differ by 1 color level on some edge pixels.
  *
  * `'system'` draws text with each OS's own font renderer, as Chrome does:
  * CoreText on macOS (Fontations for some color and variable fonts) with
@@ -738,6 +746,48 @@ export interface SKRSContext2D extends CanvasRenderingContext2D {
 
   letterSpacing: string
   wordSpacing: string
+  /**
+   * Non-standard: Chrome's CanvasRenderingContext2D has no such attribute.
+   * Behaves like the CSS `font-feature-settings` property in Chrome.
+   * Invalid values are ignored. Default `"normal"`.
+   * @experimental
+   */
+  fontFeatureSettings: string
+  /**
+   * Non-standard: Chrome's CanvasRenderingContext2D has no such attribute.
+   * Behaves like the CSS `font-variant-ligatures` property in Chrome.
+   * Invalid values are ignored. Default `"normal"`.
+   * @experimental
+   */
+  fontVariantLigatures: string
+  /**
+   * Non-standard: Chrome's CanvasRenderingContext2D has no such attribute.
+   * Behaves like the CSS `font-variant-numeric` property in Chrome.
+   * Invalid values are ignored. Default `"normal"`.
+   * @experimental
+   */
+  fontVariantNumeric: string
+  /**
+   * Non-standard: Chrome's CanvasRenderingContext2D has no such attribute.
+   * Behaves like the CSS `font-variant-position` property in Chrome.
+   * Invalid values are ignored. Default `"normal"`.
+   * @experimental
+   */
+  fontVariantPosition: 'normal' | 'sub' | 'super'
+  /**
+   * Non-standard: Chrome's CanvasRenderingContext2D has no such attribute.
+   * Behaves like the CSS `font-size-adjust` property in Chrome.
+   * Invalid values are ignored. Default `"none"`.
+   * @experimental
+   */
+  fontSizeAdjust: string
+  /**
+   * Non-standard: Chrome's CanvasRenderingContext2D has no such attribute.
+   * Behaves like the CSS `font-optical-sizing` property in Chrome.
+   * Invalid values are ignored. Default `"auto"`.
+   * @experimental
+   */
+  fontOpticalSizing: 'auto' | 'none'
 }
 
 export type ColorSpace = 'srgb' | 'display-p3'

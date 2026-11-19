@@ -345,9 +345,13 @@ test("a paragraph's widths at fractional sizes are near Chrome's", (t) => {
   }
 })
 
-test('other textRendering values keep the exact font size', (t) => {
-  // 17.299 is 17.296875 to FreeType, 17.29 is 17.28125.
-  t.not(measure(LATIN, 'FS Lato', 17.299, 'auto'), measure(LATIN, 'FS Lato', 17.29, 'auto'))
+test('other textRendering values floor the font size to 1/100px, as upstream does', (t) => {
+  // Upstream floors every size to 1/100px from 1.1.1, as Chrome does.
+  t.is(measure(LATIN, 'FS Lato', 17.299, 'auto'), measure(LATIN, 'FS Lato', 17.29, 'auto'))
+  // It doesn't round to 1/64px: FreeType truncates 20.01 to 20 and 20.02 to
+  // 20.015625, where geometricPrecision rounds both to 20.015625.
+  t.not(measure(LATIN, 'FS Lato', 20.01, 'auto'), measure(LATIN, 'FS Lato', 20.02, 'auto'))
+  t.is(measure(LATIN, 'FS Lato', 20.01, 'geometricPrecision'), measure(LATIN, 'FS Lato', 20.02, 'geometricPrecision'))
 })
 
 test('a font size that floors to 0 keeps its size', (t) => {

@@ -23,19 +23,19 @@ Fork code is kept out of upstream files so that upstream merges stay trivial.
 Each layer has an `effing` directory with one file per feature, and each
 upstream file has at most a few marked hook lines.
 
-| Layer                  | Fork code                                                                                                                                                                                                          | Upstream hooks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,justify,word_break,group,filter_layer,fonts,pixels,surface}.{hpp,cpp}`                                                                                                              | `skia-c/text.cpp` (include, the `geometricPrecision` font size and hinting in `LayOutLine`, the unsnapped draw in `MeasureOrDraw`), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names` and `more_faces`, the font provider's `onMatchFamily` and `onCreateStyleSet`, `registerAlias`, the registration and rebuild hooks that mark faces shadowable and load a collection's other faces, the asset font manager), `skia-c/skia_c.cpp` (`setAlias` registers its face through `registerAlias`), `skia-c/font_families.cpp` and `skia-c/text.hpp` (system fonts registered as such, `effing_font_collection_register_installed_font`) |
-| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts,pixels,surface}.rs`                                                                                                                    | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`                                                                                                                                       | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `loadSystemFontsInBackground`, `waitForSystemFonts`, `fontRevision`)                                                                                       | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`, `.otc` files, `get_font` waits for the startup fonts)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Encode pool (napi)     | `src/encode_pool.rs` (the pool, `getEncodeThreads`)                                                                                                                                                                | `src/lib.rs` (`mod encode_pool`; `encode`, `toDataURLAsync`, `toBlob` and `convertToBlob` spawn on it; `AsyncBlob::spawn`, `BlobOutput`), `index.js` (`toBlob` passes `null` on)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Async raster (napi)    | `src/ctx/effing/raster.rs` (`EncodeJob`, `EncodeSource`, `encode_source`, `EncodedCanvas`, `adopt_replayed`), `src/page_recorder/effing.rs` (`unflushed_layers_for_replay`, `consolidate_unflushed_with_snapshot`) | `src/lib.rs` (`encode`, `encode_job`), `src/ctx.rs` (`blank_generation`, `note_surface_cleared` in `clear_surface_to_base`, the `EncodeJob` and `EncodedCanvas` re-export), `src/page_recorder.rs` (`replayed_off_thread`)                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| QOI encoding           | `src/qoi.rs` (the encoder)                                                                                                                                                                                         | `src/lib.rs` (`mod qoi`), `src/encoding.rs` (`ImageType::Qoi`, `Encoding::Qoi`), `src/image_metadata.rs` (no metadata for QOI), `index.d.ts` (the `qoi` overloads), `node-canvas.{js,d.ts}` (`image/qoi` in `toBuffer`)                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                                                                                                                                                            | `src/page_recorder.rs` (`mod effing`, `groups`, reopening groups in `resume_recording`, `pop_restore` dropping a restored group, `close_group_content`, `get_recording_canvas` and `device_clip_bounds` through the innermost group, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                                                                                                                                                                                                                                        |
-| Build                  |                                                                                                                                                                                                                    | `build.rs` (`EFFING_SOURCES`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                                                                                                                                                            | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories, waiting for them on `exit`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                                                                                                                                                  | `package.json`, `.github/workflows/CI.yaml` (publish check), `scripts/generate-sbom.mjs` (the SBOM's root package)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Layer                  | Fork code                                                                                                                                                                                                          | Upstream hooks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,justify,word_break,group,filter_layer,fonts,pixels,surface}.{hpp,cpp}`                                                                                                              | `skia-c/text.cpp` (include, the unsnapped draw in `MeasureOrDraw`), `skia-c/shaper.cpp` (include, the `geometricPrecision` font size and hinting in `LineFonts::Finish`), `skia-c/font_families.cpp` (`FamilyResolver::Faces` takes a family's own registered faces as web faces, `MatchNamedFamily` matches as CSS does), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names` and `more_faces`, the font provider's `onMatchFamily` (tagged families too) and `onCreateStyleSet`, `registerAlias`, `isShadowable`, `registrationOf` finding a collection's other faces, the registration and rebuild hooks that mark faces shadowable and load a collection's other faces, the asset font manager), `skia-c/skia_c.cpp` (`setAlias` registers its face through `registerAlias`), `skia-c/font_families.cpp` and `skia-c/text.hpp` (system fonts registered as such, `effing_font_collection_register_installed_font`, which counts a collection's other faces as installed) |
+| Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts,pixels,surface}.rs`                                                                                                                    | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`                                                                                                                                       | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `loadSystemFontsInBackground`, `waitForSystemFonts`, `fontRevision`)                                                                                       | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`, `.otc` files, `get_font` waits for the startup fonts)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Encode pool (napi)     | `src/encode_pool.rs` (the pool, `getEncodeThreads`)                                                                                                                                                                | `src/lib.rs` (`mod encode_pool`; `encode`, `toDataURLAsync`, `toBlob` and `convertToBlob` spawn on it; `AsyncBlob::spawn`, `BlobOutput`), `index.js` (`toBlob` passes `null` on)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Async raster (napi)    | `src/ctx/effing/raster.rs` (`EncodeJob`, `EncodeSource`, `encode_source`, `EncodedCanvas`, `adopt_replayed`), `src/page_recorder/effing.rs` (`unflushed_layers_for_replay`, `consolidate_unflushed_with_snapshot`) | `src/lib.rs` (`encode`, `encode_job`), `src/ctx.rs` (`blank_generation`, `note_surface_cleared` in `clear_surface_to_base`, the `EncodeJob` and `EncodedCanvas` re-export), `src/page_recorder.rs` (`replayed_off_thread`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| QOI encoding           | `src/qoi.rs` (the encoder)                                                                                                                                                                                         | `src/lib.rs` (`mod qoi`), `src/encoding.rs` (`ImageType::Qoi`, `Encoding::Qoi`), `src/image_metadata.rs` (no metadata for QOI), `index.d.ts` (the `qoi` overloads), `node-canvas.{js,d.ts}` (`image/qoi` in `toBuffer`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Deferred recording     | `src/page_recorder/effing.rs` (groups in the recording)                                                                                                                                                            | `src/page_recorder.rs` (`mod effing`, `groups`, reopening groups in `resume_recording`, `pop_restore` dropping a restored group, `close_group_content`, `get_recording_canvas` and `device_clip_bounds` through the innermost group, the recording-limit check, `BYTES_PER_RECORDED_OP` made `pub(crate)`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Build                  |                                                                                                                                                                                                                    | `build.rs` (`EFFING_SOURCES`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| JS surface             | `extensions.js`, `extensions.d.ts`, `__test__/effing-*`                                                                                                                                                            | `js-binding.js` (exports; hand-maintained, like `index.d.ts`), `index.js` (system font directories, waiting for them on `exit`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Packaging              | `npm/*` (regenerated with `napi create-npm-dirs`)                                                                                                                                                                  | `package.json`, `.github/workflows/CI.yaml` (publish check), `scripts/generate-sbom.mjs` (the SBOM's root package)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 C symbols are prefixed `effing_`; C++ helpers live in `namespace effing`. The
 napi bindings are functions that take the context as their first argument
@@ -59,16 +59,20 @@ canvas is drawn at 1x or any other scale, which is what a video renderer
 producing several resolutions needs. Runs with glyphs that have no outline
 (color or bitmap emoji) fall back to masks with baseline snapping off.
 
-Under `geometricPrecision`, `fillText`, `strokeText` and `measureText` lay
-the text out at the font size floored to 1/100px, as Chrome's canvas does,
-to the nearest 1/64px, as a `Paragraph` does (see the font size under
-`Paragraph`): at 17.3px the text is as wide as at 17.29px. The other `textRendering` values keep
-upstream's exact size.
+Upstream lays `fillText`, `strokeText` and `measureText` out at the font
+size floored to 1/100px, as Chrome's canvas does (from 1.1.1, for every
+`textRendering`), and FreeType truncates that to 1/64px. Under
+`geometricPrecision` the fork shapes and draws at the floored size to the
+nearest 1/64px instead, as a `Paragraph` does (see the font size under
+`Paragraph`): at 20.01px the text is as wide as at 20.02px, where under
+`auto` FreeType makes the first 20px and the second 20.015625px.
 
-Upstream's text engine (`skia-c/text.cpp`, from 1.1.0) lays out and draws
-`fillText`, `strokeText` and `measureText`; the fork hooks it rather than
-replacing it. `LayOutLine` takes the sizes above and turns hinting off under
-`geometricPrecision`, and `MeasureOrDraw` paints each of the line's runs with
+Upstream's text engine (`skia-c/text.cpp` and, from 1.1.1, its Blink-style
+shaper in `skia-c/shaper*.cpp`) lays out and draws `fillText`, `strokeText`
+and `measureText`; the fork hooks it rather than replacing it. The shaper's
+`LineFonts::Finish` makes each font of the line at the size above and turns
+hinting off under `geometricPrecision`, and `MeasureOrDraw` paints each of
+the line's runs with
 `effing::paint_glyphs_unsnapped`, in the font the line was shaped with,
 where upstream draws text blobs in its renderer's draw font. Everything
 else is upstream's: the line layout, its cache (whose key holds
@@ -82,7 +86,7 @@ glyphs.
 All of this is for upstream's default renderer, `setTextRenderer('portable')`,
 which draws the same on every OS. Under `setTextRenderer('system')`,
 `geometricPrecision` is upstream's: Chrome's unhinted glyph masks for the OS
-it runs on, at the exact font size, so that renderer keeps matching Chrome
+it runs on, at upstream's font size, so that renderer keeps matching Chrome
 there (`__test__/text-raster.spec.ts`). The portable snapshot and metrics
 (`__test__/snapshots/portable-text.png`, `__test__/fixtures/text-portable.json`)
 hold the fork's `geometricPrecision` scenes.
@@ -379,8 +383,11 @@ top:
   as `white-space: pre` does (CSS `nowrap` collapses them, so a caller after
   that collapses them itself). Such text is laid out in pieces, as below, a
   piece ending at the hard break before such spaces.
-- Glyphs are unhinted and painted unsnapped, exactly as `fillText` does under
-  `geometricPrecision`; the two agree pixel for pixel.
+- Glyphs are unhinted and painted unsnapped, as `fillText` does under
+  `geometricPrecision`. The two lay a line out to the same width, but
+  upstream's shaper places each word's run as Chrome does, which can be a
+  few thousandths of a pixel from where a `Paragraph` puts it, so their
+  edge pixels can differ by a few levels.
 - `letterSpacing` follows each character, as in Chrome, except the ones
   Chrome adds none after (below).
 - A line that starts after the space it wraps at carries no kerning against
@@ -510,12 +517,8 @@ Where the fork still differs from Chrome, as before:
   one: with a ZWSP between each two of 1000 words, a layout takes 4.6ms
   instead of 0.9ms, and with 4000 words 77ms instead of 3.6ms. Calling
   `layout()` again on the same `Paragraph` is cheap, as its text isn't
-  shaped again, but SkParagraph's cache doesn't always spare a new one with
-  the same text: it leaves out a text of 40 or more characters whose first
-  or last 40 are those of the last text it cached
-  (`ParagraphCache::isPossiblyTextEditing`), so two long captions that
-  share their start or end, laid out in turn each frame, are shaped anew
-  every time.
+  shaped again; a new `Paragraph` shapes its text anew, since SkParagraph's
+  cache is off for the font collection (upstream turns it off from 1.1.0).
 
 #### Justification
 
@@ -631,9 +634,10 @@ breaks them (`__test__/effing-paragraph-placeholders.spec.ts`):
   an `emoji` placeholder at no opportunity, the text is laid out in pieces
   (below), the line ending at its last opportunity instead.
 
-The two mix in a paragraph. SkParagraph's cache keys a paragraph on its
-placeholders' sizes but not their `lineBreak`, so the strut's font families
-carry a tag for the paragraphs with `emoji` ones.
+The two mix in a paragraph. (The strut's font families carry a tag for the
+paragraphs with `emoji` ones, for SkParagraph's cache, which keys a
+paragraph on its placeholders' sizes but not their `lineBreak`; the cache is
+off from upstream 1.1.0.)
 
 Skia places a placeholder along its line; effing places it vertically by its
 `verticalAlign`, the CSS `vertical-align` keywords, in effing's line box:
@@ -736,12 +740,9 @@ How:
   before the window's last line, and the next piece starts there. The work
   then grows with the text, rather than with its square, as laying out all
   the text after each such line again would.
-- SkParagraph caches the opportunities with the shaped text, under a key
-  that leaves them out, so the strut's font families carry a tag for each
-  set of them. SkParagraph also leaves out of its cache a paragraph whose
-  first or last 40 bytes are those of the last one it cached (it takes it
-  for text being edited), so laying out the same long text under two modes
-  in turn shapes it anew each time.
+- The strut's font families carry a tag for each set of opportunities, for
+  SkParagraph's cache, which keys the shaped text without them; the cache
+  is off from upstream 1.1.0.
 
 The tests in `__test__/effing-word-break.spec.ts` hold Chrome's line breaks.
 Known differences from Chrome:
@@ -871,7 +872,8 @@ A family registered with `GlobalFonts` (`register`, `registerFromPath`,
 `loadFontsFromDir`, `setAlias`) takes precedence over the system's family of
 the same name, as an `@font-face` family does over a locally installed one in
 a browser (`__test__/effing-font-precedence.spec.ts`). That holds wherever a
-family name is resolved: `ctx.font` for `fillText`, `strokeText` and
+family is named (for a generic family in canvas text, see canvas text
+below): `ctx.font` for `fillText`, `strokeText` and
 `measureText`, a `Paragraph`, each family of a `font-family` list, and SVG
 text. The system's fonts are the ones `index.js` loads at startup: the
 system font directory, as `GlobalFonts.loadSystemFonts()` loads it, and the
@@ -927,17 +929,44 @@ registered faces.
   under `family`, and also after the rebuild `GlobalFonts.remove` does,
   where upstream matched `family` anew. The mapping goes when the fonts of
   `family` are removed, as before.
-- Family names match case-sensitively, as upstream's always have: a font
-  registered as "liberation sans" doesn't shadow "Liberation Sans".
+- In a `Paragraph`, family names match case-sensitively: a font
+  registered as "liberation sans" doesn't shadow "Liberation Sans" there. Canvas text matches them in any case, as upstream does from 1.1.1
+  (see canvas text below).
 - `GlobalFonts.families` lists the styles a family resolves to: for a family
   with registered faces, those faces alone.
 - `GlobalFonts.loadFontsFromDir` loads installed fonts, as upstream does
   from 1.1.0 (their metrics follow Chrome's rules for installed fonts rather
   than web fonts), but they shadow the system's fonts as registered ones do
   (`effing_font_collection_register_installed_font`).
-- Fallback for characters no family of the list has is unchanged: it comes
-  from the system font directory's font manager, whichever fonts are
-  registered.
+- In a `Paragraph`, fallback for characters no family of the list has is
+  unchanged: it comes from the system font directory's font manager,
+  whichever fonts are registered. Canvas text takes them from upstream's
+  shaper, from 1.1.1: the installed fonts (the system's, the user's font
+  directories and `loadFontsFromDir`'s, every face of a collection among
+  them) and the system font directory's font manager.
+
+### Canvas text
+
+From 1.1.1 upstream resolves the families of `fillText`, `strokeText` and
+`measureText` itself, as Chrome does (`skia-c/font_families.cpp`
+`FamilyResolver`): a name registered over an installed family is a
+`FontFace`, which a font list that names it takes alone, while a generic
+family (`sans-serif`, ...) that resolves to that installed family keeps the
+installed faces, as in Chrome; spellings of a family that differ only in
+case are one family; and of the registered faces of one style, the one
+added last draws, the older ones its fallback. The fork keeps all of that
+and adds one thing: upstream counts a font registered under its own family
+name (`registerFromPath(path)`, or `register(buffer, name)` with the font's
+own name) as that family again rather than a `FontFace`, so the installed
+faces stayed first: the case this section opens with. In the
+fork it is a `FontFace` too, unless it joins its family without shadowing
+it (a font registered under an alias alone, under its own name). So a font
+registered under the name of an installed family draws wherever canvas text
+names that family, in every style, as before.
+
+A `Paragraph` still resolves family names as the rest of this section
+describes: case-sensitively, the first registered of equally good faces
+winning.
 
 ### Loading the system fonts
 
@@ -1046,7 +1075,8 @@ whose `matchStyle` is `effing::match_css` (`effing::with_css_matching`).
 - A variable font is one face, of its default instance's style; its axes
   don't follow the requested weight or width, and its named instances are
   not faces of their own, where CoreText lists those of a system font.
-- Fallback for characters no family of the list has is unchanged.
+- Fallback for characters no family of the list has is unchanged (see
+  registered fonts over system fonts).
 - Lottie text keeps Skia's matching: `skiac_skottie_animation_make` gives
   Skottie a font manager of its own, which isn't wrapped.
 
@@ -1380,6 +1410,24 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
 
 ### Unreleased
 
+- On upstream 1.1.1, with what upstream changed there: among others, its
+  Blink-style shaper lays out `fillText`, `strokeText` and `measureText`
+  (the old SkParagraph path is gone), `fontFeatureSettings`,
+  `fontVariantLigatures` and the other new text properties, every font size
+  floored to 1/100px, `letterSpacing` and `wordSpacing` units resolved as
+  Chrome does, and fonts registered over installed ones working like
+  `FontFace`s. See upstream's changelog.
+- `textRendering = 'geometricPrecision'` keeps the fork's text under the
+  portable renderer, now hooked into the shaper: the 1/64px rounding, no
+  hinting, and glyph outlines filled at their exact positions. The other
+  `textRendering` values now floor the size to 1/100px too (upstream's
+  change).
+- Canvas text resolves families as upstream's, with a font registered
+  under its own family name shadowing the installed family as before:
+  family names match in any case, the face of a style registered last
+  draws, and a generic family keeps the installed faces of the family it
+  resolves to (see canvas text under registered fonts over system fonts).
+  A `Paragraph` resolves them as before.
 - A group's `bounds` clip is anti-aliased, as `ctx.clip()` is. It had a
   hard, pixel-stepped edge where it fell between pixels or under a rotation
   or skew; on whole-pixel, axis-aligned bounds the pixels are unchanged.

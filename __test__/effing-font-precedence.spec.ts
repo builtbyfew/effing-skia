@@ -119,6 +119,63 @@ test.serial('a family named with setAlias keeps the face it took, also after a r
   t.deepEqual(measure('"FP Harmattan Alias"', regular), harmattan)
 })
 
+test.serial('a font registered under an alias gives way to its family registered under its own name', (t) => {
+  // Two Noto Sans Devanagari Regular files: the subset has no digits, the
+  // full font has them.
+  const digits = (family: string) => {
+    const ctx = createCanvas(10, 10).getContext('2d')
+    ctx.font = `40px ${family}`
+    return ctx.measureText('0123').width
+  }
+  // The subset registered under its name shadows any installed copy of the
+  // family, so its width (fallback digits) is the same on every machine.
+  const subset = GlobalFonts.register(readFileSync(join(fonts, 'NotoSansDevanagari-subset.ttf')))
+  t.truthy(subset)
+  const own = digits('"Noto Sans Devanagari"')
+  const full = GlobalFonts.register(readFileSync(join(fonts, 'NotoSansDevanagari-Regular.ttf')), 'FP Devanagari')
+  t.truthy(full)
+  const aliased = digits('"FP Devanagari"')
+  t.not(aliased, own)
+  // The family keeps the face registered under its name, in any case,
+  // though the aliased font is newer.
+  for (const when of ['registered', 'rebuilt']) {
+    t.is(digits('"Noto Sans Devanagari"'), own, when)
+    t.is(digits('"noto sans devanagari"'), own, when)
+    t.is(digits('"FP Devanagari"'), aliased, when)
+    rebuild(t)
+  }
+  t.true(GlobalFonts.remove(full!))
+  t.true(GlobalFonts.remove(subset!))
+})
+
+test.serial(
+  "setAlias to a font's own family keeps it there for text next to a font registered under that name",
+  (t) => {
+    // The full Noto Sans Devanagari (with digits) under an alias, named as its
+    // own family, which it holds alone; then the subset (no digits) under its
+    // own name: text in the family keeps the full font.
+    const digits = (family = '"Noto Sans Devanagari"') => {
+      const ctx = createCanvas(10, 10).getContext('2d')
+      ctx.font = `40px ${family}`
+      return ctx.measureText('0123').width
+    }
+    const full = GlobalFonts.register(readFileSync(join(fonts, 'NotoSansDevanagari-Regular.ttf')), 'FP Devanagari Own')
+    t.truthy(full)
+    t.true(GlobalFonts.setAlias('FP Devanagari Own', 'Noto Sans Devanagari'))
+    // The family is the full font now, whatever copy of it the machine has.
+    const aliased = digits('"FP Devanagari Own"')
+    t.is(digits(), aliased)
+    const subset = GlobalFonts.register(readFileSync(join(fonts, 'NotoSansDevanagari-subset.ttf')))
+    t.truthy(subset)
+    for (const when of ['registered', 'rebuilt']) {
+      t.is(digits(), aliased, when)
+      rebuild(t)
+    }
+    t.true(GlobalFonts.remove(subset!))
+    t.true(GlobalFonts.remove(full!))
+  },
+)
+
 test.serial("setAlias to a font's own family makes it a registered face there", (t) => {
   // An aliased font joins its own family as a shadowable face; setAlias
   // naming that family after it makes the same face a registered one.

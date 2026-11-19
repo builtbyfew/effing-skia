@@ -160,6 +160,35 @@ test.serial('remove() drops the setAlias mappings of every face of a font collec
   t.true(GlobalFonts.remove(lato!))
 })
 
+test.serial("a setAlias of a collection's later face keeps that face after a rebuild", (t) => {
+  const key = GlobalFonts.registerFromPath(COLLECTION, 'Collection Later Faces')
+  t.truthy(key)
+  t.true(GlobalFonts.setAlias('Effing Collection Serif', 'Collection Later Alias'))
+  near(t, measure('20px "Collection Later Alias"'), SERIF)
+  // GlobalFonts.remove rebuilds the provider.
+  const other = GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Oswald.ttf'), 'Collection Rebuild')
+  t.true(GlobalFonts.remove(other!))
+  near(t, measure('20px "Collection Later Alias"'), SERIF)
+  t.true(GlobalFonts.remove(key!))
+})
+
+test.serial('a collection registered under an installed family lists every face there', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'effing-system-collection-alias-'))
+  tmpDirs.push(dir)
+  copyFileSync(join(__dirname, 'fonts', 'Harmattan-Regular.ttf'), join(dir, 'harmattan.ttf'))
+  const path = join(dir, 'collection.ttc')
+  copyFileSync(COLLECTION, path)
+  t.is(GlobalFonts.loadFontsFromDir(dir), 2)
+  t.true(measure('20px Harmattan') !== REGULAR)
+  // The collection named as Harmattan, an installed family: the bold is the
+  // collection's own bold face, not its regular emboldened.
+  const key = GlobalFonts.registerFromPath(path, 'Harmattan')
+  t.truthy(key)
+  near(t, measure('20px Harmattan'), REGULAR)
+  near(t, measure('bold 20px Harmattan'), BOLD)
+  t.true(GlobalFonts.remove(key!))
+})
+
 // Last: system fonts can't be removed.
 test.serial('loadSystemFontsFromDir loads every face of a font collection as a system font', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'effing-system-collection-'))

@@ -27,6 +27,21 @@ fn main() {
   }
   println!("cargo:rerun-if-changed=skia-c/text.cpp");
   println!("cargo:rerun-if-changed=skia-c/text.hpp");
+  println!("cargo:rerun-if-changed=skia-c/text_caches.hpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper.hpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper.cpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper_ucd.cpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper_text.cpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper_items.cpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper_segment.cpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper_font.cpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper_place.cpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper_spacing.cpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper_features.cpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper_chars.cpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper_fallback_mac.cpp");
+  println!("cargo:rerun-if-changed=skia-c/shaper_fallback_installed.cpp");
+  println!("cargo:rerun-if-changed=third_party/emoji-segmenter/emoji_presentation_scanner.c");
   println!("cargo:rerun-if-changed=skia-c/font_families.cpp");
   println!("cargo:rerun-if-changed=skia-c/text_metrics.cpp");
   println!("cargo:rerun-if-changed=skia-c/hb_api.h");
@@ -231,19 +246,27 @@ fn main() {
             println!("cargo:rustc-link-lib=static=atomic");
           }
           "arm" => {
-            unsafe {
-              env::set_var("CC", "clang");
-              env::set_var("CXX", "clang++");
-              env::set_var("TARGET_CC", "clang");
-              env::set_var("TARGET_CXX", "clang++");
-            }
+            // CI sets TARGET_CC/TARGET_CXX=clang-19/clang++-19; napi
+            // --use-napi-cross adds the glibc 2.17 sysroot, --gcc-toolchain
+            // and the GCC 4.8.5 linker. libc++ under
+            // /usr/armv7-unknown-linux-gnueabihf/lib/llvm-19 is the Skia
+            // release asset libc++-linux-armv7-gnueabihf.tar.gz, built by
+            // scripts/build-c++abi.mjs against the same sysroot.
+            println!("cargo:rerun-if-env-changed=TARGET_SYSROOT");
+            let sysroot = env::var("TARGET_SYSROOT")
+              .expect("TARGET_SYSROOT is unset: build armv7 with `napi build --use-napi-cross`");
+            link_libcxx(&mut build);
+            // The CPU flags match scripts/skia-gn-args.cjs; without -mfpu
+            // clang turns on NEON.
             build
-              .cpp_set_stdlib("stdc++")
-              .flag("-static")
-              .include("/usr/arm-linux-gnueabihf/include")
-              .include("/usr/arm-linux-gnueabihf/include/c++/9");
-            println!("cargo:rustc-link-lib=static=stdc++");
-            println!("cargo:rustc-link-search=/usr/lib/gcc-cross/arm-linux-gnueabihf/9");
+              .flag(format!("--sysroot={sysroot}"))
+              .flag("-march=armv7-a")
+              .flag("-mfpu=vfpv3-d16")
+              .flag("-mfloat-abi=hard")
+              .flag("-mthumb")
+              .flag("-nostdinc++")
+              .flag("-isystem/usr/armv7-unknown-linux-gnueabihf/lib/llvm-19/include/c++/v1");
+            println!("cargo:rustc-link-search=/usr/armv7-unknown-linux-gnueabihf/lib/llvm-19/lib");
           }
           _ => {}
         },
@@ -302,6 +325,18 @@ fn main() {
     .file("skia-c/text_raster.cpp")
     .file("skia-c/font_scalers.cpp")
     .file("skia-c/svg_image.cpp")
+    .file("skia-c/shaper.cpp")
+    .file("skia-c/shaper_ucd.cpp")
+    .file("skia-c/shaper_text.cpp")
+    .file("skia-c/shaper_items.cpp")
+    .file("skia-c/shaper_segment.cpp")
+    .file("skia-c/shaper_font.cpp")
+    .file("skia-c/shaper_place.cpp")
+    .file("skia-c/shaper_spacing.cpp")
+    .file("skia-c/shaper_features.cpp")
+    .file("skia-c/shaper_chars.cpp")
+    .file("skia-c/shaper_fallback_mac.cpp")
+    .file("skia-c/shaper_fallback_installed.cpp")
     .files(EFFING_SOURCES)
     .include("./skia-c")
     .include(skia_path)

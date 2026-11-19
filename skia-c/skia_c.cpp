@@ -12,6 +12,14 @@
 #include <vector>
 
 #include "skia_c.hpp"
+
+#include <modules/svg/include/SkSVGAttributeParser.h>
+#include <src/core/SkPathEffectBase.h>
+#include <src/core/SkStrikeSpec.h>
+#include <src/core/SkTextBlobPriv.h>
+#include <src/core/SkTextFormatParams.h>
+#include <src/utils/SkFloatUtils.h>
+
 #include "svg_image.hpp"
 
 // libskia is built with SK_RELEASE; a debug skia-c would see other class
@@ -4589,6 +4597,42 @@ void skiac_font_collection_get_family(
   c_string->sk_string = name;
 }
 
+// register / registerFromPath of a font registered before (the same buffer
+// or path: the call returned its FontKey) is a FontFace added again: its
+// face becomes the newest under the call's name (the alias, else its own
+// family name). A font loadFontsFromDir or loadSystemFonts registered keeps
+// its place under its own names (an installed font, not a FontFace); a
+// FontFace name a call gave a file loadFontsFromDir loaded is a FontFace
+// (its web twin, RegisteredFont::WebName) and moves too (Chrome 157,
+// FontFaces "ReX" Lato, Oswald, Lato, Oswald: Oswald draws, 37.32).
+static void RelistRegistered(skiac_font_collection* c_font_collection,
+                             uint32_t id,
+                             size_t registered,
+                             const sk_sp<SkTypeface>& typeface,
+                             const char* name_alias) {
+  const auto& fonts = c_font_collection->assets->getRegisteredFonts();
+  if (fonts.size() > registered) {
+    return;
+  }
+  auto it = fonts.find(id);
+  if (it == fonts.end() || it->second.installed) {
+    return;
+  }
+  std::string name;
+  if (name_alias) {
+    name = name_alias;
+  } else {
+    SkString family;
+    typeface->getFamilyName(&family);
+    name.assign(family.c_str(), family.size());
+  }
+  if (c_font_collection->system_font_ids.count(id) &&
+      !c_font_collection->assets->isWebName(id, name)) {
+    return;
+  }
+  c_font_collection->assets->relist(id, name);
+}
+
 uint32_t skiac_font_collection_register(
     skiac_font_collection* c_font_collection,
     const uint8_t* font,
@@ -4601,6 +4645,8 @@ uint32_t skiac_font_collection_register(
   if (!typeface) {
     return 0;
   }
+  const size_t registered =
+      c_font_collection->assets->getRegisteredFonts().size();
   uint32_t typeface_id;
   if (name_alias) {
     auto alias = SkString(name_alias);
@@ -4611,6 +4657,8 @@ uint32_t skiac_font_collection_register(
         typeface_data, typeface);
   }
   if (typeface_id) {
+    RelistRegistered(c_font_collection, typeface_id, registered, typeface,
+                     name_alias);
     c_font_collection->markCachesDirty();
   }
   return typeface_id;
@@ -4631,6 +4679,8 @@ uint32_t skiac_font_collection_register_from_path(
   }
 
   std::string path_str(font_path);
+  const size_t registered =
+      c_font_collection->assets->getRegisteredFonts().size();
   uint32_t typeface_id;
   if (name_alias) {
     auto alias = SkString(name_alias);
@@ -4643,6 +4693,8 @@ uint32_t skiac_font_collection_register_from_path(
             path_str, typeface);
   }
   if (typeface_id) {
+    RelistRegistered(c_font_collection, typeface_id, registered, typeface,
+                     name_alias);
     c_font_collection->markCachesDirty();
   }
   return typeface_id;
@@ -4651,24 +4703,13 @@ uint32_t skiac_font_collection_register_from_path(
 size_t skiac_font_collection_unregister(
     skiac_font_collection* c_font_collection,
     uint32_t typeface_id) {
-  // Get aliases before removal so we can clean up set_aliases
-  std::vector<std::string> removed_aliases;
-  bool removed =
-      c_font_collection->assets->removeTypeface(typeface_id, &removed_aliases);
+  bool removed = c_font_collection->assets->removeTypeface(typeface_id);
   if (removed) {
-    // Clean up set_aliases entries for this font's family names
-    // This prevents stale aliases from transferring to newly registered fonts
-    for (const auto& alias : removed_aliases) {
-      auto it = c_font_collection->set_aliases.begin();
-      while (it != c_font_collection->set_aliases.end()) {
-        if (it->family == alias) {
-          it = c_font_collection->set_aliases.erase(it);
-        } else {
-          ++it;
-        }
-      }
-    }
-    // Rebuild provider with remaining fonts (old provider is kept alive)
+    // The setAlias entries made from this font go with it, so they do not
+    // move to another font of the same name (one registered before or
+    // after, or the installed family).
+    c_font_collection->dropAliasesOf({typeface_id});
+    // Rebuild provider with remaining fonts (the old provider is freed)
     c_font_collection->rebuildAssets();
     return 1;
   }
@@ -4680,30 +4721,16 @@ size_t skiac_font_collection_unregister_batch(
     const uint32_t* typeface_ids,
     size_t count) {
   size_t removed_count = 0;
-  std::vector<std::string> all_removed_aliases;
+  std::set<uint32_t> removed_ids;
   for (size_t i = 0; i < count; i++) {
-    std::vector<std::string> removed_aliases;
-    if (c_font_collection->assets->removeTypeface(typeface_ids[i],
-                                                  &removed_aliases)) {
+    if (c_font_collection->assets->removeTypeface(typeface_ids[i])) {
       removed_count++;
-      // Collect all removed aliases for cleanup
-      all_removed_aliases.insert(all_removed_aliases.end(),
-                                 removed_aliases.begin(),
-                                 removed_aliases.end());
+      removed_ids.insert(typeface_ids[i]);
     }
   }
   if (removed_count > 0) {
-    // Clean up set_aliases entries for all removed fonts' family names
-    for (const auto& alias : all_removed_aliases) {
-      auto it = c_font_collection->set_aliases.begin();
-      while (it != c_font_collection->set_aliases.end()) {
-        if (it->family == alias) {
-          it = c_font_collection->set_aliases.erase(it);
-        } else {
-          ++it;
-        }
-      }
-    }
+    // The setAlias entries made from the removed fonts go with them.
+    c_font_collection->dropAliasesOf(removed_ids);
     // Single rebuild for all removals
     c_font_collection->rebuildAssets();
   }
@@ -4729,9 +4756,17 @@ size_t skiac_font_collection_unregister_all(
 bool skiac_font_collection_set_alias(skiac_font_collection* c_font_collection,
                                      const char* family,
                                      const char* alias) {
+  // A name that starts with \x01 is no family (font_families.cpp tags).
+  if (family[0] == '\x01' || alias[0] == '\x01') {
+    return false;
+  }
   c_font_collection->prepareLookup();
   auto style = SkFontStyle();
-  auto typeface = c_font_collection->assets->matchFamilyStyle(family, style);
+  // The face text naming `family` uses now: a name registered over an
+  // installed family gives its registered face (font_families.cpp
+  // MatchNamedFamily), so setAlias('Helvetica', 'Helvetica') changes
+  // nothing.
+  auto typeface = MatchNamedFamily(c_font_collection, family, style);
 
   // Only proceed if the family exists
   if (!typeface) {
@@ -4743,21 +4778,36 @@ bool skiac_font_collection_set_alias(skiac_font_collection* c_font_collection,
   // Check if this alias already points to the SAME typeface (true idempotency)
   // We compare by uniqueID rather than just checking if the alias exists,
   // because the alias might exist as a system font that we want to shadow.
-  auto existing_typeface =
-      c_font_collection->assets->matchFamilyStyle(alias, style);
+  auto existing_typeface = MatchNamedFamily(c_font_collection, alias, style);
+  // MatchNamedFamily folds case: only the exact spelling listed with this
+  // face makes the call a no-op. Otherwise the spelling is listed now, as
+  // the rebuild replay does, so a font registered under it later goes after
+  // the alias (setAlias('Lato', 'lato'), then a font as 'lato').
   if (existing_typeface &&
-      existing_typeface->uniqueID() == typeface->uniqueID()) {
+      existing_typeface->uniqueID() == typeface->uniqueID() &&
+      ListsFace(c_font_collection->assets->matchFamily(alias),
+                typeface->uniqueID())) {
     // Alias already points to the same typeface - true idempotency, no need to
-    // re-register
-    c_font_collection->addSetAlias(family, alias, /*registered=*/false,
-                                   installed);
+    // re-register. A new or reactivated entry still makes the alias a web
+    // font (font_families.cpp IsWebFont): Chrome 157, FontFace "Arial" with
+    // local(Arial), lang ja "40px Arial, -webkit-body" draws Arial, 48.93,
+    // also after the same text was measured before.
+    if (c_font_collection->addSetAlias(family, alias, /*registered=*/false,
+                                       installed, typeface->uniqueID())) {
+      c_font_collection->markCachesDirty();
+    }
     return true;
   }
 
   // Track the alias for rebuild (only valid mappings)
-  c_font_collection->addSetAlias(family, alias, /*registered=*/true, installed);
+  c_font_collection->addSetAlias(family, alias, /*registered=*/true, installed,
+                                 typeface->uniqueID());
 
-  // Register the alias - this will shadow any existing font with the same name
+  // Register the alias - this will shadow any existing font with the same
+  // name. A face the alias lists already is not listed twice: the new
+  // entry's order makes it the newest (a FontFace added again; Chrome 157,
+  // Oswald, setAlias('Oswald', 'Brand'), Lato as "Brand", then
+  // setAlias('Oswald', 'Brand') again: "Brand" is Oswald).
   c_font_collection->assets->registerAlias(std::move(typeface),  // effing
                                            SkString(alias));
   c_font_collection->markCachesDirty();
@@ -4821,8 +4871,9 @@ int skiac_typeface_get_variation_design_position(
 
   c_font_collection->prepareLookup();
   auto font_style = SkFontStyle(weight, width, (SkFontStyle::Slant)slant);
-  auto typeface =
-      c_font_collection->assets->matchFamilyStyle(family_name, font_style);
+  // The face text naming the family draws (a name registered over an
+  // installed family gives its registered faces).
+  auto typeface = MatchNamedFamily(c_font_collection, family_name, font_style);
   if (!typeface) {
     return 0;
   }
@@ -4878,8 +4929,8 @@ bool skiac_font_has_variations(skiac_font_collection* c_font_collection,
 
   c_font_collection->prepareLookup();
   auto font_style = SkFontStyle(weight, width, (SkFontStyle::Slant)slant);
-  auto typeface =
-      c_font_collection->assets->matchFamilyStyle(family_name, font_style);
+  // The face text naming the family draws (MatchNamedFamily).
+  auto typeface = MatchNamedFamily(c_font_collection, family_name, font_style);
   if (!typeface) {
     return false;
   }
@@ -4908,27 +4959,256 @@ void skiac_sk_w_stream_destroy(skiac_w_memory_stream* c_w_memory_stream) {
 }
 
 // SkSVG
-void skiac_svg_text_to_path(const uint8_t* data,
-                            size_t length,
-                            skiac_font_collection* c_collection,
-                            skiac_sk_data* output_data) {
-  SkMemoryStream svg_stream(data, length, false);
+}  // extern "C"
+
+namespace {
+
+// A synthetic bold glyph as SkScalerContext::internalGetPath makes it for a
+// mask: the plain outline (in the font's own space, the space SkSVGDevice
+// gives a text path to the paint's path effect) stroked and filled by
+// `width`, with the default paint's join and miter (useStrokeForFakeBold).
+class FakeBoldFill final : public SkPathEffectBase {
+ public:
+  explicit FakeBoldFill(SkScalar width) : width_(width) {}
+
+  bool computeFastBounds(SkRect*) const override { return false; }
+  Factory getFactory() const override { return nullptr; }
+  const char* getTypeName() const override { return "FakeBoldFill"; }
+
+ protected:
+  bool onFilterPath(SkPathBuilder* dst,
+                    const SkPath& src,
+                    SkStrokeRec*,
+                    const SkRect*,
+                    const SkMatrix&) const override {
+    const SkPaint defaults;
+    SkStrokeRec stroke(SkStrokeRec::kFill_InitStyle);
+    stroke.setStrokeStyle(width_, true);
+    stroke.setStrokeParams(defaults.getStrokeCap(), defaults.getStrokeJoin(),
+                           defaults.getStrokeMiter());
+    return stroke.applyToPath(dst, src);
+  }
+
+ private:
+  SkScalar width_;
+};
+
+// The canvas in front of convertSVGTextToPath's SkSVGCanvas. SkSVGDevice
+// writes a text draw as the glyph paths filled or stroked with the draw's
+// paint (onDrawGlyphRunList). A synthetic bold glyph's path is its outline
+// stroked and filled by the fake bold width, three contours
+// (SkScalerContextRec::useStrokeForFakeBold), so a stroke paint would stroke
+// each contour. A raster stroke drawn from glyph masks widens the stroke of
+// the plain outline by that width instead (useStrokeForFakeBold with a frame
+// width), so such a run is written that way. A run the raster draws as paths
+// (SkStrikeSpec::ShouldDrawAsPath: over 256 device pixels, a hairline,
+// perspective) strokes the fake bold contours (SkStrikeSpec::MakePath), as
+// written. The fake bold width is size * interp(size) (1/24 at 9px to 1/32
+// from 36px) of the font's own size, but SkSVGDevice takes the paths from
+// SkFont::getPaths, made at 64px (width size / 32). So a filled run drawn
+// from glyph masks is written as the raster's glyphs: the plain outline at
+// the font's size stroked and filled by that width
+// (SkScalerContext::internalGetPath).
+class TextToPathCanvas final : public SkNWayCanvas {
+ public:
+  explicit TextToPathCanvas(SkCanvas* target)
+      : SkNWayCanvas(target->getBaseLayerSize().width(),
+                     target->getBaseLayerSize().height()) {
+    this->addCanvas(target);
+  }
+
+ protected:
+  void onDrawTextBlob(const SkTextBlob* blob,
+                      SkScalar x,
+                      SkScalar y,
+                      const SkPaint& paint) override {
+    // The raster decides per glyph of an RSXform run, under the matrix with
+    // the glyph's RSXform (SkDevice::simplifyGlyphRunRSXFormAndRedraw).
+    const SkMatrix total = this->getTotalMatrix();
+    auto widen = [&](const SkTextBlobRunIterator& it, int glyph) {
+      SkMatrix matrix = total;
+      if (it.positioning() == SkTextBlobRunIterator::kRSXform_Positioning) {
+        matrix.preConcat(SkMatrix().setRSXform(it.xforms()[glyph]));
+      }
+      return it.font().isEmbolden() &&
+             !SkStrikeSpec::ShouldDrawAsPath(paint, it.font(), matrix);
+    };
+    auto per_glyph = [](const SkTextBlobRunIterator& it) {
+      return it.positioning() == SkTextBlobRunIterator::kRSXform_Positioning
+                 ? static_cast<int>(it.glyphCount())
+                 : 1;
+    };
+    bool any = false;
+    for (SkTextBlobRunIterator it(blob); !it.done(); it.next()) {
+      for (int i = 0; i < per_glyph(it); ++i) {
+        any = any || widen(it, i);
+      }
+    }
+    if (!any) {
+      SkNWayCanvas::onDrawTextBlob(blob, x, y, paint);
+      return;
+    }
+    for (SkTextBlobRunIterator it(blob); !it.done(); it.next()) {
+      // An RSXform run is drawn a glyph at a time, as the raster draws it.
+      const int parts = per_glyph(it);
+      const int count = parts > 1 ? 1 : static_cast<int>(it.glyphCount());
+      for (int i = 0; i < parts; ++i) {
+        SkFont font = it.font();
+        SkPaint run_paint = paint;
+        if (widen(it, i)) {
+          font.setEmbolden(false);
+          const SkScalar size = font.getSize();
+          const SkScalar extra =
+              size * SkFloatInterpFunc(size, kStdFakeBoldInterpKeys,
+                                       kStdFakeBoldInterpValues,
+                                       kStdFakeBoldInterpLength);
+          if (paint.getStyle() == SkPaint::kFill_Style) {
+            run_paint.setPathEffect(sk_make_sp<FakeBoldFill>(extra));
+          } else {
+            run_paint.setStrokeWidth(paint.getStrokeWidth() + extra);
+          }
+        }
+        SkTextBlobBuilder builder;
+        const SkTextBlobBuilder::RunBuffer* run = nullptr;
+        size_t scalars = 0;
+        switch (it.positioning()) {
+          case SkTextBlobRunIterator::kDefault_Positioning:
+            run = &builder.allocRun(font, count, it.offset().x(),
+                                    it.offset().y());
+            break;
+          case SkTextBlobRunIterator::kHorizontal_Positioning:
+            run = &builder.allocRunPosH(font, count, it.offset().y());
+            scalars = 1;
+            break;
+          case SkTextBlobRunIterator::kFull_Positioning:
+            run = &builder.allocRunPos(font, count);
+            scalars = 2;
+            break;
+          case SkTextBlobRunIterator::kRSXform_Positioning:
+            run = &builder.allocRunRSXform(font, count);
+            scalars = 4;
+            break;
+        }
+        memcpy(run->glyphs, it.glyphs() + i, count * sizeof(SkGlyphID));
+        if (scalars) {
+          memcpy(run->pos, it.pos() + i * scalars,
+                 count * scalars * sizeof(SkScalar));
+        }
+        if (sk_sp<SkTextBlob> rebuilt = builder.make()) {
+          SkNWayCanvas::onDrawTextBlob(rebuilt.get(), x, y, run_paint);
+        }
+      }
+    }
+  }
+
+  // Played back through this canvas, as SkSVGCanvas itself plays it.
+  void onDrawPicture(const SkPicture* picture,
+                     const SkMatrix* matrix,
+                     const SkPaint* paint) override {
+    SkCanvas::onDrawPicture(picture, matrix, paint);
+  }
+};
+
+// The document's paths, text as paths, in an SVG of `size`.
+void WriteTextToPath(SkSVGDOM* dom,
+                     const SkSize& size,
+                     skiac_sk_data* output_data) {
   SkDynamicMemoryWStream w_stream;
-  c_collection->prepareLookup();
-  auto svg_dom =
-      SkSVGDOM::Builder().setFontManager(c_collection->assets).make(svg_stream);
-  auto svg_root = svg_dom->getRoot();
-  auto svg_container_size =
-      svg_root->intrinsicSize(SkSVGLengthContext(SkSize::Make(0, 0)));
-  auto canvas =
-      SkSVGCanvas::Make(SkRect::MakeSize(svg_container_size), &w_stream,
-                        SkSVGCanvas::kConvertTextToPaths_Flag);
-  svg_dom->render(canvas.get());
+  auto canvas = SkSVGCanvas::Make(SkRect::MakeSize(size), &w_stream,
+                                  SkSVGCanvas::kConvertTextToPaths_Flag);
+  {
+    TextToPathCanvas front(canvas.get());
+    dom->render(&front);
+  }
   canvas.reset();
   auto d = w_stream.detachAsData().release();
   output_data->data = reinterpret_cast<skiac_data*>(d);
   output_data->size = d->size();
   output_data->ptr = d->bytes();
+}
+
+// SkSVGSVG::intrinsicSize of `root`, an <svg> with only the root's width,
+// height and style attributes as written (SkSVG reads them in document
+// order; an invalid value keeps the one before it), at 96 dpi (the
+// resolution svg_doc gives the content's physical lengths; SkSVG's default
+// is 90). False, with a 0x0 size, when a side is a percentage.
+bool RootSize(const char* root, size_t root_len, SkSize* size) {
+  *size = SkSize::Make(0, 0);
+  SkMemoryStream stream(root, root_len, false);
+  auto dom = SkSVGDOM::Builder().make(stream);
+  if (!dom || !dom->getRoot()) {
+    return false;
+  }
+  const SkSVGLength root_width = dom->getRoot()->getWidth();
+  const SkSVGLength root_height = dom->getRoot()->getHeight();
+  if (root_width.unit() == SkSVGLength::Unit::kPercentage ||
+      root_height.unit() == SkSVGLength::Unit::kPercentage) {
+    return false;
+  }
+  const SkSVGLengthContext context(SkSize::Make(0, 0), 96);
+  *size = SkSize::Make(
+      context.resolve(root_width, SkSVGLengthContext::LengthType::kHorizontal),
+      context.resolve(root_height, SkSVGLengthContext::LengthType::kVertical));
+  return true;
+}
+
+}  // namespace
+
+extern "C" {
+
+void skiac_svg_text_to_path(const uint8_t* data,
+                            size_t length,
+                            skiac_font_collection* c_collection,
+                            skiac_sk_data* output_data) {
+  SkMemoryStream svg_stream(data, length, false);
+  c_collection->prepareLookup();
+  auto svg_dom = napi_svg::MakeTextToPathDocument(svg_stream, c_collection,
+                                                  nullptr, 0, false);
+  // Bytes SkSVG cannot read (not XML, or no <svg> root): no output, so
+  // convertSVGTextToPath throws, as for the prepared path.
+  if (!svg_dom) {
+    return;
+  }
+  auto svg_root = svg_dom->getRoot();
+  auto svg_container_size =
+      svg_root->intrinsicSize(SkSVGLengthContext(SkSize::Make(0, 0)));
+  WriteTextToPath(svg_dom.get(), svg_container_size, output_data);
+}
+
+void skiac_svg_text_to_path_prepared(const uint8_t* data,
+                                     size_t length,
+                                     const skiac_svg_font_list* fonts,
+                                     size_t font_count,
+                                     const char* root,
+                                     size_t root_len,
+                                     skiac_font_collection* c_collection,
+                                     skiac_sk_data* output_data) {
+  SkMemoryStream svg_stream(data, length, false);
+  c_collection->prepareLookup();
+  auto svg_dom = napi_svg::MakeTextToPathDocument(svg_stream, c_collection,
+                                                  fonts, font_count, true);
+  if (!svg_dom) {
+    return;
+  }
+  // The prepared root has no width, height or style (an SVG image is laid
+  // out at the size it is drawn at) and only its own viewBox, so the
+  // content keeps its coordinates in a container of the root's size, the
+  // size svg_doc laid the content out at (skiac_svg_root_size).
+  SkSize size;
+  RootSize(root, root_len, &size);
+  svg_dom->setContainerSize(size);
+  WriteTextToPath(svg_dom.get(), size, output_data);
+}
+
+bool skiac_svg_root_size(const char* root,
+                         size_t root_len,
+                         float* out_width,
+                         float* out_height) {
+  SkSize size;
+  const bool known = RootSize(root, root_len, &size);
+  *out_width = size.width();
+  *out_height = size.height();
+  return known;
 }
 
 // SkDocument

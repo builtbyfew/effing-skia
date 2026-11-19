@@ -13,6 +13,10 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::error::SkError;
 use crate::font::{ComputedFont, FamilyName, FontStretch, FontStyle};
+use crate::font_props::{
+  FontFeatureSettings, FontOpticalSizing, FontSizeAdjust, FontVariantLigatures, FontVariantNumeric,
+  FontVariantPosition,
+};
 use crate::webidl::{CanvasPixelFormat, ImageDataPixelFormat};
 
 pub(crate) mod effing;
@@ -201,6 +205,22 @@ pub mod ffi {
     _unused: [u8; 0],
   }
 
+  /// skia-c/shaper.hpp skiac_ucd_icu_diffs.
+  #[cfg(test)]
+  #[repr(C)]
+  #[derive(Copy, Clone, Default, Debug)]
+  pub struct skiac_ucd_icu_diffs {
+    pub assigned: u32,
+    pub general_category: u32,
+    pub combining_class: u32,
+    pub mirroring: u32,
+    pub script: u32,
+    pub decompose: u32,
+    pub compose: u32,
+    pub compose_pairs: u32,
+    pub first: u32,
+  }
+
   #[repr(C)]
   #[derive(Copy, Clone, Default, Debug)]
   pub struct skiac_line_metrics {
@@ -266,6 +286,16 @@ pub mod ffi {
     pub value: f32,
   }
 
+  /// skia_c.hpp skiac_font_feature: a global OpenType feature. `value` is
+  /// the computed font-feature-settings value cast to u32, as Blink's
+  /// static_cast (-1 is 0xFFFFFFFF).
+  #[repr(C)]
+  #[derive(Debug, Clone, Copy)]
+  pub struct skiac_font_feature {
+    pub tag: u32,
+    pub value: u32,
+  }
+
   /// One family of the canvas font; `generic` is 0 for a named family, else
   /// `GenericFamily as i32`.
   #[repr(C)]
@@ -297,6 +327,9 @@ pub mod ffi {
   pub struct skiac_svg_font_list {
     pub families: *const skiac_text_family,
     pub count: usize,
+    pub weight: f32,
+    pub synthetic_bold: bool,
+    pub synthetic_italic: bool,
   }
 
   /// text.hpp skiac_font_units.
@@ -308,6 +341,17 @@ pub mod ffi {
     pub cap: f32,
     pub ic: f32,
     pub lh: f32,
+  }
+
+  /// text.hpp skiac_primary_font_units.
+  #[repr(C)]
+  #[derive(Debug, Clone, Copy, Default)]
+  pub struct skiac_primary_font_units {
+    pub x_height: f32,
+    pub zero_width: f32,
+    pub cap_height: f32,
+    pub ideographic_advance: f32,
+    pub has_ideographic_advance: bool,
   }
 
   /// skia_c.hpp skiac_text_request: the text (not NUL-terminated) and the
@@ -337,6 +381,25 @@ pub mod ffi {
     pub lang: *const c_char,
     pub lang_len: usize,
     pub text_rendering: i32,
+    /// The computed font-feature-settings, in order (sorted, deduped).
+    pub features: *const skiac_font_feature,
+    pub features_count: i32,
+    /// font-variant-ligatures: font_props::LigatureState of each group.
+    pub lig_common: u8,
+    pub lig_discretionary: u8,
+    pub lig_historical: u8,
+    pub lig_contextual: u8,
+    /// font-variant-numeric: bits 0-1 figure, 2-3 spacing, 4-5 fraction,
+    /// 6 ordinal, 7 slashed-zero (font_props::FontVariantNumeric values).
+    pub variant_numeric: u32,
+    /// font-variant-position: 0 normal, 1 sub, 2 super.
+    pub variant_position: i32,
+    /// font-optical-sizing: 0 auto, 1 none.
+    pub optical_sizing: i32,
+    /// font-size-adjust: -1 none, else font_props::SizeAdjustMetric.
+    pub size_adjust_metric: i32,
+    pub size_adjust_value: f32,
+    pub size_adjust_from_font: bool,
     pub lcd_text: bool,
   }
 
@@ -764,6 +827,16 @@ pub mod ffi {
       font_collection: *mut skiac_font_collection,
       request: *const skiac_text_request,
     ) -> bool;
+
+    pub fn skiac_debug_text_line(
+      font_collection: *mut skiac_font_collection,
+      request: *const skiac_text_request,
+      sink: unsafe extern "C" fn(*const c_char, usize, *mut c_void),
+      context: *mut c_void,
+    );
+
+    #[cfg(test)]
+    pub fn skiac_debug_ucd_icu_diffs(diffs: *mut skiac_ucd_icu_diffs);
 
     pub fn skiac_canvas_reset_transform(canvas: *mut skiac_canvas);
 
@@ -1501,10 +1574,10 @@ pub mod ffi {
 
     pub fn skiac_font_collection_destroy(c_font_collection: *mut skiac_font_collection);
 
-    pub fn skiac_font_collection_ideographic_advance(
+    pub fn skiac_font_collection_primary_font_units(
       c_collection: *mut skiac_font_collection,
       request: *const skiac_text_request,
-      advance: *mut f32,
+      units: *mut skiac_primary_font_units,
     ) -> bool;
 
     pub fn skiac_font_collection_enable_installed_fonts(
@@ -1568,6 +1641,25 @@ pub mod ffi {
       font_collection: *mut skiac_font_collection,
       output_data: *mut skiac_sk_data,
     );
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn skiac_svg_text_to_path_prepared(
+      data: *const u8,
+      length: usize,
+      fonts: *const skiac_svg_font_list,
+      font_count: usize,
+      root: *const c_char,
+      root_len: usize,
+      font_collection: *mut skiac_font_collection,
+      output_data: *mut skiac_sk_data,
+    );
+
+    pub fn skiac_svg_root_size(
+      root: *const c_char,
+      root_len: usize,
+      out_width: *mut f32,
+      out_height: *mut f32,
+    ) -> bool;
 
     // SkPictureRecorder
     pub fn skiac_picture_recorder_create() -> *mut skiac_picture_recorder;
@@ -3243,6 +3335,12 @@ pub struct TextSettings {
   pub variant_caps: FontVariantCaps,
   pub lang: String,
   pub text_rendering: TextRendering,
+  pub feature_settings: FontFeatureSettings,
+  pub variant_ligatures: FontVariantLigatures,
+  pub variant_numeric: FontVariantNumeric,
+  pub variant_position: FontVariantPosition,
+  pub size_adjust: FontSizeAdjust,
+  pub optical_sizing: FontOpticalSizing,
   /// Whether Chrome's macOS canvas would draw the text from LCD masks: an
   /// alpha:false raster canvas, a source-over draw and no `ctx.filter` layer.
   /// skia-c checks the transform and size (text_raster.cpp UsesLcdText).
@@ -3270,6 +3368,22 @@ impl TextSettings {
         },
       })
       .collect();
+    // Lives until `f` returns, like `families`.
+    let features: Vec<ffi::skiac_font_feature> = self
+      .feature_settings
+      .0
+      .iter()
+      .map(|feature| ffi::skiac_font_feature {
+        tag: feature.tag,
+        value: feature.value as u32,
+      })
+      .collect();
+    let numeric = &self.variant_numeric;
+    let (size_adjust_metric, size_adjust_value, size_adjust_from_font) = match self.size_adjust {
+      FontSizeAdjust::None => (-1, 0.0, false),
+      FontSizeAdjust::Number(metric, value) => (metric as i32, value, false),
+      FontSizeAdjust::FromFont(metric) => (metric as i32, 0.0, true),
+    };
     let request = ffi::skiac_text_request {
       text: text.as_ptr().cast(),
       text_len: text.len(),
@@ -3293,13 +3407,29 @@ impl TextSettings {
       lang: self.lang.as_ptr().cast(),
       lang_len: self.lang.len(),
       text_rendering: self.text_rendering as i32,
+      features: features.as_ptr(),
+      features_count: features.len() as i32,
+      lig_common: self.variant_ligatures.common as u8,
+      lig_discretionary: self.variant_ligatures.discretionary as u8,
+      lig_historical: self.variant_ligatures.historical as u8,
+      lig_contextual: self.variant_ligatures.contextual as u8,
+      variant_numeric: u32::from(numeric.figure & 3)
+        | u32::from(numeric.spacing & 3) << 2
+        | u32::from(numeric.fraction & 3) << 4
+        | u32::from(numeric.ordinal) << 6
+        | u32::from(numeric.slashed_zero) << 7,
+      variant_position: self.variant_position as i32,
+      optical_sizing: self.optical_sizing as i32,
+      size_adjust_metric,
+      size_adjust_value,
+      size_adjust_from_font,
       lcd_text: self.lcd_text,
     };
     f(&request)
   }
 
   /// A hash of the settings that pick the typeface: the families, weight,
-  /// slope, stretch and variations. Not the size.
+  /// slope, stretch, variations and optical sizing. Not the size.
   pub fn typeface_key(&self) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -3325,6 +3455,7 @@ impl TextSettings {
       v.tag.hash(&mut hasher);
       v.value.to_bits().hash(&mut hasher);
     }
+    (self.optical_sizing as i32).hash(&mut hasher);
     hasher.finish()
   }
 }
@@ -3484,6 +3615,31 @@ impl Canvas {
     settings.with_request(text, |request| unsafe {
       ffi::skiac_text_draw(self.0, font_collection.0, request, paint.0, x, y, max_width);
     });
+  }
+
+  /// The laid out line of `text` as JSON (skia-c text.cpp
+  /// skiac_debug_text_line), for the shaper's tests.
+  pub fn debug_text_line(
+    &self,
+    text: &str,
+    settings: &TextSettings,
+    font_collection: &FontCollection,
+  ) -> String {
+    unsafe extern "C" fn sink(data: *const c_char, len: usize, context: *mut c_void) {
+      let out = unsafe { &mut *(context as *mut String) };
+      let bytes = unsafe { slice::from_raw_parts(data as *const u8, len) };
+      *out = String::from_utf8_lossy(bytes).into_owned();
+    }
+    let mut out = String::new();
+    settings.with_request(text, |request| unsafe {
+      ffi::skiac_debug_text_line(
+        font_collection.0,
+        request,
+        sink,
+        &mut out as *mut String as *mut c_void,
+      );
+    });
+    out
   }
 
   pub fn get_line_metrics(
@@ -5589,6 +5745,53 @@ impl Drop for Bitmap {
   }
 }
 
+/// The font-family lists of a prepared document for the C side; they point
+/// into `prepared`.
+fn svg_font_families(prepared: &crate::svg_doc::Prepared) -> Vec<Vec<ffi::skiac_text_family>> {
+  use crate::svg_doc::Family;
+  prepared
+    .families
+    .iter()
+    .map(|list| {
+      list
+        .iter()
+        .map(|family| match family {
+          Family::Generic(generic) => ffi::skiac_text_family {
+            name: ptr::null(),
+            name_len: 0,
+            generic: *generic,
+          },
+          Family::Named(name) => ffi::skiac_text_family {
+            name: name.as_ptr().cast(),
+            name_len: name.len(),
+            generic: 0,
+          },
+        })
+        .collect()
+    })
+    .collect()
+}
+
+/// `napi-font:K` is `prepared.fonts[K]`; the lists point into `families`,
+/// so fonts with one font-family list share its pointer (the C side keeps
+/// one copy of it).
+fn svg_font_lists(
+  prepared: &crate::svg_doc::Prepared,
+  families: &[Vec<ffi::skiac_text_family>],
+) -> Vec<ffi::skiac_svg_font_list> {
+  prepared
+    .fonts
+    .iter()
+    .map(|font| ffi::skiac_svg_font_list {
+      families: families[font.families].as_ptr(),
+      count: families[font.families].len(),
+      weight: f32::from_bits(font.weight),
+      synthetic_bold: font.synthetic_bold,
+      synthetic_italic: font.synthetic_italic,
+    })
+    .collect()
+}
+
 /// A parsed SVG image (Skia's SVG DOM) and the raw root attributes that give
 /// its natural size.
 pub struct SvgDocument(*mut ffi::skiac_svg_document);
@@ -5628,7 +5831,7 @@ impl SvgDocument {
   /// A document `crate::svg_doc::prepare` wrote, drawn with its images and
   /// font lists (skia-c/svg_image.cpp). None when Skia cannot use it.
   pub fn parse_prepared(prepared: &crate::svg_doc::Prepared, fc: &FontCollection) -> Option<Self> {
-    use crate::svg_doc::{Family, Resource};
+    use crate::svg_doc::Resource;
     let images: Vec<ffi::skiac_svg_resource> = prepared
       .resources
       .iter()
@@ -5655,34 +5858,8 @@ impl SvgDocument {
         },
       })
       .collect();
-    let families: Vec<Vec<ffi::skiac_text_family>> = prepared
-      .families
-      .iter()
-      .map(|list| {
-        list
-          .iter()
-          .map(|family| match family {
-            Family::Generic(generic) => ffi::skiac_text_family {
-              name: ptr::null(),
-              name_len: 0,
-              generic: *generic,
-            },
-            Family::Named(name) => ffi::skiac_text_family {
-              name: name.as_ptr().cast(),
-              name_len: name.len(),
-              generic: 0,
-            },
-          })
-          .collect()
-      })
-      .collect();
-    let fonts: Vec<ffi::skiac_svg_font_list> = families
-      .iter()
-      .map(|list| ffi::skiac_svg_font_list {
-        families: list.as_ptr(),
-        count: list.len(),
-      })
-      .collect();
+    let families = svg_font_families(prepared);
+    let fonts = svg_font_lists(prepared, &families);
     // The C side copies what it keeps.
     let document = unsafe {
       ffi::skiac_svg_document_make(
@@ -6486,17 +6663,21 @@ impl FontCollection {
     unsafe { ffi::skiac_font_collection_set_alias(self.0, family.as_ptr(), alias_name.as_ptr()) }
   }
 
-  /// The advance of U+6C34 in the primary face of the `settings` font (the
-  /// first of its families that exists), or None when no family exists or
-  /// that face has no such glyph. Blink's ideographic advance, for the ic
-  /// unit.
-  pub fn ideographic_advance(&self, settings: &TextSettings) -> Option<f32> {
-    let mut advance = 0.0;
+  /// The x-height (0 when the font has none), "0" advance, cap height and
+  /// U+6C34 advance (when it has the glyph) of the primary font of the
+  /// `settings` font, read off the font without shaping (Blink's
+  /// SimpleFontData metrics for ex, ch, cap and ic); None when no family font
+  /// with glyphs exists.
+  pub fn primary_font_units(
+    &self,
+    settings: &TextSettings,
+  ) -> Option<ffi::skiac_primary_font_units> {
+    let mut units = ffi::skiac_primary_font_units::default();
     settings
       .with_request("", |request| unsafe {
-        ffi::skiac_font_collection_ideographic_advance(self.0, request, &mut advance)
+        ffi::skiac_font_collection_primary_font_units(self.0, request, &mut units)
       })
-      .then_some(advance)
+      .then_some(units)
   }
 
   pub fn get_variation_axes(
@@ -7071,6 +7252,55 @@ pub fn sk_svg_text_to_path(svg: &[u8], fc: &FontCollection) -> Option<SkiaDataRe
   Some(SkiaDataRef(output_data))
 }
 
+/// convertSVGTextToPath of a document `crate::svg_doc::prepare_for_paths`
+/// wrote: its text resolves its font lists as an SVG image's does. `root`
+/// gives the output's size as SkSVG reads the root's width, height and
+/// `style=""` (`RootAttributes::sizing_svg`).
+pub fn sk_svg_text_to_path_prepared(
+  prepared: &crate::svg_doc::Prepared,
+  root: &crate::svg_doc::RootAttributes,
+  fc: &FontCollection,
+) -> Option<SkiaDataRef> {
+  let families = svg_font_families(prepared);
+  let fonts = svg_font_lists(prepared, &families);
+  let mut output_data = ffi::skiac_sk_data {
+    ptr: ptr::null_mut(),
+    data: ptr::null_mut(),
+    size: 0,
+  };
+  unsafe {
+    ffi::skiac_svg_text_to_path_prepared(
+      prepared.svg.as_ptr(),
+      prepared.svg.len(),
+      fonts.as_ptr(),
+      fonts.len(),
+      root.sizing_svg.as_ptr().cast::<c_char>(),
+      root.sizing_svg.len(),
+      fc.0,
+      &mut output_data,
+    );
+  };
+  if output_data.ptr.is_null() {
+    return None;
+  }
+  Some(SkiaDataRef(output_data))
+}
+
+/// The size `sk_svg_text_to_path_prepared` gives the root, as SkSVG reads
+/// its width, height and `style=""`; None when a side is a percentage.
+pub fn sk_svg_root_size(root: &crate::svg_doc::RootAttributes) -> Option<(f32, f32)> {
+  let (mut out_width, mut out_height) = (0.0f32, 0.0f32);
+  let known = unsafe {
+    ffi::skiac_svg_root_size(
+      root.sizing_svg.as_ptr().cast::<c_char>(),
+      root.sizing_svg.len(),
+      &mut out_width,
+      &mut out_height,
+    )
+  };
+  known.then_some((out_width, out_height))
+}
+
 unsafe extern "C" fn skiac_on_get_style(width: i32, weight: i32, slant: i32, raw_cb: *mut c_void) {
   let cb = Box::leak(unsafe { Box::from_raw(raw_cb as *mut Box<dyn FnMut(i32, i32, i32)>) });
   cb(width, weight, slant);
@@ -7098,6 +7328,12 @@ mod text_line_tests {
       variant_caps: FontVariantCaps::default(),
       lang: String::new(),
       text_rendering: TextRendering::default(),
+      feature_settings: FontFeatureSettings::default(),
+      variant_ligatures: FontVariantLigatures::default(),
+      variant_numeric: FontVariantNumeric::default(),
+      variant_position: FontVariantPosition::Normal,
+      size_adjust: FontSizeAdjust::None,
+      optical_sizing: FontOpticalSizing::Auto,
       lcd_text: false,
     }
   }
@@ -7159,5 +7395,138 @@ mod text_line_tests {
     }
     assert!(short.iter().all(|line| kept(&collection, &settings, line)));
     assert!(kept(&collection, &settings, &lines[129]));
+  }
+
+  /// A collection with a variable font and, after it, a font for the
+  /// character the variable font lacks.
+  fn variable_and_fallback_fonts() -> FontCollection {
+    let collection = FontCollection::new();
+    for (file, name) in [
+      ("RobotoMono-VariableFont_wght.ttf", "DropMono"),
+      ("NotoSansDevanagari-subset.ttf", "DropDeva"),
+    ] {
+      let path = format!("{}/__test__/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
+      assert!(collection.register_from_path(&path, Some(name)).is_some());
+    }
+    collection
+  }
+
+  /// noteFontArguments past its budget drops the caches only after the
+  /// layout that passed it (skia_c.hpp dropCachesIfOverBudget). Each line
+  /// has its own wght, so its own font argument list; the 257th list passes
+  /// the budget inside the layout of line 256.
+  #[test]
+  fn a_cache_drop_waits_for_the_end_of_the_layout() {
+    let text = "a\u{915}";
+    let mut settings = settings();
+    settings.font.size = 16.0;
+    settings.font.families = vec![
+      FamilyName::Named("DropMono".to_owned()),
+      FamilyName::Named("DropDeva".to_owned()),
+    ];
+    let weight = |i: usize| 100.0 + i as f32;
+    let collection = variable_and_fallback_fonts();
+    let widths: Vec<f32> = (0..300)
+      .map(|i| {
+        settings.font.weight = weight(i);
+        measure(&collection, &settings, text)
+      })
+      .collect();
+    // The drop ran after line 256's layout and before its store: the lines
+    // before it went with the caches, it and the later ones are kept.
+    for i in 0..300 {
+      settings.font.weight = weight(i);
+      assert_eq!(kept(&collection, &settings, text), i >= 256, "line {i}");
+    }
+    // The same widths as collections that never drop their caches (fewer
+    // than 257 lists each).
+    for (range, reference) in [
+      (0..200, variable_and_fallback_fonts()),
+      (200..300, variable_and_fallback_fonts()),
+    ] {
+      for i in range {
+        settings.font.weight = weight(i);
+        let width = measure(&reference, &settings, text);
+        assert!(width > 0.0, "line {i}");
+        assert_eq!(width.to_bits(), widths[i].to_bits(), "line {i}");
+      }
+    }
+  }
+
+  /// The ex, ch and cap read (primary_font_units, for letterSpacing,
+  /// wordSpacing and filter lengths) notes its font argument list as a
+  /// layout does and runs the drop it asks for itself: 300 lists read with
+  /// no text layout drop the caches, here the line laid out before them.
+  #[test]
+  fn primary_font_units_drop_the_caches_past_the_budget() {
+    let mut settings = settings();
+    settings.font.size = 16.0;
+    settings.font.families = vec![FamilyName::Named("DropMono".to_owned())];
+    let collection = variable_and_fallback_fonts();
+    settings.font.weight = 500.5;
+    assert!(measure(&collection, &settings, "a") > 0.0);
+    assert!(kept(&collection, &settings, "a"));
+    for i in 0..300 {
+      settings.font.weight = 100.0 + i as f32;
+      let units = collection.primary_font_units(&settings);
+      assert!(
+        units.is_some_and(|units| units.zero_width > 0.0),
+        "read {i}"
+      );
+    }
+    settings.font.weight = 500.5;
+    assert!(!kept(&collection, &settings, "a"));
+  }
+
+  /// The ic read (primary_font_units' U+6C34 advance, for letterSpacing,
+  /// wordSpacing and filter lengths) does the same, also when the face has
+  /// no U+6C34: 300 variation lists read with no text layout drop the line
+  /// laid out before.
+  #[test]
+  fn ideographic_advance_drops_the_caches_past_the_budget() {
+    let mut settings = settings();
+    settings.font.size = 16.0;
+    settings.font.families = vec![FamilyName::Named("DropMono".to_owned())];
+    let collection = variable_and_fallback_fonts();
+    assert!(measure(&collection, &settings, "a") > 0.0);
+    assert!(kept(&collection, &settings, "a"));
+    let wght = u32::from_be_bytes(*b"wght");
+    for i in 0..300 {
+      settings.variations = vec![FontVariation {
+        tag: wght,
+        value: 100.0 + i as f32,
+      }];
+      let units = collection.primary_font_units(&settings);
+      assert!(
+        units.is_some_and(|units| !units.has_ideographic_advance),
+        "read {i}"
+      );
+    }
+    settings.variations = Vec::new();
+    assert!(!kept(&collection, &settings, "a"));
+  }
+
+  /// HarfBuzz's own Unicode data (what the shaper's HarfBuzz uses) gives
+  /// what ICU gives (what Chromium's HarfBuzz uses) for every code point. A
+  /// Skia bump that breaks this needs ICU-backed unicode funcs in the shaper.
+  #[test]
+  fn harfbuzz_unicode_data_matches_icu() {
+    let mut diffs = ffi::skiac_ucd_icu_diffs::default();
+    unsafe { ffi::skiac_debug_ucd_icu_diffs(&mut diffs) };
+    // ICU 78.2 (Unicode 17) assigns 299,382 code points.
+    assert!(diffs.assigned > 290_000, "{diffs:?}");
+    assert!(diffs.compose_pairs > 100_000, "{diffs:?}");
+    assert_eq!(
+      [
+        diffs.general_category,
+        diffs.combining_class,
+        diffs.mirroring,
+        diffs.script,
+        diffs.decompose,
+        diffs.compose,
+      ],
+      [0; 6],
+      "{diffs:?}"
+    );
   }
 }

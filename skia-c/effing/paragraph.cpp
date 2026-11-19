@@ -16,6 +16,8 @@
 #include "include/core/SkFontMetrics.h"
 #include "include/core/SkTypeface.h"
 #include "justify.hpp"
+#include "modules/skparagraph/src/ParagraphBuilderImpl.h"
+#include "modules/skparagraph/src/ParagraphImpl.h"
 #include "modules/skunicode/include/SkUnicode_icu.h"
 #include "text.hpp"
 #include "word_break.hpp"

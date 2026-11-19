@@ -1,7 +1,8 @@
-// Canvas text: measureText, fillText and strokeText, laid out with
-// skparagraph.
+// Canvas text: measureText, fillText and strokeText, laid out with the
+// Blink-style shaper (shaper.cpp).
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include <algorithm>
 #include <cmath>
@@ -15,7 +16,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include "icu_api.h"
+#include "shaper.hpp"
 #include "text.hpp"
+#include "text_caches.hpp"
 #include "text_raster.hpp"
 
 #include "effing/text.hpp"  // effing
@@ -24,105 +28,9 @@
 #error "skia-c must be built with SK_RELEASE like libskia (see build.rs)"
 #endif
 
-// What one laid out text gives measureText, fillText and strokeText, and
-// the work text.cpp repeats for the same request; kept by the font
-// collection until it drops its match caches
-// (skiac_font_collection::text_caches).
-struct TextCaches {
-  // A text blob of a laid out line with its draw font, drawn at `origin`
-  // from the paint origin.
-  struct Run {
-    sk_sp<SkTextBlob> blob;
-    SkPoint origin;
-    SkFont font;
-  };
-
-  // A laid out line, by the text and every request field the layout reads:
-  // not the paint, the anchor, the max width, textAlign, textBaseline or
-  // lcd_text, which only place or draw it.
-  struct Line {
-    PrimaryFontMetrics primary;
-    // No text: only the font metrics.
-    bool empty = false;
-    // The width of Blink's advances.
-    float line_width = 0;
-    // skparagraph's width, from which it places RTL text.
-    float paragraph_width = 0;
-    float layout_width = 0;
-    float line_baseline = 0;
-    float letter_spacing_offset = 0;
-    // The advance of the visually last word, for text without ink.
-    float last_word_advance = 0;
-    // The glyphs where Blink puts them (text_raster.cpp CollectBlinkLine).
-    BlinkLine blink;
-    // The words, byte ranges of the shaped text (MeasureBlinkInk).
-    std::vector<std::pair<size_t, size_t>> words;
-    // MeasureBlinkInk's result by the left edge's float bits; the edge
-    // depends on textAlign only through float rounding, so a line has one
-    // or two.
-    std::vector<std::pair<uint32_t, BlinkRectF>> inks;
-    // `blink`'s runs as text blobs with the draw font (DrawFont without a
-    // device), and as one text blob for the draws that put every glyph
-    // where drawing `runs` puts it (DrawsLikeRuns). The first draw makes
-    // both, so a draw takes the same blobs however often the line was drawn
-    // before (an SVG or PDF canvas writes a text element for each blob run).
-    // `single` leaves out the runs without ink (MakeSingleBlob); its origin
-    // and draw font are the first run's it has, and a glyph's x is its run's
-    // offset from that run plus its x in its run. `frac_bits` is the most
-    // binary fraction digits of an offset or x, `span` twice the largest
-    // offset plus the largest x.
-    bool drawn = false;
-    std::vector<Run> runs;
-    sk_sp<SkTextBlob> single;
-    SkPoint single_origin = {0, 0};
-    SkFont single_font;
-    int frac_bits = 0;
-    double span = 0;
-    // The bytes the line counts in TextCaches::line_bytes, and its place in
-    // TextCaches::lru.
-    size_t bytes = 0;
-    std::list<const std::string*>::iterator lru;
-  };
-
-  // ResolveFontFamilies by the request's family list.
-  std::unordered_map<std::string, std::vector<SkString>> families;
-  // MeasurePrimaryFont by typeface, base typeface and the size's bits.
-  std::map<std::tuple<SkTypefaceID, SkTypefaceID, uint32_t>, PrimaryFontMetrics>
-      metrics;
-  // The SkUnicode every paragraph shares; skparagraph keeps no state in it.
-  sk_sp<SkUnicode> unicode;
-  // Kept within a budget of lines and about `line_bytes` bytes, in place of
-  // skparagraph's ParagraphCache (turned off in skiac_font_collection).
-  std::unordered_map<std::string, Line> lines;
-  size_t line_bytes = 0;
-  // The keys of `lines` (their map nodes do not move), least recently used
-  // first.
-  std::list<const std::string*> lru;
-};
-
 void TextCachesDeleter::operator()(TextCaches* caches) const {
   delete caches;
 }
-
-namespace {
-
-using LineRun = TextCaches::Run;
-using Line = TextCaches::Line;
-
-constexpr float kMaxLayoutWidth = 100000;
-// TextCaches::lines holds up to kMaxLines lines and about kMaxLineBytes bytes
-// (TextCaches::line_bytes; not a hard cap: a draw adds a line's joined blob
-// after the check), dropping the least recently used line first, but it
-// drops none for its bytes while it holds fewer than kMinLines lines. So the
-// last kMinLines lines used stay whatever their bytes, as in skparagraph's
-// ParagraphCache (now off), which kept the last 128 paragraphs of any size,
-// each several times the bytes of a kept line (up to about 25x with fallback
-// runs): a loop over 128 lines of any length stays in both.
-constexpr size_t kMaxLines = 512;
-constexpr size_t kMinLines = 128;
-constexpr size_t kMaxLineBytes = 16 << 20;
-// Line::inks holds up to this many left edges.
-constexpr size_t kMaxInks = 4;
 
 TextCaches& GetTextCaches(skiac_font_collection* c_collection) {
   if (!c_collection->text_caches) {
@@ -133,7 +41,8 @@ TextCaches& GetTextCaches(skiac_font_collection* c_collection) {
 
 const std::vector<SkString>& CachedFontFamilies(
     skiac_font_collection* c_collection,
-    const skiac_text_request& request) {
+    const skiac_text_request& request,
+    const LocaleFamilies* locale) {
   auto& cache = GetTextCaches(c_collection).families;
   if (cache.size() > 256) {
     cache.clear();
@@ -146,12 +55,29 @@ const std::vector<SkString>& CachedFontFamilies(
     key.append(reinterpret_cast<const char*>(prefix), sizeof(prefix));
     key.append(family.name, family.name_len);
   }
+  if (locale) {
+    // A family entry's prefix never has a negative generic value: -1 is the
+    // standard font, -2 - g the setting of generic family g.
+    auto append = [&key](int64_t tag, const std::string& name) {
+      if (name.empty()) {
+        return;
+      }
+      const int64_t prefix[2] = {tag, static_cast<int64_t>(name.size())};
+      key.append(reinterpret_cast<const char*>(prefix), sizeof(prefix));
+      key.append(name);
+    };
+    append(-1, locale->standard);
+    for (int64_t g = 0; g < 9; ++g) {
+      append(-2 - g, locale->generic[g]);
+    }
+  }
   auto found = cache.find(key);
   if (found == cache.end()) {
-    found =
-        cache
-            .emplace(std::move(key), ResolveFontFamilies(c_collection, request))
-            .first;
+    found = cache
+                .emplace(
+                    std::move(key),
+                    ResolveFontFamilies(c_collection, request, nullptr, locale))
+                .first;
   }
   return found->second;
 }
@@ -179,7 +105,26 @@ PrimaryFontMetrics CachedPrimaryFont(skiac_font_collection* c_collection,
   return found->second;
 }
 
-// Every request field LayOutLine reads, then the text.
+namespace {
+
+using LineRun = TextCaches::Run;
+using Line = TextCaches::Line;
+
+// TextCaches::lines holds up to kMaxLines lines and about kMaxLineBytes bytes
+// (TextCaches::line_bytes; not a hard cap: a draw adds a line's joined blob
+// after the check), dropping the least recently used line first, but it
+// drops none for its bytes while it holds fewer than kMinLines lines. So the
+// last kMinLines lines used stay whatever their bytes, as in skparagraph's
+// ParagraphCache (now off), which kept the last 128 paragraphs of any size,
+// each several times the bytes of a kept line (up to about 25x with fallback
+// runs): a loop over 128 lines of any length stays in both.
+constexpr size_t kMaxLines = 512;
+constexpr size_t kMinLines = 128;
+constexpr size_t kMaxLineBytes = 16 << 20;
+// Line::inks holds up to this many left edges.
+constexpr size_t kMaxInks = 4;
+
+// Every request field LayOutLineBlink reads, then the text.
 void AppendLineKey(std::string* key, const skiac_text_request& request) {
   auto put = [key](const void* data, size_t size) {
     key->append(static_cast<const char*>(data), size);
@@ -212,6 +157,22 @@ void AppendLineKey(std::string* key, const skiac_text_request& request) {
   put_int(static_cast<int64_t>(lang_len));
   put(request.lang, lang_len);
   put_int(request.text_rendering);
+  const int features_count = request.features ? request.features_count : 0;
+  put_int(features_count);
+  for (int i = 0; i < features_count; ++i) {
+    put_int(request.features[i].tag);
+    put_int(request.features[i].value);
+  }
+  put_int(request.lig_common);
+  put_int(request.lig_discretionary);
+  put_int(request.lig_historical);
+  put_int(request.lig_contextual);
+  put_int(request.variant_numeric);
+  put_int(request.variant_position);
+  put_int(request.optical_sizing);
+  put_int(request.size_adjust_metric);
+  put_float(request.size_adjust_value);
+  put_int(request.size_adjust_from_font);
   put(request.text, request.text_len);
 }
 
@@ -412,356 +373,11 @@ bool DrawsLikeRuns(const Line& line,
   return total < std::ldexp(1.0, 24 - q);
 }
 
-// The bytes a laid out line keeps for `runs` runs of `glyphs` glyphs and
-// `words` words, as malloc counts them: about 128 for a run's font and
-// vectors, 14 for a glyph's id, position and cluster, 16 for a word.
-size_t LineBytes(size_t runs, size_t glyphs, size_t words) {
-  return 128 * runs + 14 * glyphs + 16 * words;
-}
-
-// Lays out `request` with skparagraph into `line`.
-void LayOutLine(skiac_font_collection* c_collection,
-                const skiac_text_request& request,
-                Line* line) {
-  auto font_collection = c_collection->collection;
-  auto font_style =
-      SkFontStyle(static_cast<int>(roundf(request.weight)), request.stretch,
-                  static_cast<SkFontStyle::Slant>(request.style));
-  auto text_direction = static_cast<TextDirection>(request.direction);
-  const float letter_spacing = request.letter_spacing;
-  // effing: geometricPrecision under the portable renderer lays the text out
-  // at the size Chrome does, floored to 1/100px (metrics), to the nearest
-  // 1/64px (shaping), and unhinted, so glyph outlines and advances don't
-  // depend on the device scale (docs/effing.md).
-  const bool unsnapped =
-      request.text_rendering == effing::kTextRenderingGeometricPrecision &&
-      !SystemFontRenderer();
-  const float size =
-      unsnapped ? effing::effective_font_size(request.size) : request.size;
-  auto shaping_size = [unsnapped](float px) {
-    return unsnapped ? effing::freetype_font_size(px) : px;
-  };
-  TextStyle text_style;
-  text_style.setFontFamilies(CachedFontFamilies(c_collection, request));
-  text_style.setFontSize(shaping_size(size));
-  text_style.setWordSpacing(request.word_spacing);
-  text_style.setLetterSpacing(letter_spacing);
-  text_style.setHeight(1);
-  text_style.setFontStyle(font_style);
-
-  // The families' faces, and the instances at the request's axes that draw
-  // the text (FontCustomPlatformData::GetFontPlatformData).
-  const std::vector<sk_sp<SkTypeface>> base_faces =
-      font_collection->findTypefaces(text_style.getFontFamilies(), font_style);
-  const std::vector<SkFontArguments::VariationPosition::Coordinate> coords =
-      FontVariations(base_faces, request);
-  if (!coords.empty()) {
-    SkFontArguments font_args;
-    font_args.setVariationDesignPosition(
-        {coords.data(), static_cast<int>(coords.size())});
-    text_style.setFontArguments(std::make_optional(font_args));
-    c_collection->noteFontArguments(
-        std::hash<FontArguments>()(*text_style.getFontArguments()));
-  }
-
-  // Apply font kerning feature
-  // kerning: 0=auto (don't set feature), 1=none (disable), 2=normal (enable)
-  if (request.kerning == 1) {
-    text_style.addFontFeature(SkString("kern"), 0);
-  } else if (request.kerning == 2) {
-    text_style.addFontFeature(SkString("kern"), 1);
-  }
-
-  // Apply language/locale for language-specific glyph variants
-  // lang: BCP-47 language tag (e.g., "en", "tr", "zh-Hans"), empty or
-  // "inherit" for none.
-  std::string_view lang(request.lang ? request.lang : "",
-                        request.lang ? request.lang_len : 0);
-  if (!lang.empty() && lang != "inherit") {
-    // No per-language feature rule here: like Blink, the font's own
-    // language systems (e.g. a TRK locl) decide what changes for a language.
-    text_style.setLocale(SkString(lang.data(), lang.size()));
-  }
-
-  // Apply textRendering: only optimizeSpeed changes behavior.
-  // text_rendering: 0=auto, 1=optimizeSpeed, 2=optimizeLegibility,
-  // 3=geometricPrecision
-  if (request.text_rendering == 1) {
-    // optimizeSpeed: disable ligatures and contextual alternates for speed
-    // Note: kern is NOT touched here - it's fontKerning's responsibility
-    text_style.addFontFeature(SkString("liga"), 0);
-    text_style.addFontFeature(SkString("clig"), 0);
-    text_style.addFontFeature(SkString("calt"), 0);
-  }
-
-  // Blink turns the optional ligatures off for any non-zero letter spacing
-  // (FontFeatureRange::FromFontDescription); skparagraph only drops `liga`,
-  // and only for positive spacing.
-  if (letter_spacing != 0) {
-    text_style.addFontFeature(SkString("liga"), 0);
-    text_style.addFontFeature(SkString("clig"), 0);
-    text_style.addFontFeature(SkString("calt"), 0);
-  }
-
-  text_style.setTextBaseline(TextBaseline::kAlphabetic);
-  // The OS's Chrome font flags (text_raster.cpp).
-  const TextRasterPolicy policy(request);
-  policy.ApplyToTextStyle(&text_style);
-  if (unsnapped) {
-    text_style.setFontHinting(SkFontHinting::kNone);  // effing
-  }
-  StrutStyle struct_style;
-  struct_style.setLeading(0);
-
-  ParagraphStyle paragraph_style;
-  paragraph_style.setTextStyle(text_style);
-  paragraph_style.setTextDirection(text_direction);
-  paragraph_style.setStrutStyle(struct_style);
-  // Blink sums the HarfBuzz advances; skparagraph would round the width to
-  // 1/100 px (a Flutter rule).
-  paragraph_style.setApplyRoundingHack(false);
-  // Blink synthesizes bold and italic per face (SynthesizeStyle below).
-  paragraph_style.setFakeMissingFontStyles(false);
-  // FontFallbackList::PrimaryFont: the first family's face gives the font
-  // metrics and the textBaseline offset, whichever font draws the text.
-  const std::vector<sk_sp<SkTypeface>> faces =
-      coords.empty() ? base_faces
-                     : font_collection->findTypefaces(
-                           text_style.getFontFamilies(), font_style,
-                           text_style.getFontArguments());
-  SkTypeface* primary = faces.empty() ? nullptr : faces.front().get();
-  SkTypeface* primary_base =
-      base_faces.empty() ? nullptr : base_faces.front().get();
-  line->primary = CachedPrimaryFont(c_collection, primary, primary_base, size);
-  if (request.text_len == 0) {
-    // Nothing to lay out or draw; measureText keeps the font metrics.
-    line->empty = true;
-    return;
-  }
-
-  // PlainTextNode shapes word by word: kerning and ligatures never cross a
-  // space. skparagraph shapes each run of style blocks that share the font
-  // attributes as one (OneLineShaper::iterateThroughFontStyles), so every
-  // word gets a block whose half leading differs from its neighbours'. Half
-  // leading only acts with a height override, which canvas text never sets.
-  std::string prepared;
-  const std::string_view text = PrepareCanvasText(
-      std::string_view(request.text, request.text_len), &prepared);
-  std::vector<std::pair<size_t, size_t>> words;
-  if (CanShapeWordByWord(c_collection, faces, request)) {
-    words = SplitWords(text);
-  }
-  if (words.empty()) {
-    words.emplace_back(0, text.size());
-  }
-  // The pieces shaped on their own: the words, and for font-variant-caps
-  // their case runs (HarfBuzzShaper::ShapeSegment). `shaped` is the text
-  // skparagraph lays out, case mapped for synthesized small caps; `words`
-  // move to it.
-  struct Piece {
-    size_t start;
-    size_t end;
-    int caps;
-    bool small;
-  };
-  std::vector<Piece> pieces;
-  std::string_view shaped = text;
-  std::string caps_text;
-  if (request.variant_caps == 0) {
-    for (const auto& word : words) {
-      pieces.push_back({word.first, word.second, 0, false});
-    }
-  } else {
-    for (auto& word : words) {
-      const size_t word_start = caps_text.size();
-      for (const CapsPiece& piece : SplitCaps(
-               c_collection, primary,
-               text.substr(word.first, word.second - word.first), request)) {
-        const size_t start = caps_text.size();
-        caps_text += piece.text;
-        pieces.push_back({start, caps_text.size(), piece.caps, piece.small});
-      }
-      word = {word_start, caps_text.size()};
-    }
-    shaped = caps_text;
-  }
-  // The characters Blink gives no letter spacing (NoLetterSpacingRanges),
-  // in either shaping: text blocks of their own with letter spacing 0. They
-  // keep their piece's half leading, so skparagraph shapes them with it
-  // (letter spacing is not a font attribute): a ZWJ sequence or a kerning
-  // pair across a ZWJ stays one shaping. skparagraph spaces a cluster by
-  // the block it starts in. Without letter spacing there is nothing to
-  // leave out (and one word stays one text block).
-  std::vector<std::pair<size_t, size_t>> no_spacing;
-  if (letter_spacing != 0) {
-    std::vector<size_t> piece_starts;
-    piece_starts.reserve(pieces.size());
-    for (const Piece& piece : pieces) {
-      piece_starts.push_back(piece.start);
-    }
-    no_spacing = NoLetterSpacingRanges(shaped, piece_starts);
-  }
-  sk_sp<SkUnicode>& unicode = GetTextCaches(c_collection).unicode;
-  if (!unicode) {
-    unicode = SkUnicodes::ICU::Make();
-  }
-  ParagraphBuilderImpl builder(paragraph_style, font_collection, unicode);
-  if (pieces.size() == 1 && pieces[0].caps == 0 && !pieces[0].small &&
-      no_spacing.empty()) {
-    builder.addText(shaped.data(), shaped.size());
-  } else {
-    auto add = [&](const TextStyle& style, size_t start, size_t end) {
-      if (start < end) {
-        builder.pushStyle(style);
-        builder.addText(shaped.data() + start, end - start);
-        builder.pop();
-      }
-    };
-    // The next range of `no_spacing` that ends after the current piece's
-    // start; the pieces and the ranges are in text order.
-    size_t range = 0;
-    for (size_t i = 0; i < pieces.size(); ++i) {
-      TextStyle piece_style = text_style;
-      piece_style.setHalfLeading(i % 2 == 1);
-      AddCapsFeatures(&piece_style, pieces[i].caps);
-      if (pieces[i].small) {
-        piece_style.setFontSize(shaping_size(SmallCapsSize(size)));
-      }
-      std::optional<TextStyle> unspaced_style;
-      size_t at = pieces[i].start;
-      const size_t end = pieces[i].end;
-      while (range < no_spacing.size() && no_spacing[range].first < end) {
-        if (!unspaced_style) {
-          unspaced_style = piece_style;
-          unspaced_style->setLetterSpacing(0);
-        }
-        const size_t from = std::max(at, no_spacing[range].first);
-        const size_t to = std::min(end, no_spacing[range].second);
-        add(piece_style, at, from);
-        add(*unspaced_style, from, to);
-        at = to;
-        if (no_spacing[range].second > end) {
-          break;
-        }
-        ++range;
-      }
-      add(piece_style, at, end);
-    }
-  }
-  std::unique_ptr<ParagraphImpl> paragraph(
-      static_cast<ParagraphImpl*>(builder.Build().release()));
-  paragraph->layout(kMaxLayoutWidth);
-  // line_metrics.fWidth doesn't contain the suffix spaces
-  // run.calculateWidth will return 0 if font is rendering as fallback
-  //
-  // So we use `getMaxIntrinsicWidth()` to get the `line_width`.
-  // - For single-run text without internal spaces: uses run.advance().fX from
-  // HarfBuzz shaping
-  // - For text with internal spaces or multiple runs: uses TextWrapper's
-  // cluster-based calculation Both are direction-independent and include
-  // trailing spaces.
-  //
-  // Note: Using `getRectsForRange()` may cause `measureText.width` to return
-  // different values for LTR and RTL layouts.
-  const float paragraph_width = paragraph->getMaxIntrinsicWidth();
-  // RTL text sits at the right edge of the layout width. Lay it out again
-  // just wider than the text (no reshaping: one line keeps its runs), so its
-  // glyph positions are not floats near kMaxLayoutWidth that lose 1/128 px.
-  float layout_width = kMaxLayoutWidth;
-  if (text_direction == TextDirection::kRtl &&
-      SkScalarCeilToScalar(paragraph_width) + 1 < kMaxLayoutWidth) {
-    layout_width = SkScalarCeilToScalar(paragraph_width) + 1;
-    paragraph->layout(layout_width);
-    if (paragraph->lines().size() != 1) {
-      layout_width = kMaxLayoutWidth;
-      paragraph->layout(layout_width);
-    }
-  }
-  // FontPlatformData::SetupSkFont: the synthetic styles of the face that
-  // draws each run. They change the glyphs, not the advances. `faces` holds
-  // a clone of each of `base_faces`, in order. SynthesizeStyle runs once for
-  // each face: it can ask the platform font manager (CoreText on macOS)
-  // whether the face is installed, and a line shaped word by word has a run
-  // for each word.
-  std::vector<std::pair<SkTypefaceID, SyntheticStyle>> synthesized;
-  for (Run& run : paragraph->runs()) {
-    auto& font = const_cast<SkFont&>(run.font());
-    const SkTypefaceID id = font.getTypeface()->uniqueID();
-    auto known =
-        std::find_if(synthesized.begin(), synthesized.end(),
-                     [id](const auto& entry) { return entry.first == id; });
-    if (known == synthesized.end()) {
-      SkTypeface* base = nullptr;
-      for (size_t i = 0; i < faces.size(); ++i) {
-        if (faces[i]->uniqueID() == id) {
-          base = faces.size() == base_faces.size() ? base_faces[i].get()
-                                                   : faces[i].get();
-          break;
-        }
-      }
-      synthesized.emplace_back(
-          id, SynthesizeStyle(c_collection, font.getTypeface(), base, request));
-      known = synthesized.end() - 1;
-    }
-    font.setEmbolden(known->second.bold);
-    font.setSkewX(known->second.italic ? -SK_Scalar1 / 4 : 0);
-  }
-  // The glyphs where Blink puts them, and the width of Blink's advances.
-  BlinkLine blink = CollectBlinkLine(paragraph.get(), policy,
-                                     text_direction == TextDirection::kRtl);
-  const float line_width = paragraph_width - blink.shift;
-  // skparagraph draws the first line's glyphs at floor(baseline + 0.5) below
-  // the paint origin (TextLine.cpp, correctedBaseline).
-  const SkScalar line_baseline =
-      paragraph->lines().empty()
-          ? 0
-          : SkScalarFloorToScalar(paragraph->lines()[0].baseline() + 0.5f);
-
-  // LTR: TextLine moves the line right by the half letter spacing of its
-  // first cluster that is not in a cursive script (a Flutter rule); Blink
-  // does not, compensate here. That cluster has none when it is a zero
-  // width space, and cursive scripts get no letter spacing.
-  // Separated from paint_x to avoid being affected by maxWidth scaling.
-  //
-  // CSS Spec: https://www.w3.org/TR/css-text-3/#cursive-tracking
-  // Blink CL: https://chromium-review.googlesource.com/c/chromium/src/+/6399436
-  // Skia CL: https://skia-review.googlesource.com/c/skia/+/1099477
-  line->letter_spacing_offset = 0.0f;
-  if (text_direction == TextDirection::kLtr && !paragraph->lines().empty()) {
-    const ClusterRange clusters = paragraph->lines()[0].clustersWithSpaces();
-    for (ClusterIndex i = clusters.start; i < clusters.end; ++i) {
-      const Cluster& cluster = paragraph->cluster(i);
-      if (!cluster.run().isPlaceholder() && !cluster.run().isCursiveScript()) {
-        line->letter_spacing_offset = -cluster.getHalfLetterSpacing();
-        break;
-      }
-    }
-  }
-
-  line->line_width = line_width;
-  line->paragraph_width = paragraph_width;
-  line->layout_width = layout_width;
-  line->line_baseline = line_baseline;
-  // No glyph has ink: gfx::RectF::Union keeps the last empty word box, a
-  // point on the baseline at the left edge of the visually last word (the
-  // last word for LTR text, the first for RTL), so for "   " the box sits
-  // before the last space. One word is the whole text.
-  line->last_word_advance = line_width;
-  if (words.size() > 1) {
-    const auto& word =
-        text_direction == TextDirection::kRtl ? words.front() : words.back();
-    line->last_word_advance = 0;
-    const auto& runs = paragraph->runs();
-    for (size_t i = 0; i < runs.size(); ++i) {
-      const Run& run = runs[i];
-      if (run.textRange().start >= word.first &&
-          run.textRange().end <= word.second) {
-        line->last_word_advance += run.advance().fX - blink.run_shifts[i];
-      }
-    }
-  }
-  line->blink = std::move(blink);
-  line->words = std::move(words);
+// The bytes a laid out line keeps for `runs` runs of `glyphs` glyphs, as
+// malloc counts them: about 128 for a run's font and vectors, 14 for a
+// glyph's id, position and cluster.
+size_t LineBytes(size_t runs, size_t glyphs) {
+  return 128 * runs + 14 * glyphs;
 }
 
 // The cached layout of `request`, laid out now if there is none.
@@ -779,19 +395,23 @@ Line* FindOrLayOutLine(skiac_font_collection* c_collection,
     }
   }
   Line fresh;
-  LayOutLine(c_collection, request, &fresh);
-  // The layout can drop the caches (noteFontArguments), so look them up
-  // again.
+  c_collection->layout_font_arguments.clear();
+  LayOutLineBlink(c_collection, request,
+                  ResolveFontRequest(c_collection, request), &fresh);
+  // The layout can ask for a drop of the caches (noteFontArguments): it runs
+  // now, so look them up again. The line goes into the new ones.
+  c_collection->dropCachesIfOverBudget();
   TextCaches& caches = GetTextCaches(c_collection);
   size_t glyphs = 0;
   for (const BlinkRun& run : fresh.blink.runs) {
     glyphs += run.glyphs.size();
   }
-  // The key, its map node and the Line take about 512 bytes on top; the
-  // first draw adds the text blobs' (MeasureOrDraw).
-  const size_t bytes =
-      key.size() + 512 +
-      LineBytes(fresh.blink.runs.size(), glyphs, fresh.words.size());
+  // The glyphs also keep the x and offset TextMetrics measures them at: 12
+  // bytes each. The key, its map node and the Line take about 512 bytes on
+  // top; the first draw adds the text blobs' (MeasureOrDraw).
+  const size_t bytes = key.size() + 512 +
+                       LineBytes(fresh.blink.runs.size(), glyphs) +
+                       12 * glyphs + 4 * fresh.blink.item_widths.size();
   while (!caches.lru.empty() && (caches.lines.size() >= kMaxLines ||
                                  (caches.lines.size() >= kMinLines &&
                                   caches.line_bytes + bytes > kMaxLineBytes))) {
@@ -840,20 +460,10 @@ void MeasureOrDraw(skiac_font_collection* c_collection,
     return;
   }
   const float line_width = line->line_width;
-  const float paragraph_width = line->paragraph_width;
-  const float layout_width = line->layout_width;
-  const SkScalar line_baseline = line->line_baseline;
-  const float letter_spacing_offset = line->letter_spacing_offset;
 
   auto line_center = line_width / 2.0f;
   float paint_x;
   float offset_x = 0.0f;
-
-  // RTL: Skia lays out text from the layout width's right edge, compensate
-  // here. Separated from paint_x to avoid being affected by maxWidth scaling.
-  float rtl_offset = (text_direction == TextDirection::kRtl)
-                         ? (layout_width - paragraph_width)
-                         : 0.0f;
 
   // Determine alignment type
   auto text_align = static_cast<TextAlign>(request.align);
@@ -881,19 +491,18 @@ void MeasureOrDraw(skiac_font_collection* c_collection,
       canvas->save();
       canvas->scale(ratio, 1.0f);
     }
-    // final_x: scale user coords (paint_x, offset_x), then apply Skia offsets
-    float final_x = need_scale ? (paint_x + (1 - ratio) * offset_x) / ratio -
-                                     rtl_offset + letter_spacing_offset
-                               : paint_x - rtl_offset + letter_spacing_offset;
-    // Each run with Blink's draw font, unclipped: skparagraph's paint() clips
-    // a run to its line box when a cluster or trailing spaces cut it
-    // (TextLine.cpp TextBlobRecord::paint); Chrome never clips canvas glyphs.
-    const float paint_y = y + baseline_y - line_baseline;
+    // final_x: the user coords (paint_x, offset_x) scaled. The glyphs sit
+    // where Blink puts them from the text's left edge.
+    float final_x =
+        need_scale ? (paint_x + (1 - ratio) * offset_x) / ratio : paint_x;
+    // Each run with Blink's draw font, unclipped: Chrome never clips canvas
+    // glyphs.
+    const float paint_y = y + baseline_y;
     if (request.text_rendering == effing::kTextRenderingGeometricPrecision &&
         !SystemFontRenderer()) {
       // effing: each glyph's outline filled at its exact position, not
       // snapped to the pixel grid, in the unhinted font the line was shaped
-      // with rather than the OS's draw font (docs/effing.md).
+      // with (shaper.cpp LineFonts::Finish; docs/effing.md).
       for (const BlinkRun& run : line->blink.runs) {
         effing::paint_glyphs_unsnapped(
             canvas, run.font, run.glyphs.data(), run.positions.data(),
@@ -947,7 +556,7 @@ void MeasureOrDraw(skiac_font_collection* c_collection,
   // outlines on macOS, whole-pixel glyph boxes elsewhere). x is from the
   // text's left edge: the draw's origin is draw_x from the anchor, and the
   // text's left edge offset_x left of it (Blink's text_align_dx).
-  const float draw_x = paint_x - rtl_offset + letter_spacing_offset - x;
+  const float draw_x = paint_x - x;
   const float left_edge = -(draw_x + offset_x);
   uint32_t left_bits;
   memcpy(&left_bits, &left_edge, sizeof(left_bits));
@@ -958,18 +567,10 @@ void MeasureOrDraw(skiac_font_collection* c_collection,
   if (found != line->inks.end()) {
     ink = found->second;
   } else {
-    ink = MeasureBlinkInk(line->blink, policy, line->words, left_edge,
-                          line_baseline);
+    ink = MeasureBlinkInk(line->blink, policy, left_edge);
     if (line->inks.size() < kMaxInks) {
       line->inks.emplace_back(left_bits, ink);
     }
-  }
-  if (ink.IsEmpty()) {
-    // No glyph has ink: gfx::RectF::Union keeps the last empty word box, a
-    // point on the baseline at the left edge of the visually last word
-    // (the last word for LTR text, the first for RTL), so for "   " the box
-    // sits before the last space. One word is the whole text.
-    ink = {line_width - line->last_word_advance, 0, 0, 0};
   }
   // TextMetrics::Update.
   c_line_metrics->left = -ink.x + offset_x;
@@ -984,74 +585,6 @@ void MeasureOrDraw(skiac_font_collection* c_collection,
 }
 
 }  // namespace
-
-std::vector<float> LineRunShifts(ParagraphImpl* paragraph) {
-  std::vector<float> shifts;
-  // One run has no run before it.
-  if (paragraph->lines().size() != 1 || paragraph->runs().size() < 2) {
-    return shifts;
-  }
-  // Without a cluster that advances less than nothing, no piece is narrower
-  // than 0 and TextLine's x is Blink's. A cluster's width holds its letter
-  // and word spacing. The glyph positions can go backwards without one:
-  // OneLineShaper can leave a glyph of the next text in a run, outside the
-  // run's clusters, and the spacing before it does not move it.
-  bool negative = false;
-  for (const Cluster& cluster : paragraph->clusters()) {
-    if (cluster.width() < 0) {
-      negative = true;
-      break;
-    }
-  }
-  if (!negative) {
-    return shifts;
-  }
-  const TextLine& line = paragraph->lines()[0];
-  bool moved = false;
-  // Where the next run starts, from the line's start: Blink's x and
-  // TextLine's (run_offset).
-  float blink_offset = 0;
-  // TextLine::ensureTextBlobCachePopulated's walk: one text blob per call
-  // of the style visitor, an empty one for an empty glyph range.
-  line.iterateThroughVisualRuns(false, [&](const Run* run, SkScalar run_offset,
-                                           TextRange text_range,
-                                           SkScalar* run_width) {
-    if (run->placeholderStyle() != nullptr) {
-      *run_width = run->advance().fX;
-      blink_offset += run->advance().fX;
-      return true;
-    }
-    float blink_in_run = 0;
-    float line_in_run = 0;
-    *run_width = line.iterateThroughSingleRunByStyles(
-        TextLine::TextAdjustment::GlyphCluster, run, run_offset, text_range,
-        StyleType::kForeground,
-        [&](TextRange, const TextStyle&, const TextLine::ClipContext& context) {
-          if (context.size > 0) {
-            const float shift =
-                (blink_offset + blink_in_run) - (run_offset + line_in_run);
-            moved = moved || shift != 0;
-            shifts.push_back(shift);
-          }
-          // The clip starts where TextLine puts the glyphs and is as
-          // wide as their advances, cut at the line's advance and at 0
-          // (TextLine::measureTextInsideOneRun).
-          const float advance = context.run->calculateWidth(
-              context.pos, context.pos + context.size, false);
-          blink_in_run += (advance + context.clip.fLeft) - context.clip.fLeft;
-          line_in_run += context.clip.width();
-        });
-    // A piece without height gets no blob and no visitor call; it
-    // advances like TextLine counts it.
-    blink_offset += blink_in_run + (*run_width - line_in_run);
-    return true;
-  });
-  if (!moved) {
-    shifts.clear();
-  }
-  return shifts;
-}
-
 extern "C" {
 
 void skiac_text_measure(skiac_font_collection* c_collection,
@@ -1074,6 +607,78 @@ void skiac_text_draw(skiac_canvas* c_canvas,
                 nullptr);
 }
 
+void skiac_debug_text_line(skiac_font_collection* c_collection,
+                           const skiac_text_request* request,
+                           void (*sink)(const char*, size_t, void*),
+                           void* context) {
+  c_collection->flushCachesIfDirty();
+  const Line* line = FindOrLayOutLine(c_collection, *request);
+  std::string out;
+  char number[64];
+  auto put_float = [&](float value) {
+    snprintf(number, sizeof(number), "%.9g", value);
+    out += number;
+  };
+  out += "{\"empty\":";
+  out += line->empty ? "true" : "false";
+  out += ",\"width\":";
+  put_float(line->line_width);
+  out += ",\"lastWordAdvance\":";
+  put_float(line->last_word_advance);
+  out += ",\"fallbackReads\":";
+  out += std::to_string(c_collection->installed_fallback_reads);
+  out += ",\"runs\":[";
+  for (size_t r = 0; r < line->blink.runs.size(); ++r) {
+    const BlinkRun& run = line->blink.runs[r];
+    SkString family;
+    if (run.font.getTypeface()) {
+      run.font.getTypeface()->getFamilyName(&family);
+    }
+    out += r ? ",{" : "{";
+    out += "\"family\":\"";
+    for (const char c : std::string_view(family.c_str(), family.size())) {
+      if (c == '"' || c == '\\') {
+        out += '\\';
+      }
+      if (static_cast<unsigned char>(c) >= 0x20) {
+        out += c;
+      }
+    }
+    out += "\",\"size\":";
+    put_float(run.font.getSize());
+    out += ",\"embolden\":";
+    out += run.font.isEmbolden() ? "true" : "false";
+    out += ",\"skew\":";
+    put_float(run.font.getSkewX());
+    // Where the glyphs go from the paint origin.
+    out += ",\"x\":[";
+    for (size_t i = 0; i < run.positions.size(); ++i) {
+      if (i) {
+        out += ',';
+      }
+      put_float(run.origin.fX + run.positions[i].fX);
+    }
+    out += "],\"y\":[";
+    for (size_t i = 0; i < run.positions.size(); ++i) {
+      if (i) {
+        out += ',';
+      }
+      put_float(run.origin.fY + run.positions[i].fY);
+    }
+    out += "],\"glyphs\":[";
+    for (size_t i = 0; i < run.glyphs.size(); ++i) {
+      out += (i ? "," : "") + std::to_string(run.glyphs[i]);
+    }
+    out += "],\"clusters\":[";
+    for (size_t i = 0; i < run.clusters.size(); ++i) {
+      out += (i ? "," : "") + std::to_string(run.clusters[i]);
+    }
+    out += "]}";
+  }
+  out += "]}";
+  sink(out.data(), out.size(), context);
+}
+
 bool skiac_text_line_kept(skiac_font_collection* c_collection,
                           const skiac_text_request* request) {
   if (!c_collection->text_caches) {
@@ -1082,63 +687,6 @@ bool skiac_text_line_kept(skiac_font_collection* c_collection,
   std::string key;
   AppendLineKey(&key, *request);
   return c_collection->text_caches->lines.count(key) > 0;
-}
-
-// The advance of U+6C34 in the primary face of a font, for the ic unit:
-// Blink's FontSizes::Ic (css_to_length_conversion_data.cc:139-152) reads
-// Font::PrimaryFontWithCjkWater(), the first font of the family list that
-// exists, whether or not it has the glyph (font_fallback_list.cc:88-195; only
-// a unicode-range face is skipped), and SimpleFontData::IdeographicInlineSize,
-// the unshaped advance of that glyph (simple_font_data.cc:437-474). Our
-// primary face is the first that text layout tries: findTypefaces() with the
-// same resolved families (ResolveFontFamilies), style and variations. When no
-// family of the list exists, that is the standard font, as in Blink
-// (font_fallback_list.cc:181-194); it has no U+6C34 in a default setup.
-// False when nothing resolves or the face has no such glyph; ic is then 1em.
-// The request's text is not read.
-bool skiac_font_collection_ideographic_advance(
-    skiac_font_collection* c_collection,
-    const skiac_text_request* request,
-    float* advance) {
-  c_collection->flushCachesIfDirty();
-  const auto families_vec = ResolveFontFamilies(c_collection, *request);
-  if (families_vec.empty()) {
-    return false;
-  }
-  std::vector<SkFontArguments::VariationPosition::Coordinate> coords;
-  for (int i = 0; i < request->variations_count; i++) {
-    coords.push_back(
-        {request->variations[i].tag, request->variations[i].value});
-  }
-  if (request->stretch_pct != 100.0f) {
-    coords.push_back(
-        {SkSetFourByteTag('w', 'd', 't', 'h'), request->stretch_pct});
-  }
-  std::optional<FontArguments> font_args;
-  if (!coords.empty()) {
-    SkFontArguments args;
-    args.setVariationDesignPosition(
-        {coords.data(), static_cast<int>(coords.size())});
-    font_args.emplace(args);
-  }
-  auto typefaces = c_collection->collection->findTypefaces(
-      families_vec,
-      SkFontStyle(static_cast<int>(roundf(request->weight)), request->stretch,
-                  static_cast<SkFontStyle::Slant>(request->style)),
-      font_args);
-  if (typefaces.empty()) {
-    return false;
-  }
-  SkFont font(typefaces[0], request->size);
-  // Blink's font has subpixel positioning, so the advance is unhinted.
-  font.setSubpixel(true);
-  font.setLinearMetrics(true);
-  auto glyph = font.unicharToGlyph(0x6C34);
-  if (glyph == 0) {
-    return false;
-  }
-  *advance = font.getWidth(glyph);
-  return true;
 }
 
 }  // extern "C"
