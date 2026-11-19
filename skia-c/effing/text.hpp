@@ -124,6 +124,25 @@ void paint_glyphs_unsnapped(SkCanvas* canvas,
                             SkScalar y,
                             const SkPaint& paint);
 
+// Whether the line upstream's shaper lays out on this thread is one of a
+// paragraph's (paragraph_blink.cpp), which Chrome's inline layout shapes by
+// bidi run, kerning and ligating across spaces, where fillText's text may be
+// shaped word by word (Font::CanShapeWordByWord). The shaper reads it in
+// LayOutLineBlink, and its line cache keys on it.
+bool shaping_whole_runs();
+
+// Shapes the lines laid out on this thread while it lives by bidi run.
+class ShapeWholeRuns {
+ public:
+  ShapeWholeRuns();
+  ~ShapeWholeRuns();
+  ShapeWholeRuns(const ShapeWholeRuns&) = delete;
+  ShapeWholeRuns& operator=(const ShapeWholeRuns&) = delete;
+
+ private:
+  bool previous_;
+};
+
 }  // namespace effing
 
 #endif  // EFFING_TEXT_HPP

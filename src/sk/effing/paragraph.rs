@@ -36,6 +36,7 @@ mod ffi {
     pub keep_trailing_whitespace: bool,
     pub word_break: i32,
     pub overflow_wrap: i32,
+    pub engine: i32,
   }
 
   #[repr(C)]
@@ -137,6 +138,44 @@ impl FromStr for OverflowWrap {
   }
 }
 
+/// What lays a paragraph out. Mirrors `effing_paragraph_engine` in
+/// `skia-c/effing/paragraph.hpp`.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ParagraphEngine {
+  /// SkParagraph, with effing's line model on top.
+  #[default]
+  Skparagraph = 0,
+  /// The Blink-style shaper `fillText` uses.
+  Shaper = 1,
+}
+
+impl ParagraphEngine {
+  /// The engine of a paragraph whose style names none: that of the
+  /// `EFFING_PARAGRAPH_ENGINE` environment variable when it is set, to try an
+  /// engine out (or run the tests on it) without changing any style.
+  pub fn from_env() -> Result<ParagraphEngine, SkError> {
+    match std::env::var("EFFING_PARAGRAPH_ENGINE") {
+      Ok(engine) if !engine.is_empty() => ParagraphEngine::from_str(&engine),
+      _ => Ok(ParagraphEngine::default()),
+    }
+  }
+}
+
+impl FromStr for ParagraphEngine {
+  type Err = SkError;
+
+  fn from_str(s: &str) -> Result<ParagraphEngine, SkError> {
+    match s {
+      "skparagraph" => Ok(ParagraphEngine::Skparagraph),
+      "shaper" => Ok(ParagraphEngine::Shaper),
+      _ => Err(SkError::Generic(format!(
+        "[`{s}`] is not valid engine value"
+      ))),
+    }
+  }
+}
+
 /// A paragraph's style: everything but its text and font family.
 #[derive(Debug, Clone, Copy)]
 pub struct ParagraphOptions<'a> {
@@ -161,6 +200,7 @@ pub struct ParagraphOptions<'a> {
   pub keep_trailing_whitespace: bool,
   pub word_break: WordBreak,
   pub overflow_wrap: OverflowWrap,
+  pub engine: ParagraphEngine,
 }
 
 /// How a placeholder sits on its line: CSS `vertical-align` keywords.
@@ -293,6 +333,7 @@ impl Paragraph {
       keep_trailing_whitespace: options.keep_trailing_whitespace,
       word_break: options.word_break as i32,
       overflow_wrap: options.overflow_wrap as i32,
+      engine: options.engine as i32,
     };
     let placeholders: Vec<_> = placeholders
       .iter()

@@ -73,6 +73,12 @@ export interface ParagraphStyle {
    * full.
    */
   overflowWrap?: 'normal' | 'break-word'
+  /**
+   * What lays the paragraph out: `skparagraph` (the default), SkParagraph
+   * with effing's line model on top, or `shaper`, the Blink-style shaper
+   * `fillText` uses, with the same line model.
+   */
+  engine?: 'skparagraph' | 'shaper'
 }
 
 /**

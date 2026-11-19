@@ -1659,11 +1659,14 @@ void LayOutLineBlink(skiac_font_collection* c_collection,
                              FallbackMonospace(request));
   fonts.set_last_resort(last_resort.face, last_resort.base.get());
 
-  const bool word_by_word = CanShapeWordByWord(
-      c_collection, faces, request,
-      [](skiac_font_collection* collection, SkTypeface* face) {
-        return HbNominalGlyph(collection, face, 0x20);
-      });
+  // effing: a paragraph's line is shaped by bidi run (effing/text.hpp).
+  const bool word_by_word =
+      !effing::shaping_whole_runs() &&
+      CanShapeWordByWord(
+          c_collection, faces, request,
+          [](skiac_font_collection* collection, SkTypeface* face) {
+            return HbNominalGlyph(collection, face, 0x20);
+          });
   const bool rtl = request.direction == static_cast<int>(TextDirection::kRtl);
   const ItemList items = SegmentText(prepared, rtl, word_by_word);
   const std::vector<hb_feature_t> features = BlinkFeatures(request);
@@ -1769,4 +1772,20 @@ bool skiac_font_collection_primary_font_units(
   }
 #endif
   return true;
+}
+
+// effing: the primary font of `request`'s font list as this shaper picks it
+// (before font arguments), whose metrics effing's paragraphs laid out with
+// this shaper make their line boxes of (effing/paragraph_blink.cpp).
+sk_sp<SkTypeface> effing_primary_face(skiac_font_collection* c_collection,
+                                      const skiac_text_request& request) {
+  c_collection->flushCachesIfDirty();
+  c_collection->layout_font_arguments.clear();
+  struct DropCachesIfOverBudget {
+    skiac_font_collection* c_collection;
+    ~DropCachesIfOverBudget() { c_collection->dropCachesIfOverBudget(); }
+  } drop_caches{c_collection};
+  const FontResolution resolution = ResolveFontRequest(c_collection, request);
+  const LineFaces line = ResolveLineFaces(c_collection, request, resolution);
+  return line.base_faces.empty() ? nullptr : line.base_faces.front();
 }

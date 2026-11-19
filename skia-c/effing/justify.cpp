@@ -53,21 +53,7 @@ struct LineWidthWithSpaces {
 };
 template struct PrivateMember<LineWidthWithSpaces, &TextLine::fWidthWithSpaces>;
 
-// What a character is to Chrome's justification (Blink's
-// JustificationContext::CheckOpportunity, under text-justify: auto).
-enum class Kind {
-  // A default-ignorable code point: no opportunity, and the one before it
-  // carries on past it.
-  kIgnorable,
-  // A space, a tab, a line feed or a no-break space: an opportunity after
-  // it.
-  kSpace,
-  // A CJK ideograph or symbol (IsCjkIdeographOrSymbol): an opportunity
-  // after it, and one before it unless one is already there.
-  kCjk,
-  // Any other: no opportunity.
-  kOther,
-};
+using Kind = JustificationKind;
 
 struct Range {
   char32_t first;
@@ -148,7 +134,9 @@ bool in(const Range (&ranges)[N], char32_t c) {
   return range != end && range->first <= c;
 }
 
-Kind kind_of(char32_t c) {
+}  // namespace
+
+JustificationKind justification_kind(char32_t c) {
   if (c < 0x100 ? c == 0xAD : in(kIgnorable, c)) {
     return Kind::kIgnorable;
   }
@@ -157,6 +145,8 @@ Kind kind_of(char32_t c) {
   }
   return c >= 0x2C7 && in(kCjk, c) ? Kind::kCjk : Kind::kOther;
 }
+
+namespace {
 
 // The space separators other than the space, the no-break spaces and the
 // ideographic space (the en and em spaces, ...), which SkParagraph lets hang
@@ -242,7 +232,7 @@ void justify_line(const ParagraphImpl* impl, TextLine& line, float width) {
   line.iterateThroughClustersInGlyphsOrder(
       false, true, [&](const Cluster* cluster, ClusterIndex, bool ghost) {
         const char32_t c = first_code_point(impl, *cluster);
-        items.push_back({cluster, ghost, kind_of(c)});
+        items.push_back({cluster, ghost, justification_kind(c)});
         if (ghost && other_space_separator(c)) {
           separators += cluster->width();
         }

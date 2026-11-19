@@ -41,6 +41,16 @@ struct effing_paragraph_style {
   // An effing::OverflowWrap (word_break.hpp): what happens to a word wider
   // than the line (CSS overflow-wrap).
   int overflow_wrap;
+  // An effing_paragraph_engine: what lays the paragraph out.
+  int engine;
+};
+
+// What lays a paragraph out.
+enum effing_paragraph_engine {
+  // SkParagraph, with effing's line model on top (paragraph.cpp).
+  EFFING_PARAGRAPH_ENGINE_SKPARAGRAPH = 0,
+  // The Blink-style shaper fillText uses (paragraph_blink.cpp).
+  EFFING_PARAGRAPH_ENGINE_SHAPER = 1,
 };
 
 // How a placeholder sits on its line: CSS vertical-align keywords.

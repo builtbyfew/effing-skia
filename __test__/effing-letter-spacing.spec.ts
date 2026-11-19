@@ -145,7 +145,16 @@ test('text paints as it does without its default-ignorable code points', (t) => 
     }
     const style = { ...IOSEVKA_RTL, letterSpacing }
     const text = '\u05E9\u05DC\u200B\u05D5\u05DD'
-    near(t, new Paragraph(text, style).layout(1000).lines[0].width, 4 * (10 + letterSpacing), 'RTL ZWSP inside')
+    // The shaper engine takes the Hebrew from a fallback font too, as
+    // fillText does.
+    near(
+      t,
+      new Paragraph(text, style).layout(1000).lines[0].width,
+      process.env.EFFING_PARAGRAPH_ENGINE === 'shaper'
+        ? measureText(strip(text), style, letterSpacing, 'geometricPrecision')
+        : 4 * (10 + letterSpacing),
+      'RTL ZWSP inside',
+    )
     // fillText takes the Hebrew from a fallback font where the system has
     // one, so it is compared with the text without the ZWSP.
     near(
