@@ -23,6 +23,36 @@ See the 1.1.1-effing.1 section of `docs/effing.md` for the changes `@effing/canv
 * merge upstream napi-rs/canvas 1.1.0 ([#66](https://github.com/builtbyfew/effing-skia/issues/66)) ([8818666](https://github.com/builtbyfew/effing-skia/commit/8818666e18942f1e6480e9c1140f818b84042e3b)), and 1.0.11 ([#65](https://github.com/builtbyfew/effing-skia/issues/65)) ([edf9d6c](https://github.com/builtbyfew/effing-skia/commit/edf9d6c76b39d1ccc3243c2fc99bde63db593ca7)). Upstream's new text engine draws text the same on every OS by default, with `setTextRenderer('portable' | 'system')`; the fork's `geometricPrecision` text, registered-font precedence, CSS font matching, font collections, encode pool, async rasterising, QOI and compositing groups are re-hooked into it. See the 1.1.0-effing.1 section of `docs/effing.md` for the changes `@effing/canvas` has to follow, among them `convertToBlob({ type })`, an ignored invalid `ctx.font`, and `loadFontsFromDir` loading installed fonts.
 
 
+## [1.2.1](https://github.com/Brooooooklyn/canvas/compare/v1.2.0...v1.2.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **fonts:** align fontVariationSettings with Chrome CSS and fix VF edge cases ([#1470](https://github.com/Brooooooklyn/canvas/issues/1470)) ([841992a](https://github.com/Brooooooklyn/canvas/commit/841992ae52f21ed4d5fdeff94ea8ab7c0878564d))
+* **node-canvas:** registerFont descriptors and private cleanup registrations ([#1473](https://github.com/Brooooooklyn/canvas/issues/1473)) ([1d6ea39](https://github.com/Brooooooklyn/canvas/commit/1d6ea3993b159a5917c9989eaf40a069beabaf85))
+
+
+### Features
+
+* chrome/m158 ([#1469](https://github.com/Brooooooklyn/canvas/issues/1469)) ([b3698ce](https://github.com/Brooooooklyn/canvas/commit/b3698ce3fbb63dceda9adde50a5f5222fa98a097))
+# [1.2.0](https://github.com/Brooooooklyn/canvas/compare/v1.1.1...v1.2.0) (2026-11-20)
+
+
+### Bug Fixes
+
+* **deps:** update and group libavif crates ([#1461](https://github.com/Brooooooklyn/canvas/issues/1461)) ([8590948](https://github.com/Brooooooklyn/canvas/commit/8590948d35327878f81707d18965bcbf883f8d9c))
+
+
+### Features
+
+* **canvas:** add ctx.antialias property ([#1466](https://github.com/Brooooooklyn/canvas/issues/1466)) ([0e6a445](https://github.com/Brooooooklyn/canvas/commit/0e6a445275a3ca93f748fb3006451df981e0c385))
+* **encode:** PNG compressionLevel and filters ([#1463](https://github.com/Brooooooklyn/canvas/issues/1463)) ([25449f5](https://github.com/Brooooooklyn/canvas/commit/25449f536054521412b0a724c5e3762c44c421d2))
+* **fonts:** [@font-face](https://github.com/font-face) descriptor follow-ups of [#1464](https://github.com/Brooooooklyn/canvas/issues/1464) ([#1465](https://github.com/Brooooooklyn/canvas/issues/1465)) ([e7dd9f1](https://github.com/Brooooooklyn/canvas/commit/e7dd9f1199ff388569846d126bc7b9eb1c588feb))
+* **fonts:** `@font-face` descriptors in GlobalFonts.register ([#1464](https://github.com/Brooooooklyn/canvas/issues/1464)) ([e38d73f](https://github.com/Brooooooklyn/canvas/commit/e38d73f22ac60028a9f88bd2910b6b7f79443d23))
+* **fonts:** support [@font-face](https://github.com/font-face) stretch descriptor and fix static font-stretch matching ([#1467](https://github.com/Brooooooklyn/canvas/issues/1467)) ([2dde24a](https://github.com/Brooooooklyn/canvas/commit/2dde24ad561e76be573baf5d4c4fb88caeae4767))
+* **text:** use DirectWrite and Fontations on Windows in system text renderer ([#1468](https://github.com/Brooooooklyn/canvas/issues/1468)) ([3093c34](https://github.com/Brooooooklyn/canvas/commit/3093c348b73e98bc6235394e761d571443573521))
+
+
 ## [1.1.1](https://github.com/Brooooooklyn/canvas/compare/v1.1.0...v1.1.1) (2026-11-12)
 
 

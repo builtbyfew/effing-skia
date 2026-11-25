@@ -317,6 +317,13 @@ function drawSvg(family: string, style: string, weight: number): Buffer {
   return canvas.data()
 }
 
+// A face's @font-face descriptors, as the Chrome references declare them:
+// canvas text (and the shaper engine) picks among registered faces by
+// their descriptors, as Chrome does, and takes one with none as `normal`
+// (upstream 1.2.0; docs/effing.md).
+const STRETCH_PERCENTS = ['50%', '62.5%', '75%', '87.5%', '100%', '112.5%', '125%', '150%', '200%']
+const descriptorsOf = ({ weight, style, width }: Face) => ({ weight, style, stretch: STRETCH_PERCENTS[width - 1] })
+
 // Registered under `prefix` + the case's name, and loaded as system fonts
 // under another.
 const REGISTERED = 'FM '
@@ -328,7 +335,7 @@ test.before(() => {
   tmpDirs.push(dir)
   for (const [name, { faces }] of Object.entries(CASES)) {
     faces.split(' ').forEach((face, i) => {
-      GlobalFonts.register(makeFace(REGISTERED + name, faceOf(face)))
+      GlobalFonts.register(makeFace(REGISTERED + name, faceOf(face)), undefined, descriptorsOf(faceOf(face)))
       writeFileSync(join(dir, `${name}-${i}.ttf`), makeFace(SYSTEM + name, faceOf(face)))
     })
   }
@@ -366,7 +373,7 @@ for (const [prefix, kind] of [
 
 test('bold italic with no such face is the italic face emboldened, as in Chrome (#37)', (t) => {
   // The italic face alone, in a family of its own.
-  GlobalFonts.register(makeFace('FM RBI italic', faceOf('400i')))
+  GlobalFonts.register(makeFace('FM RBI italic', faceOf('400i')), undefined, descriptorsOf(faceOf('400i')))
   const family = `${REGISTERED}RBI`
   t.is(drawnBy('RBI', measureText(family, 'italic', 700, 5)), '400i')
   t.is(drawnBy('RBI', paragraphWidth(family, 'italic', 700)), '400i')

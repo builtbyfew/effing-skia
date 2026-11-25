@@ -81,7 +81,7 @@ impl PageRecorder {
       .iter()
       .chain(std::iter::once(&self.top_level))
       .flat_map(|level| &level.clips)
-      .map(|(transform, path)| {
+      .map(|(transform, path, _aa)| {
         let (left, top, right, bottom) = path.transform(transform).get_bounds();
         [left, top, right, bottom]
       })

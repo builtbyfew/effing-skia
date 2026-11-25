@@ -102,11 +102,15 @@ void draw_run_as_paths(SkCanvas* canvas,
                        SkScalar x,
                        SkScalar y,
                        const SkPaint& paint,
-                       Painted* painted) {
+                       Painted* painted,
+                       bool antialias = true) {
   SkPathBuilder builder;
   if (!append_glyph_paths(run_font, glyphs, positions, count, &builder)) {
     SkFont font = run_font;
     font.setBaselineSnap(false);
+    if (!antialias) {
+      font.setEdging(SkFont::Edging::kAlias);
+    }
     SkTextBlobBuilder blob;
     const auto& buffer = blob.allocRunPos(font, count);
     std::memcpy(buffer.glyphs, glyphs, count * sizeof(SkGlyphID));
@@ -126,7 +130,7 @@ void draw_run_as_paths(SkCanvas* canvas,
     return;
   }
   SkPaint path_paint(paint);
-  path_paint.setAntiAlias(true);
+  path_paint.setAntiAlias(antialias);
   const SkPath path = builder.detach().makeOffset(x, y);
   canvas->drawPath(path, path_paint);
   if (painted != nullptr) {
@@ -250,11 +254,13 @@ void paint_glyphs_unsnapped(SkCanvas* canvas,
                             int count,
                             SkScalar x,
                             SkScalar y,
-                            const SkPaint& paint) {
+                            const SkPaint& paint,
+                            bool antialias) {
   if (count > 0) {
     draw_run_as_paths(
         canvas, font, glyphs, positions, count, x, y, paint,
-        text_painted ? text_painted : (text_painted = new Painted()));
+        text_painted ? text_painted : (text_painted = new Painted()),
+        antialias);
   }
 }
 

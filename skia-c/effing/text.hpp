@@ -115,6 +115,7 @@ void paint_paragraph_unsnapped(skia::textlayout::Paragraph* paragraph,
 // laid out: paints `count` glyphs of `font` at `positions`, relative to
 // (x, y), as paint_paragraph_unsnapped paints a run. What was drawn is added
 // to this thread's tally, which effing_take_text_painted reports.
+// `antialias` false (ctx.antialias 'none') paints aliased edges.
 void paint_glyphs_unsnapped(SkCanvas* canvas,
                             const SkFont& font,
                             const SkGlyphID* glyphs,
@@ -122,7 +123,8 @@ void paint_glyphs_unsnapped(SkCanvas* canvas,
                             int count,
                             SkScalar x,
                             SkScalar y,
-                            const SkPaint& paint);
+                            const SkPaint& paint,
+                            bool antialias = true);
 
 // Whether the line upstream's shaper lays out on this thread is one of a
 // paragraph's (paragraph_blink.cpp), which Chrome's inline layout shapes by

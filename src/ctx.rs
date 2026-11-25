@@ -10,7 +10,7 @@ use crate::css_math::{Lengths, Unit, token_number};
 use crate::font::parse_canvas_font;
 use crate::font_props::{
   FontFeatureSettings, FontOpticalSizing, FontSizeAdjust, FontVariantLigatures, FontVariantNumeric,
-  FontVariantPosition,
+  FontVariantPosition, FontVariationSettings,
 };
 use crate::global_fonts::get_font;
 use crate::page_recorder::{PageRecorder, RasterKey, next_resource_id};
@@ -26,10 +26,10 @@ use crate::{
   path::{Path, check_round_rect},
   pattern::{CanvasPattern, Pattern, srgb_channel_to_u8},
   sk::{
-    AccountedBitmap, AlphaType, Bitmap, BlendMode, Color4f, ColorSpace, DecodedCopy, FillType,
-    FilterQuality, FontVariantCaps, ImageFilter, ImagePattern, LineMetrics, MaskFilter, Matrix,
-    Paint, PaintStyle, Path as SkPath, PathEffect, ReadPixelsError, Shader, SkWMemoryStream,
-    StrokeCap, StrokeJoin, Surface, TextSettings, Transform,
+    AccountedBitmap, AlphaType, Antialias, Bitmap, BlendMode, Color4f, ColorSpace, DecodedCopy,
+    FillType, FilterQuality, FontVariantCaps, ImageFilter, ImagePattern, LineMetrics, MaskFilter,
+    Matrix, Paint, PaintStyle, Path as SkPath, PathEffect, ReadPixelsError, Shader,
+    SkWMemoryStream, StrokeCap, StrokeJoin, Surface, TextSettings, Transform,
   },
   state::{BLINK_IDENTITY, Context2dRenderingState, SpacingLength},
   webidl::{self, CanvasPixelFormat, Double, ImageDataPixelFormat, Positional, ReportedSettings},
@@ -1307,8 +1307,9 @@ impl Context {
       },
       clip_path.estimated_bytes(),
     );
+    let aa = self.state.antialias.is_enabled();
     self.with_canvas_state(|canvas| {
-      canvas.set_clip_path(&clip_path);
+      canvas.set_clip_path(&clip_path, aa);
     });
 
     self.state.has_clip = true;
@@ -1316,7 +1317,7 @@ impl Context {
     if let Some(ref recorder) = self.page_recorder {
       recorder
         .borrow_mut()
-        .add_clip(&self.state.transform, clip_path);
+        .add_clip(&self.state.transform, clip_path, aa);
     }
     self.flush_if_recording_limit_exceeded();
   }
@@ -2581,6 +2582,7 @@ impl Context {
       variant_ligatures: Default::default(),
       variant_numeric: Default::default(),
       variant_position: crate::font_props::FontVariantPosition::Normal,
+      antialias: Antialias::Default,
       ..self.text_settings()
     };
     let mut units = FontUnits::default();
@@ -2717,15 +2719,14 @@ impl Context {
     }
   }
 
-  pub fn get_font_variation_settings(&self) -> &str {
-    &self.state.font_variation_settings
+  pub fn get_font_variation_settings(&self) -> String {
+    self.state.font_variation_settings.serialize()
   }
 
-  pub fn set_font_variation_settings(&mut self, settings: String) -> result::Result<(), SkError> {
-    let (settings, variations) = parse_font_variation_settings(&settings);
-    self.state.font_variation_settings = settings;
-    self.state.font_variations = variations;
-    Ok(())
+  pub fn set_font_variation_settings(&mut self, settings: &str) {
+    if let Some(v) = FontVariationSettings::parse(settings) {
+      self.state.font_variation_settings = v;
+    }
   }
 
   /// The six CSS font properties (`font_props.rs`): a value that does not
@@ -2802,8 +2803,8 @@ impl Context {
   }
 
   pub fn set_font_stretch(&mut self, stretch: String) -> result::Result<(), SkError> {
-    // CanvasFontStretch is an enum of the nine keywords: a percentage, which
-    // the font shorthand takes, is not one of its values.
+    // CanvasFontStretch is an enum of the nine keywords: a percentage is not
+    // one of its values.
     if stretch.ends_with('%') {
       return Ok(());
     }
@@ -4103,6 +4104,7 @@ impl Context {
       },
       source_raster_bytes,
     );
+    let allow_aa = self.state.antialias.is_enabled();
     self.with_shadowed_render_canvas(
       &paint,
       DrawContent::Geometry,
@@ -4121,7 +4123,7 @@ impl Context {
         if let Some(rect) = shadow_rect {
           let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
           let mut shadow_paint = shadow_paint.clone();
-          shadow_paint.set_anti_alias(image_antialiased(device_ctm, width, height));
+          shadow_paint.set_anti_alias(allow_aa && image_antialiased(device_ctm, width, height));
           shadow_canvas.draw_rect(rect.left, rect.top, width, height, &shadow_paint);
         } else {
           shadow_canvas.draw_picture_rect(
@@ -4163,7 +4165,7 @@ impl Context {
       direction: state.text_direction,
       letter_spacing: state.letter_spacing,
       word_spacing: state.word_spacing,
-      variations: state.font_variations.clone(),
+      variations: state.font_variation_settings.0.clone(),
       kerning: state.font_kerning,
       variant_caps: state.font_variant_caps,
       lang: state.lang.clone(),
@@ -4175,6 +4177,7 @@ impl Context {
       size_adjust: state.font_size_adjust,
       optical_sizing: state.font_optical_sizing,
       lcd_text: false,
+      antialias: state.antialias,
     }
   }
 
@@ -5100,6 +5103,19 @@ impl CanvasRenderingContext2D {
   }
 
   #[napi(getter)]
+  pub fn get_antialias(&self) -> &'static str {
+    self.context.state.antialias.as_str()
+  }
+
+  #[napi(setter)]
+  pub fn set_antialias(&mut self, value: webidl::DomString<webidl::SetAntialias>) {
+    if let Ok(aa) = value.0.parse::<Antialias>() {
+      self.context.state.antialias = aa;
+      self.context.state.paint.set_anti_alias(aa.is_enabled());
+    }
+  }
+
+  #[napi(getter)]
   pub fn get_image_smoothing_enabled(&self) -> bool {
     self.context.state.image_smoothing_enabled
   }
@@ -5247,13 +5263,15 @@ impl CanvasRenderingContext2D {
 
   #[napi(getter)]
   pub fn get_font_variation_settings(&self) -> String {
-    self.context.get_font_variation_settings().to_owned()
+    self.context.get_font_variation_settings()
   }
 
   #[napi(setter)]
-  pub fn set_font_variation_settings(&mut self, settings: String) -> Result<()> {
-    self.context.set_font_variation_settings(settings)?;
-    Ok(())
+  pub fn set_font_variation_settings(
+    &mut self,
+    settings: webidl::DomString<webidl::SetFontVariationSettings>,
+  ) {
+    self.context.set_font_variation_settings(&settings.0);
   }
 
   #[napi(setter)]
@@ -6200,13 +6218,16 @@ impl CanvasRenderingContext2D {
     // Get picture from source canvas (preserves vector graphics)
     // Note: We need mutable access to the source context to get the picture
     // This is safe because we have exclusive access to the CanvasElement
-    // A raster destination in another color space or pixel format would
-    // replay the source's ops in its own (gradients interpolate there, and a
-    // float16 canvas keeps what unorm8 rounds), so it takes the source
-    // bitmap, as drawImage does. PDF and SVG keep the vector replay.
+    // A raster destination in another color space or pixel format, or with
+    // antialias disabled, would replay the source's ops with mismatched
+    // destination rasterization semantics (gradients interpolate in the dest
+    // space, float16 keeps what unorm8 rounds, and recorded source paints
+    // retain their own AA flag), so it takes the source bitmap, as drawImage
+    // does. PDF and SVG keep the vector replay.
     let picture = if self.context.backend == Backend::Raster
       && (canvas.ctx.context.color_space != self.context.color_space
-        || canvas.ctx.context.pixel_format != self.context.pixel_format)
+        || canvas.ctx.context.pixel_format != self.context.pixel_format
+        || !self.context.state.antialias.is_enabled())
     {
       None
     } else {
@@ -7584,74 +7605,6 @@ fn spacing_lengths_after_font_set(size: f64) -> Lengths {
     ric: size,
     ..Lengths::default()
   }
-}
-
-fn parse_font_variation_settings(settings: &str) -> (String, Vec<crate::sk::FontVariation>) {
-  let trimmed = settings.trim();
-  if trimmed.eq_ignore_ascii_case("normal") || trimmed.is_empty() {
-    return ("normal".to_owned(), vec![]);
-  }
-
-  let mut variations: Vec<crate::sk::FontVariation> = Vec::new();
-  let mut valid = true;
-
-  for part in trimmed.split(',') {
-    let part = part.trim();
-    if part.is_empty() {
-      continue;
-    }
-
-    let mut chars = part.chars();
-    let first = chars.next();
-    let quote = match first {
-      Some('\'') => '\'',
-      Some('"') => '"',
-      _ => {
-        valid = false;
-        break;
-      }
-    };
-
-    let mut tag_str = String::new();
-    let mut closed = false;
-    for c in chars.by_ref() {
-      if c == quote {
-        closed = true;
-        break;
-      }
-      tag_str.push(c);
-    }
-
-    if !closed || tag_str.len() != 4 || !tag_str.is_ascii() {
-      valid = false;
-      break;
-    }
-
-    let rest: String = chars.collect();
-    let val_str = rest.trim();
-    let val = match val_str.parse::<f32>() {
-      Ok(v) => v,
-      Err(_) => {
-        valid = false;
-        break;
-      }
-    };
-
-    let bytes = tag_str.as_bytes();
-    let tag = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-
-    if let Some(existing) = variations.iter_mut().find(|v| v.tag == tag) {
-      existing.value = val;
-    } else {
-      variations.push(crate::sk::FontVariation { tag, value: val });
-    }
-  }
-
-  if !valid {
-    return (settings.to_owned(), vec![]);
-  }
-
-  (settings.to_owned(), variations)
 }
 
 #[cfg(test)]
@@ -9195,7 +9148,7 @@ mod tests {
   fn fill_text_dedups_the_typeface_charge() {
     {
       let fonts = get_font().unwrap();
-      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None);
+      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None, None);
     }
     let mut ctx = raster_ctx(64, 64);
     ctx.set_font("16px Lato").unwrap();
@@ -9232,7 +9185,7 @@ mod tests {
   fn text_bounds_are_the_measured_ink() {
     {
       let fonts = get_font().unwrap();
-      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None);
+      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None, None);
     }
     let mut ctx = raster_ctx(64, 64);
     ctx.set_font("16px Lato").unwrap();
@@ -9249,7 +9202,7 @@ mod tests {
   fn singular_transform_draws_charge_nothing() {
     {
       let fonts = get_font().unwrap();
-      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None);
+      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None, None);
     }
     let mut src = raster_ctx(8, 8);
     src.fill_rect(0.0, 0.0, 8.0, 8.0).unwrap();
@@ -9342,108 +9295,6 @@ mod tests {
     assert_eq!(raster_bytes(&ctx), 0);
     assert_eq!(retained(&ctx), 0);
     assert_eq!(ctx.content_version(), version0 + 1);
-  }
-
-  #[test]
-  fn test_parse_font_variation_settings_normal() {
-    let (settings, variations) = parse_font_variation_settings("normal");
-    assert_eq!(settings, "normal");
-    assert!(variations.is_empty());
-
-    let (settings, variations) = parse_font_variation_settings("NORMAL");
-    assert_eq!(settings, "normal");
-    assert!(variations.is_empty());
-  }
-
-  #[test]
-  fn test_parse_font_variation_settings_single() {
-    let (settings, variations) = parse_font_variation_settings("'wght' 700");
-    assert_eq!(settings, "'wght' 700");
-    assert_eq!(variations.len(), 1);
-    assert_eq!(variations[0].tag, 0x77676874); // 'wght'
-    assert_eq!(variations[0].value, 700.0);
-  }
-
-  #[test]
-  fn test_parse_font_variation_settings_multiple() {
-    let (settings, variations) = parse_font_variation_settings("'wght' 700, 'wdth' 50");
-    assert_eq!(settings, "'wght' 700, 'wdth' 50");
-    assert_eq!(variations.len(), 2);
-    assert_eq!(variations[0].tag, 0x77676874); // 'wght'
-    assert_eq!(variations[0].value, 700.0);
-    assert_eq!(variations[1].tag, 0x77647468); // 'wdth'
-    assert_eq!(variations[1].value, 50.0);
-  }
-
-  #[test]
-  fn test_parse_font_variation_settings_double_quotes() {
-    let (settings, variations) = parse_font_variation_settings("\"wght\" 700");
-    assert_eq!(settings, "\"wght\" 700");
-    assert_eq!(variations.len(), 1);
-    assert_eq!(variations[0].tag, 0x77676874); // 'wght'
-    assert_eq!(variations[0].value, 700.0);
-  }
-
-  #[test]
-  fn test_parse_font_variation_settings_whitespace() {
-    let (settings, variations) = parse_font_variation_settings("  'wght'  700  ,  'wdth'  50  ");
-    assert_eq!(settings, "  'wght'  700  ,  'wdth'  50  ");
-    assert_eq!(variations.len(), 2);
-    assert_eq!(variations[0].tag, 0x77676874);
-    assert_eq!(variations[0].value, 700.0);
-    assert_eq!(variations[1].tag, 0x77647468);
-    assert_eq!(variations[1].value, 50.0);
-  }
-
-  #[test]
-  fn test_parse_font_variation_settings_invalid() {
-    let (settings, variations) = parse_font_variation_settings("invalid");
-    assert_eq!(settings, "invalid");
-    assert!(variations.is_empty());
-
-    let (settings, variations) = parse_font_variation_settings("'inv' 100"); // Tag too short
-    assert_eq!(settings, "'inv' 100");
-    assert!(variations.is_empty());
-
-    let (settings, variations) = parse_font_variation_settings("'wght' 100, invalid"); // One invalid part
-    assert_eq!(settings, "'wght' 100, invalid");
-    assert!(variations.is_empty()); // Should fail completely
-  }
-
-  #[test]
-  fn test_parse_font_variation_settings_repeated() {
-    let (settings, variations) = parse_font_variation_settings("'wght' 100, 'wght' 200");
-    assert_eq!(settings, "'wght' 100, 'wght' 200");
-    assert_eq!(variations.len(), 1); // Deduplicated
-    assert_eq!(variations[0].tag, 0x77676874);
-    assert_eq!(variations[0].value, 200.0); // Last wins
-  }
-
-  #[test]
-  fn test_parse_font_variation_settings_unknown_tag() {
-    let (settings, variations) = parse_font_variation_settings("'abcd' 123");
-    assert_eq!(settings, "'abcd' 123");
-    assert_eq!(variations.len(), 1);
-    assert_eq!(variations[0].tag, 0x61626364); // 'abcd'
-    assert_eq!(variations[0].value, 123.0);
-  }
-
-  #[test]
-  fn test_parse_font_variation_settings_numeric() {
-    let (settings, variations) = parse_font_variation_settings("'wght' 123.45, 'slnt' -10");
-    assert_eq!(settings, "'wght' 123.45, 'slnt' -10");
-    assert_eq!(variations.len(), 2);
-    assert_eq!(variations[0].value, 123.45);
-    assert_eq!(variations[1].value, -10.0);
-  }
-
-  #[test]
-  fn test_parse_font_variation_settings_complex_quoting() {
-    let (settings, variations) = parse_font_variation_settings(r#"'wght' 400, "wdth" 50"#);
-    assert_eq!(settings, r#"'wght' 400, "wdth" 50"#);
-    assert_eq!(variations.len(), 2);
-    assert_eq!(variations[0].tag, 0x77676874);
-    assert_eq!(variations[1].tag, 0x77647468);
   }
 
   /// A context with no pixels work: spacing is state only.
@@ -9614,7 +9465,7 @@ mod tests {
   fn spacing_font_units_read_the_font_when_set() {
     {
       let fonts = get_font().unwrap();
-      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None);
+      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None, None);
     }
     // Lato at 40px: x-height 1013/2000 em, "0" 0.58 em, no U+6C34 (ic = em).
     let mut ctx = spacing_ctx("40px Lato");

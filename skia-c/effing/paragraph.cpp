@@ -673,13 +673,16 @@ std::unique_ptr<Paragraph> build(const effing_paragraph* p,
           : std::vector<std::pair<size_t, size_t>>(),
       &unspaced_style);
   if (hyphen) {
-    // A text style of its own, which ends the shaping run before it: one with
-    // a line height, which SkParagraph's shaper splits runs at but otherwise
-    // ignores without a height override. (A language, as the lone CRs' style
-    // has, would shape it in that language too.)
+    // A text style of its own, which ends the shaping run before it: the
+    // other half-leading flag, which SkParagraph's shaper splits runs at
+    // (shapeWithSameFont) but otherwise ignores without a height override,
+    // which the fork's text styles never have (the line height is the
+    // strut's). From m158 a line height no longer splits runs without the
+    // override. (A language, as the lone CRs' style has, would shape it in
+    // that language too.)
     TextStyle hyphen_style = style.getTextStyle();
     hyphen_style.setLetterSpacing(0);
-    hyphen_style.setHeight(0);
+    hyphen_style.setHalfLeading(!hyphen_style.getHalfLeading());
     builder.pushStyle(hyphen_style);
     builder.addText(p->hyphen.data(), p->hyphen.size());
     builder.pop();

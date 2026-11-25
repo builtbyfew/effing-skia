@@ -148,6 +148,9 @@ sk_sp<SkFontMgr> MakeSystemUiFontManager(std::set<SkTypefaceID>* ids);
 // (CTFontCreateCopyWithSymbolicTraits) and its instances has only the italic
 // trait: upright 400 to Skia.
 SkFontStyle CoreTextFontStyle(SkTypeface* face);
+#elif defined(_WIN32)
+// Every unsimulated font DirectWrite lists, by name.
+sk_sp<SkFontMgr> MakeDirectWriteFontManager();
 #endif
 // text_raster.cpp: the text gamma and contrast of Chrome's canvas surfaces
 // with the system renderer, else Skia's defaults.
@@ -212,6 +215,28 @@ inline uint32_t computePathHash(const std::string& path) {
 // font_families.cpp: a family name case-folded as FontFaceCache keys it.
 std::string FoldFamilyName(std::string_view name);
 
+// One @font-face range descriptor as FontFace::GetFontSelectionCapabilities
+// keeps it (FontSelectionRange): [min, max] in FontSelectionValue quarter
+// steps. `from_auto` is kSetFromAuto (`auto`): min = max = the normal value
+// for selection, and the face's own axes clamp the request
+// (ClampAxisValue).
+struct skiac_face_range {
+  float min;
+  float max;
+  bool from_auto;
+};
+
+// The @font-face descriptors GlobalFonts.register declares a name with:
+// font-weight (normal {400, 400}), font-style as Blink's slope (normal
+// {0, 0}, italic and oblique {14, 14}, `oblique <a> <b>` the angles), and
+// font-stretch as percentage (normal {100, 100}). Never all fields from
+// auto: that is no descriptors.
+struct skiac_face_descriptors {
+  skiac_face_range weight;
+  skiac_face_range slope;
+  skiac_face_range width;
+};
+
 // Stores font data needed to recreate a typeface after rebuild
 struct RegisteredFont {
   sk_sp<SkData> data;  // For buffer-registered fonts (null for path-registered)
@@ -235,12 +260,8 @@ struct RegisteredFont {
   // effing: the faces after the first of a font collection (.ttc, .otc),
   // which a rebuild registers again as they are.
   std::vector<sk_sp<SkTypeface>> more_faces;
-  // effing: the faces registered afresh under their own family names when a
-  // shadowable font was registered again under its own name
-  // (promoteOwnName). A rebuild registers the font's own faces there instead,
-  // as registered faces (its shadowable_names no longer list those names);
-  // these stay the faces of the setAlias calls made from them (keptFaceOf).
-  std::vector<sk_sp<SkTypeface>> promoted;
+  // The descriptors of the names registered with them, by FoldFamilyName.
+  std::map<std::string, skiac_face_descriptors> descriptors;
   // When each alias was registered (parallel to aliases). A rebuild
   // registers every (face, alias) pair again in this order, so the
   // provider's first family (its fallback, onLegacyMakeTypeface) and the
@@ -251,6 +272,13 @@ struct RegisteredFont {
   // FontFace name (font_families.cpp FamilyResolver), also when the face is
   // an installed one (a file loadFontsFromDir loaded before the call).
   std::vector<bool> alias_args;
+  // Whether a register / registerFromPath call gave each name (parallel to
+  // aliases): its alias argument, or the face's own family when the call had
+  // no alias or that one. Not the own family a call with another alias lists
+  // the face under too: a FontFace is in its one family only
+  // (FontFaceCache::SegmentedFacesByFamily::AddFontFace), so that listing
+  // declares nothing.
+  std::vector<bool> call_names;
   // When the same font was registered again under each name (parallel to
   // aliases, shorter when none was; 0 for never): a FontFace added again
   // is the newest of its style (font_families.cpp FamilyResolver::Faces).
@@ -279,6 +307,16 @@ struct RegisteredFont {
   // every rebuild, so a name never gets other bytes (a file read again)
   // or a face that a later switch makes.
   bool no_web_twin = false;
+  // A node-canvas registerFont registration: the token of the N-API env
+  // that made it (src/global_fonts.rs), 0 for every other registration. It
+  // is private: only registerFont of the same env shares it
+  // (registerTypefaceFromPathWithTracking with `owner`), it is in no index
+  // (content_hash_index), so register / registerFromPath / loadFontsFromDir
+  // never reuse it, its key is no FontKey (RegistrationKey), and it goes
+  // whole only with its env's deregisterAllFonts
+  // (skiac_font_collection_release_private) or removeAll: it stays when its
+  // env exits, as node-canvas keeps a worker's fonts.
+  uint32_t owner = 0;
 
   // Whether name `i` is a FontFace name of a preloaded font: the alias
   // argument of a call and not the face's own family in any case.
@@ -294,6 +332,26 @@ struct RegisteredFont {
     }
     return false;
   }
+  // Whether a call declared the case-folded name (call_names): the face is
+  // a FontFace of it.
+  bool Declares(const std::string& folded) const {
+    for (size_t i = 0; i < aliases.size(); ++i) {
+      if (call_names[i] && FoldFamilyName(aliases[i]) == folded) {
+        return true;
+      }
+    }
+    return false;
+  }
+  // Adds a name, registered now.
+  void AddName(std::string name,
+               bool alias_arg,
+               bool call_name,
+               uint64_t order) {
+    aliases.push_back(std::move(name));
+    orders.push_back(order);
+    alias_args.push_back(alias_arg);
+    call_names.push_back(call_name);
+  }
   // The face name `i` lists: the web twin for a FontFace name of a
   // preloaded font (when it could be made), else the font's face.
   const sk_sp<SkTypeface>& NameFace(size_t i) const {
@@ -302,17 +360,30 @@ struct RegisteredFont {
 };
 
 struct skiac_font_collection;
+// font_families.cpp: the FontFaces of a web family and their segments.
+struct FontFaceCore;
 // font_families.cpp: the faces of a family name font_families.cpp tagged
 // ("\x01i\x01" + family: the installed faces; "\x01w\x01" + family: the
 // registered ones), null for no face.
 sk_sp<SkFontStyleSet> MakeSplitFamily(skiac_font_collection* c_collection,
                                       std::string_view tagged);
+// font_families.cpp: CSS Fonts L4 style matching (fixes Skia's
+// SkFontStyleSet::matchStyleCSS3 width > normal exact-match bug and
+// slant/weight bit-shift overflow) and wrappers applying it to style sets
+// and font managers.
+sk_sp<SkTypeface> MatchStyleCSS3(SkFontStyleSet* set,
+                                 const SkFontStyle& pattern);
+sk_sp<SkFontStyleSet> WrapCss3StyleSet(sk_sp<SkFontStyleSet> set);
+sk_sp<SkFontMgr> WrapCss3FontMgr(sk_sp<SkFontMgr> mgr);
 // font_families.cpp: the face of `family` that text naming it in a font
 // list uses (the named family path: a name registered over an installed
-// family gives its registered faces), from `assets`.
+// family gives its registered faces), from `assets`. `matched`, when given,
+// gets the family name it was matched by (a tagged one too), as a font list
+// names it (ResolveFontFamilies).
 sk_sp<SkTypeface> MatchNamedFamily(skiac_font_collection* c_collection,
                                    const char* family,
-                                   const SkFontStyle& style);
+                                   const SkFontStyle& style,
+                                   std::string* matched = nullptr);
 // text_metrics.cpp: an installed face, not a registered one.
 bool IsSystemTypeface(skiac_font_collection* c_collection,
                       SkTypeface* typeface);
@@ -327,6 +398,14 @@ inline bool ListsFace(const sk_sp<SkFontStyleSet>& set, SkTypefaceID id) {
   }
   return false;
 }
+
+// A registration's key in TypefaceFontProviderCustom. Every registration
+// a GlobalFonts call or loadFontsFromDir makes has a FontKey, a uint32_t
+// (FreeKey: a hash, which can be any value but 0; NextTwinKey); a private
+// registration's key (RegisteredFont::owner) is past every uint32_t
+// (PrivateKey), so no FontKey names one, and the FontKeys are issued as if
+// there were none.
+using RegistrationKey = uint64_t;
 
 class TypefaceFontProviderCustom : public TypefaceFontProvider {
  public:
@@ -347,10 +426,31 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   void setSplitFamilies(skiac_font_collection* c_collection) {
     split_owner = c_collection;
   }
-  void clearSplitFamilies() { split_families.clear(); }
+  void clearSplitFamilies() {
+    split_families.clear();
+    font_face_cores.clear();
+  }
+  // __debugTextLine: how many tagged sets are kept.
+  size_t splitFamilyCount() const { return split_families.size(); }
+  // The FontFaceCore a tagged web family's set was made of, for its
+  // siblings ("\x01s\x01" k) and quarter-weight sets ("\x01q\x01"), kept
+  // as long as the sets.
+  std::shared_ptr<const FontFaceCore> fontFaceCore(
+      const std::string& tagged) const {
+    auto it = font_face_cores.find(tagged);
+    return it == font_face_cores.end() ? nullptr : it->second;
+  }
+  void setFontFaceCore(const std::string& tagged,
+                       std::shared_ptr<const FontFaceCore> core) const {
+    if (core) {
+      font_face_cores[tagged] = std::move(core);
+    } else {
+      font_face_cores.erase(tagged);
+    }
+  }
   // effing: a family registered under a name shadows the system's family of
-  // that name, and a family matches a style as CSS does, tagged ones too.
-  // See docs/effing.md.
+  // that name, and a family matches a style as CSS does, an installed tagged
+  // one too. See docs/effing.md.
   sk_sp<SkFontStyleSet> onMatchFamily(const char name[]) const override {
     if (name && name[0] == '\x01') {
       if (!split_owner) {
@@ -358,10 +458,11 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
       }
       auto it = split_families.find(name);
       if (it == split_families.end()) {
-        // A sibling set ("\x01s\x01") picks its face by its base set's
-        // match, which is CSS's already.
+        // The other tagged sets pick their faces by their @font-face
+        // descriptors (font_families.cpp FontFaceStyleSet) or by their base
+        // set's match.
         sk_sp<SkFontStyleSet> set = MakeSplitFamily(split_owner, name);
-        if (name[1] != 's') {
+        if (name[1] == 'i') {
           set = effing::with_css_matching(std::move(set));
         }
         it = split_families.emplace(name, std::move(set)).first;
@@ -379,21 +480,34 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   }
 
   // effing: the face `typeface_id` of the font `id` when it is one of the
-  // faces a rebuild keeps as they are (RegisteredFont::more_faces and
-  // promoted) rather than making them again; null otherwise.
-  sk_sp<SkTypeface> keptFaceOf(uint32_t id, SkTypefaceID typeface_id) const {
+  // faces a rebuild keeps as they are (RegisteredFont::more_faces) rather
+  // than making them again; null otherwise.
+  sk_sp<SkTypeface> keptFaceOf(RegistrationKey id,
+                               SkTypefaceID typeface_id) const {
     auto it = registered_fonts.find(id);
     if (it == registered_fonts.end()) {
       return nullptr;
     }
-    for (const auto* faces : {&it->second.more_faces, &it->second.promoted}) {
-      for (const auto& face : *faces) {
-        if (face && face->uniqueID() == typeface_id) {
-          return face;
-        }
+    for (const auto& face : it->second.more_faces) {
+      if (face && face->uniqueID() == typeface_id) {
+        return face;
       }
     }
     return nullptr;
+  }
+
+  // effing: whether the face `typeface_id` is a face of a registered font
+  // collection (.ttc, .otc: RegisteredFont::more_faces), its first one too.
+  bool isCollectionFace(SkTypefaceID typeface_id) const {
+    for (const auto& [id, font_info] : registered_fonts) {
+      if (!font_info.more_faces.empty() &&
+          ((font_info.typeface &&
+            font_info.typeface->uniqueID() == typeface_id) ||
+           effing::lists_face(font_info.more_faces, typeface_id))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // effing: whether `typeface` joins the family `family` without shadowing
@@ -415,154 +529,115 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   }
 
   // Get registered fonts for rebuild
-  const std::map<uint32_t, RegisteredFont>& getRegisteredFonts() const {
+  const std::map<RegistrationKey, RegisteredFont>& getRegisteredFonts() const {
     return registered_fonts;
   }
 
-  // Register typeface with data tracking for rebuild capability
-  uint32_t registerTypefaceWithTracking(sk_sp<SkData> data,
-                                        sk_sp<SkTypeface> typeface) {
+  // register(): the font `data` (its face `typeface`) under `alias` (null:
+  // the face's own family), declared with `descriptors` (null: auto). Each
+  // call is a FontFace, and a family keeps every FontFace added to it
+  // (FontFaceCache::CapabilitiesSet::AddFontFace), so one FontKey per
+  // declaration. Of the registrations of the same bytes:
+  // 1. one declares the name with these descriptors: that one (the same
+  //    FontFace added again, RelistRegistered);
+  // 2. else the earliest that does not declare the name takes it with these
+  //    descriptors (the same bytes under another name: one FontKey);
+  // 3. else a declaration twin, a registration of the name alone with its
+  //    own face of the same bytes (shared, not copied).
+  // Returns the FontKey, 0 on failure.
+  uint32_t registerTypefaceWithTracking(
+      sk_sp<SkData> data,
+      sk_sp<SkTypeface> typeface,
+      const char* alias,
+      const skiac_face_descriptors* descriptors) {
     if (!typeface || !data) {
       return 0;
     }
     // Use content-based hash instead of uniqueID for stable deduplication
     uint32_t content_hash = computeFontContentHash(data);
+    SkString familyName;
+    typeface->getFamilyName(&familyName);
+    std::string originalName = std::string(familyName.c_str());
+    // The name the call declares; an alias argument unless the own family.
+    std::string name = alias ? std::string(alias) : originalName;
+    const bool alias_arg = name != originalName;
+    const std::string folded = FoldFamilyName(name);
 
-    // First, check the secondary index for existing registration with same
-    // content This handles the case where the probe chain was broken by a
-    // removal
+    // The registrations with the same content, found through the secondary
+    // index (the probe chain may be broken by a removal).
+    std::vector<uint32_t> same;
     auto index_it = content_hash_index.find(content_hash);
     if (index_it != content_hash_index.end()) {
       for (uint32_t existing_id : index_it->second) {
         auto font_it = registered_fonts.find(existing_id);
-        if (font_it != registered_fonts.end() && font_it->second.data) {
-          if (font_it->second.data->size() == data->size() &&
-              memcmp(font_it->second.data->data(), data->data(),
-                     data->size()) == 0) {
-            // Found matching content via index - true duplicate
-            promoteOwnName(font_it->second, std::move(typeface));  // effing
-            return existing_id;
-          }
+        if (font_it != registered_fonts.end() && font_it->second.data &&
+            font_it->second.data->size() == data->size() &&
+            memcmp(font_it->second.data->data(), data->data(), data->size()) ==
+                0) {
+          same.push_back(existing_id);
         }
       }
     }
-
-    // Find an available slot using linear probe
-    uint32_t id = content_hash;
-    while (registered_fonts.find(id) != registered_fonts.end()) {
-      id++;
-      if (id == 0) {
-        return 0;  // Overflow protection - treat as registration failure
-      }
-    }
-
-    // Get original family name
-    SkString familyName;
-    typeface->getFamilyName(&familyName);
-    std::string originalName = std::string(familyName.c_str());
-
-    // Store font data with original family name for rebuild
-    RegisteredFont font_info;
-    font_info.data = data;
-    font_info.typeface = typeface;
-    font_info.aliases.push_back(
-        originalName);  // Track under what name it's registered
-    font_info.orders.push_back(++registrations);
-    font_info.alias_args.push_back(false);
-    registered_fonts[id] = std::move(font_info);
-
-    // Update secondary index
-    content_hash_index[content_hash].insert(id);
-
-    this->registerTypeface(std::move(typeface));
-    registerMoreFaces(registered_fonts[id], /*system=*/false);  // effing
-    return id;
-  }
-
-  uint32_t registerTypefaceWithTracking(sk_sp<SkData> data,
-                                        sk_sp<SkTypeface> typeface,
-                                        const SkString& alias) {
-    if (!typeface || !data) {
-      return 0;
-    }
-    // Use content-based hash instead of uniqueID for stable deduplication
-    uint32_t content_hash = computeFontContentHash(data);
-    std::string aliasStr = std::string(alias.c_str());
-
-    // Get original family name from typeface
-    SkString familyName;
-    typeface->getFamilyName(&familyName);
-    std::string originalName = std::string(familyName.c_str());
-
-    // First, check the secondary index for existing registration with same
-    // content This handles the case where the probe chain was broken by a
-    // removal
-    auto index_it = content_hash_index.find(content_hash);
-    if (index_it != content_hash_index.end()) {
-      for (uint32_t existing_id : index_it->second) {
-        auto font_it = registered_fonts.find(existing_id);
-        if (font_it != registered_fonts.end() && font_it->second.data) {
-          if (font_it->second.data->size() == data->size() &&
-              memcmp(font_it->second.data->data(), data->data(),
-                     data->size()) == 0) {
-            // Found matching content via index - true duplicate, add alias if
-            // new
-            auto& aliases = font_it->second.aliases;
-            if (std::find(aliases.begin(), aliases.end(), aliasStr) ==
-                aliases.end()) {
-              aliases.push_back(aliasStr);
-              font_it->second.orders.push_back(++registrations);
-              font_it->second.alias_args.push_back(true);
-              // The font's own face, so the alias name is that registration
-              // (registrationOf finds it) as after a rebuild.
-              this->registerTypeface(font_it->second.typeface, alias);
-              registerMoreFacesAs(font_it->second, alias);  // effing
-            } else if (aliasStr == originalName) {
-              promoteOwnName(font_it->second, std::move(typeface));  // effing
-            }
-            return existing_id;
-          }
+    if (!same.empty()) {
+      for (uint32_t existing_id : same) {
+        const RegisteredFont& font = registered_fonts.at(existing_id);
+        if (font.Declares(folded) &&
+            SameDescriptors(font.descriptors, folded, descriptors)) {
+          addCallName(existing_id, name, alias_arg);
+          return existing_id;
         }
       }
-    }
-
-    // Find an available slot using linear probe
-    uint32_t id = content_hash;
-    while (registered_fonts.find(id) != registered_fonts.end()) {
-      id++;
-      if (id == 0) {
-        return 0;  // Overflow protection - treat as registration failure
+      uint32_t free_id = 0;
+      for (uint32_t existing_id : same) {
+        const RegisteredFont& font = registered_fonts.at(existing_id);
+        if (!font.Declares(folded) &&
+            (!free_id || font.orders.front() <
+                             registered_fonts.at(free_id).orders.front())) {
+          free_id = existing_id;
+        }
+      }
+      if (free_id) {
+        addCallName(free_id, name, alias_arg);
+        setDescriptors(free_id, name, descriptors);
+        return free_id;
+      }
+      data = registered_fonts.at(same.front()).data;
+      typeface = MakeCanvasTypeface(data);
+      if (!typeface) {
+        return 0;
       }
     }
 
-    // Store font data - avoid duplicates if alias equals original name
+    // The content hash, else the next free key past it (linear probe); a
+    // twin's key is one never issued before (NextTwinKey).
+    const uint32_t id = same.empty() ? FreeKey(content_hash) : NextTwinKey();
+    if (id == 0) {
+      return 0;  // Overflow protection - treat as registration failure
+    }
+
     RegisteredFont font_info;
     font_info.data = data;
     font_info.typeface = typeface;
-    font_info.aliases.push_back(originalName);  // Track original name
-    font_info.orders.push_back(++registrations);
-    font_info.alias_args.push_back(false);
-
-    // Only add alias if different from original name
-    if (aliasStr != originalName) {
-      font_info.aliases.push_back(aliasStr);
-      font_info.orders.push_back(++registrations);
-      font_info.alias_args.push_back(true);
-      // effing: registered under the alias alone.
-      markShadowable(font_info, originalName, *typeface);
+    if (same.empty()) {
+      // The own family first, then the alias (when not the same name).
+      font_info.AddName(originalName, false, !alias_arg, ++registrations);
+      if (alias_arg) {
+        font_info.AddName(name, true, true, ++registrations);
+        // effing: registered under the alias alone.
+        markShadowable(font_info, originalName, *typeface);
+      }
+    } else {
+      // A twin is a FontFace of its name only.
+      font_info.AddName(name, alias_arg, true, ++registrations);
+    }
+    for (const std::string& listed : font_info.aliases) {
+      this->registerTypeface(typeface, SkString(listed.c_str()));
     }
     registered_fonts[id] = std::move(font_info);
 
     // Update secondary index
     content_hash_index[content_hash].insert(id);
-
-    // Register under original name
-    this->registerTypeface(typeface);
-
-    // Only register under alias if different from original
-    if (aliasStr != originalName) {
-      this->registerTypeface(std::move(typeface), alias);
-    }
+    setDescriptors(id, name, descriptors);
     registerMoreFaces(registered_fonts[id], /*system=*/false);  // effing
     return id;
   }
@@ -572,22 +647,18 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     if (!typeface) {
       return 0;
     }
-    uint32_t id = computePathHash("\x01installed:" +
-                                  std::to_string(typeface->uniqueID()));
-    while (registered_fonts.find(id) != registered_fonts.end()) {
-      id++;
-      if (id == 0) {
-        return 0;
-      }
+    const uint32_t id = FreeKey(computePathHash(
+        "\x01installed:" + std::to_string(typeface->uniqueID())));
+    if (id == 0) {
+      return 0;
     }
     SkString family;
     typeface->getFamilyName(&family);
     RegisteredFont font_info;
     font_info.installed = true;
     font_info.typeface = typeface;
-    font_info.aliases.push_back(std::string(family.c_str()));
-    font_info.orders.push_back(++registrations);
-    font_info.alias_args.push_back(false);
+    font_info.AddName(std::string(family.c_str()), false, false,
+                      ++registrations);
     // effing: an installed font joins its family without shadowing it.
     markShadowable(font_info, font_info.aliases[0], *typeface);
     registered_fonts[id] = std::move(font_info);
@@ -624,11 +695,36 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     return order;
   }
 
+  // When a register / registerFromPath call last declared the face
+  // `typeface_id` under the case-folded name (RegisteredFont::call_names),
+  // counting a registration again (relist); 0 for never.
+  uint64_t latestDeclarationOrder(SkTypefaceID typeface_id,
+                                  const std::string& folded) const {
+    const RegistrationKey key = registrationOf(typeface_id);
+    if (!key) {
+      return 0;
+    }
+    const RegisteredFont& font_info = registered_fonts.at(key);
+    uint64_t order = 0;
+    for (size_t i = 0; i < font_info.aliases.size(); ++i) {
+      if (!font_info.call_names[i] || !font_info.NameFace(i) ||
+          font_info.NameFace(i)->uniqueID() != typeface_id ||
+          FoldFamilyName(font_info.aliases[i]) != folded) {
+        continue;
+      }
+      order = std::max(order, font_info.orders[i]);
+      if (i < font_info.relists.size()) {
+        order = std::max(order, font_info.relists[i]);
+      }
+    }
+    return order;
+  }
+
   // The font `id` registered again under `name`, a name it has: as a
   // FontFace added again, its face is the newest under that name
   // (orderOf with `latest`). Nothing when the name was the last listing.
   // Returns whether the order changed.
-  bool relist(uint32_t id, const std::string& name) {
+  bool relist(RegistrationKey id, const std::string& name) {
     auto it = registered_fonts.find(id);
     if (it == registered_fonts.end()) {
       return false;
@@ -659,7 +755,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
             ((font_info.NameFace(i) &&
               font_info.NameFace(i)->uniqueID() == typeface_id) ||
              // effing: a collection's later faces, which the call lists
-             // under the alias too (registerMoreFacesAs).
+             // under the alias too (registerMoreFaces, registerMoreFacesAs).
              effing::lists_face(font_info.more_faces, typeface_id))) {
           return true;
         }
@@ -668,9 +764,44 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     return false;
   }
 
+  // Whether a register / registerFromPath call gave the face `typeface_id`
+  // the name `name` (RegisteredFont::call_names): a FontFace of that name.
+  bool isCallName(const std::string& name, SkTypefaceID typeface_id) const {
+    for (const auto& [id, font_info] : registered_fonts) {
+      // effing: a collection's later face (RegisteredFont::more_faces).
+      const bool more_face =
+          effing::lists_face(font_info.more_faces, typeface_id);
+      bool own_call = false;
+      for (size_t i = 0; i < font_info.aliases.size(); ++i) {
+        if (font_info.call_names[i] && font_info.aliases[i] == name &&
+            ((font_info.NameFace(i) &&
+              font_info.NameFace(i)->uniqueID() == typeface_id) ||
+             // effing: listed under a call's alias with the first face.
+             (more_face && font_info.alias_args[i]))) {
+          return true;
+        }
+        own_call |= font_info.call_names[i] && !font_info.alias_args[i];
+      }
+      // effing: a call that gave the collection's own name declares each
+      // face under its own family, where it shadows the family
+      // (registerMoreFaces, promoteOwnName).
+      if (more_face && own_call) {
+        for (const auto& face : font_info.more_faces) {
+          SkString own;
+          if (face->uniqueID() == typeface_id &&
+              (face->getFamilyName(&own), own.equals(name.c_str())) &&
+              !shadowable_faces.contains(own, *face)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   // Whether `name` is a FontFace name of the preloaded font `id`
   // (RegisteredFont::WebName).
-  bool isWebName(uint32_t id, const std::string& name) const {
+  bool isWebName(RegistrationKey id, const std::string& name) const {
     auto it = registered_fonts.find(id);
     if (it == registered_fonts.end()) {
       return false;
@@ -684,7 +815,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   }
 
   // loadFontsFromDir registered the font `id` (system_font_ids).
-  void markPreloaded(uint32_t id) {
+  void markPreloaded(RegistrationKey id) {
     auto it = registered_fonts.find(id);
     if (it == registered_fonts.end() || it->second.installed ||
         !it->second.typeface) {
@@ -694,15 +825,39 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     it->second.typeface->getFamilyName(&family);
     it->second.preloaded = true;
     it->second.folded_family = FoldFamilyName({family.c_str(), family.size()});
+    // loadFontsFromDir gave its own family: no call did.
+    it->second.call_names.assign(it->second.aliases.size(), false);
   }
+
+  // `descriptors` for the font `id` under `name`; null: none (`auto`).
+  void setDescriptors(RegistrationKey id,
+                      std::string_view name,
+                      const skiac_face_descriptors* descriptors) {
+    auto& map = registered_fonts.at(id).descriptors;
+    std::string folded = FoldFamilyName(name);
+    if (descriptors) {
+      if (map.insert_or_assign(folded, *descriptors).second) {
+        ++described_names[std::move(folded)];
+      }
+    } else if (map.erase(folded)) {
+      forgetDescribedName(folded);
+    }
+  }
+
+  // Whether a registration declares descriptors for the case-folded name,
+  // so DeclaredDescriptors walks no registration for a name without them.
+  bool describes(const std::string& folded) const {
+    return described_names.count(folded) != 0;
+  }
+  bool describesAny() const { return !described_names.empty(); }
 
   // The registration (FontKey) whose face is `typeface_id`, 0 when it is an
   // installed font (macOS loadSystemFonts) or no registered one. An alias
   // face is the face of the font it names, so this also finds the font an
   // alias of an alias came from. `web_face` (optional): whether the face is
   // the font's web twin (a FontFace name of a preloaded font).
-  uint32_t registrationOf(SkTypefaceID typeface_id,
-                          bool* web_face = nullptr) const {
+  RegistrationKey registrationOf(SkTypefaceID typeface_id,
+                                 bool* web_face = nullptr) const {
     for (const auto& [id, font_info] : registered_fonts) {
       if (font_info.installed) {
         continue;
@@ -712,8 +867,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
       if (web ||
           (font_info.typeface &&
            font_info.typeface->uniqueID() == typeface_id) ||
-          effing::lists_face(font_info.more_faces, typeface_id) ||  // effing
-          effing::lists_face(font_info.promoted, typeface_id)) {
+          effing::lists_face(font_info.more_faces, typeface_id)) {  // effing
         if (web_face) {
           *web_face = web;
         }
@@ -731,7 +885,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   // under each of its names.
   // `web_typeface` / `web_mode_typefaces`: its web twin made again
   // (RegisteredFont::web_typeface), null when no name needs it.
-  void addRebuiltFont(uint32_t id,
+  void addRebuiltFont(RegistrationKey id,
                       const RegisteredFont& old,
                       sk_sp<SkTypeface> typeface,
                       const sk_sp<SkTypeface> (&mode_typefaces)[2],
@@ -743,7 +897,12 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     font_info.installed = old.installed;
     font_info.preloaded = old.preloaded;
     font_info.folded_family = old.folded_family;
+    font_info.descriptors = old.descriptors;
+    for (const auto& [name, unused] : old.descriptors) {
+      ++described_names[name];
+    }
     font_info.no_web_twin = old.no_web_twin;
+    font_info.owner = old.owner;
     font_info.typeface = std::move(typeface);
     font_info.mode_typefaces[0] = mode_typefaces[0];
     font_info.mode_typefaces[1] = mode_typefaces[1];
@@ -754,10 +913,16 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     // other faces of a collection, registered again as they were.
     font_info.shadowable_names = old.shadowable_names;
     font_info.more_faces = old.more_faces;
-    font_info.promoted = old.promoted;
     registered_fonts[id] = std::move(font_info);
 
-    // Update secondary index
+    // A private registration (RegisteredFont::owner) is in its own index
+    // only.
+    if (old.owner) {
+      private_index[old.owner][old.path].insert(id);
+      return;
+    }
+    // Update secondary index (a FontKey: not private)
+    const uint32_t key = static_cast<uint32_t>(id);
     uint32_t content_hash;
     if (old.installed) {
       content_hash = 0;
@@ -766,33 +931,35 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     } else if (old.data) {
       content_hash = computeFontContentHash(old.data);
     } else {
-      content_hash = id;  // Fallback to id if no path or data
+      content_hash = key;  // Fallback to id if no path or data
     }
     if (content_hash) {
-      content_hash_index[content_hash].insert(id);
+      content_hash_index[content_hash].insert(key);
     }
   }
 
   // A rebuild: registers the font `id` (addRebuiltFont) under `name`.
-  void addRebuiltAlias(uint32_t id, const std::string& name, bool alias_arg) {
+  void addRebuiltAlias(RegistrationKey id,
+                       const std::string& name,
+                       bool alias_arg,
+                       bool call_name) {
     RegisteredFont& font_info = registered_fonts.at(id);
-    font_info.aliases.push_back(name);
-    font_info.orders.push_back(++registrations);
-    font_info.alias_args.push_back(alias_arg);
+    font_info.AddName(name, alias_arg, call_name, ++registrations);
     this->registerTypeface(font_info.NameFace(font_info.aliases.size() - 1),
                            SkString(name.c_str()));
     // effing: its own name (the first) joins the family without shadowing
     // it where it did before, and the other faces of a collection follow it
     // under each name.
-    if (font_info.aliases.size() == 1 &&
+    if (font_info.aliases.size() == 1 && !alias_arg &&
         font_info.shadowable_names.count(name) > 0) {
       shadowable_faces.add(SkString(name.c_str()), *font_info.typeface);
     }
-    replayMoreFaces(font_info, name);
+    replayMoreFaces(font_info, font_info.aliases.size() - 1);
   }
 
   /**
-   * Register a typeface from a file path.
+   * Register a typeface from a file path (loadFontsFromDir; registerFromPath
+   * is registerTypefaceFromPathWithTracking below).
    *
    * Fonts are deduplicated by path string: if the same path is registered
    * multiple times, subsequent calls return the existing ID without re-reading
@@ -809,12 +976,13 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
    *
    * @param path The file path to the font
    * @param typeface The typeface created from the font file
+   * @param system effing: a system font, which joins its family without
+   *     shadowing it (docs/effing.md)
    * @return The font ID (content hash), or 0 on failure
    */
-  uint32_t registerTypefaceFromPathWithTracking(
-      const std::string& path,
-      sk_sp<SkTypeface> typeface,
-      bool system = false) {  // effing
+  uint32_t registerDirTypefaceWithTracking(const std::string& path,
+                                           sk_sp<SkTypeface> typeface,
+                                           bool system = false) {  // effing
     if (!typeface) {
       return 0;
     }
@@ -831,7 +999,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
             !font_it->second.path.empty() && font_it->second.path == path) {
           // Found matching path via index - true duplicate
           if (!system) {
-            promoteOwnName(font_it->second, std::move(typeface));  // effing
+            promoteOwnName(font_it->second);  // effing
           }
           return existing_id;
         }
@@ -839,12 +1007,9 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     }
 
     // Find an available slot using linear probe
-    uint32_t id = content_hash;
-    while (registered_fonts.find(id) != registered_fonts.end()) {
-      id++;
-      if (id == 0) {
-        return 0;  // Overflow protection - treat as registration failure
-      }
+    const uint32_t id = FreeKey(content_hash);
+    if (id == 0) {
+      return 0;  // Overflow protection - treat as registration failure
     }
 
     // Get original family name
@@ -856,9 +1021,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     RegisteredFont font_info;
     font_info.path = path;
     font_info.typeface = typeface;
-    font_info.aliases.push_back(originalName);
-    font_info.orders.push_back(++registrations);
-    font_info.alias_args.push_back(false);
+    font_info.AddName(originalName, false, true, ++registrations);
     if (system) {  // effing
       markShadowable(font_info, originalName, *typeface);
     }
@@ -872,105 +1035,156 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     return id;
   }
 
-  uint32_t registerTypefaceFromPathWithTracking(const std::string& path,
-                                                sk_sp<SkTypeface> typeface,
-                                                const SkString& alias) {
+  // registerFromPath(): the font file `path` (its face `typeface`, read
+  // now) under `alias` (null: the face's own family), declared with
+  // `descriptors` (null: auto). The registerTypefaceWithTracking rule over
+  // the registrations of the same path (paths are not compared by bytes),
+  // except that a file loadFontsFromDir loaded never takes descriptors: it
+  // is an installed font (FontCache), which has none, so a declared call
+  // makes a twin. A twin's face is made from the data of the first
+  // registration's face, as a rebuild makes it (a file replaced since then
+  // gives no other bytes, and no other own family); when that data gives no
+  // face in this mode, the call fails. Returns the FontKey (a path hash), 0
+  // on failure.
+  // `owner` (node-canvas registerFont, RegisteredFont::owner): the same rule
+  // over that env's private registrations of the path only (private_index),
+  // with keys that are no FontKey (PrivateKey), and the result is in no
+  // other index. A new one with an alias lists the alias only (a FontFace of
+  // that family), not the face's own family. With `owner` 0 the key is a
+  // FontKey.
+  RegistrationKey registerTypefaceFromPathWithTracking(
+      const std::string& path,
+      sk_sp<SkTypeface> typeface,
+      const char* alias,
+      const skiac_face_descriptors* descriptors,
+      uint32_t owner = 0) {
     if (!typeface) {
       return 0;
     }
-    // Use path-based hash instead of uniqueID for stable deduplication
     uint32_t content_hash = computePathHash(path);
-    std::string aliasStr = std::string(alias.c_str());
-
-    // Get original family name from typeface
-    SkString familyName;
-    typeface->getFamilyName(&familyName);
-    std::string originalName = std::string(familyName.c_str());
-
-    // First, check the secondary index for existing registration with same path
-    // This handles the case where the probe chain was broken by a removal
-    auto index_it = content_hash_index.find(content_hash);
-    if (index_it != content_hash_index.end()) {
+    // The registrations of the same path, through the secondary index (the
+    // probe chain may be broken by a removal), or this owner's (by path).
+    std::vector<RegistrationKey> same;
+    if (owner) {
+      auto owned = private_index.find(owner);
+      if (owned != private_index.end()) {
+        auto keys = owned->second.find(path);
+        if (keys != owned->second.end()) {
+          same.assign(keys->second.begin(), keys->second.end());
+        }
+      }
+    } else if (auto index_it = content_hash_index.find(content_hash);
+               index_it != content_hash_index.end()) {
       for (uint32_t existing_id : index_it->second) {
         auto font_it = registered_fonts.find(existing_id);
         if (font_it != registered_fonts.end() &&
             !font_it->second.path.empty() && font_it->second.path == path) {
-          // Found matching path via index - true duplicate, add alias if new
-          RegisteredFont& font = font_it->second;
-          auto& aliases = font.aliases;
-          if (std::find(aliases.begin(), aliases.end(), aliasStr) ==
-              aliases.end()) {
-            aliases.push_back(aliasStr);
-            font.orders.push_back(++registrations);
-            font.alias_args.push_back(true);
-            // A FontFace name of a file loadFontsFromDir loaded gets its web
-            // twin (one per font, shared by its FontFace names), made from
-            // the data of the font's face as a rebuild makes it: the same
-            // path is not read again, so a file replaced since then does
-            // not give the name other bytes in one renderer mode only. When
-            // this mode cannot read that data, the font gets no twin
-            // (no_web_twin). The face this call made only when the font's
-            // face gives no data.
-            if (font.WebName(aliases.size() - 1) && !font.web_typeface) {
-              int index = 0;
-              std::unique_ptr<SkStreamAsset> stream =
-                  font.typeface ? font.typeface->openStream(&index) : nullptr;
-              if (stream) {
-                font.web_typeface = MakeCanvasTypeface(std::move(stream));
-                font.no_web_twin = !font.web_typeface;
-              } else {
-                font.web_typeface = typeface;
-              }
-            }
-            // The font's own face (or its twin), so the alias name is that
-            // registration (registrationOf finds it) as after a rebuild.
-            this->registerTypeface(font.NameFace(aliases.size() - 1), alias);
-            registerMoreFacesAs(font, alias);  // effing
-          } else if (aliasStr == originalName) {
-            promoteOwnName(font, std::move(typeface));  // effing
-          }
-          return existing_id;
+          same.push_back(existing_id);
         }
       }
     }
 
-    // Find an available slot using linear probe
-    uint32_t id = content_hash;
-    while (registered_fonts.find(id) != registered_fonts.end()) {
-      id++;
-      if (id == 0) {
-        return 0;  // Overflow protection - treat as registration failure
+    // The own family of the face the path has (a file replaced since then
+    // gives no other family); this call's read only for a new path.
+    const SkTypeface* own_face = typeface.get();
+    for (RegistrationKey existing_id : same) {
+      if (const sk_sp<SkTypeface>& kept =
+              registered_fonts.at(existing_id).typeface) {
+        own_face = kept.get();
+        break;
       }
     }
+    SkString familyName;
+    own_face->getFamilyName(&familyName);
+    std::string originalName = std::string(familyName.c_str());
+    // The name the call declares; an alias argument unless the own family.
+    std::string name = alias ? std::string(alias) : originalName;
+    const bool alias_arg = name != originalName;
+    const std::string folded = FoldFamilyName(name);
+    if (!same.empty()) {
+      for (RegistrationKey existing_id : same) {
+        const RegisteredFont& font = registered_fonts.at(existing_id);
+        if (font.Declares(folded) &&
+            SameDescriptors(font.descriptors, folded, descriptors)) {
+          addPathName(existing_id, name, alias_arg, alias, typeface);
+          return existing_id;
+        }
+      }
+      RegistrationKey free_id = 0;
+      for (RegistrationKey existing_id : same) {
+        const RegisteredFont& font = registered_fonts.at(existing_id);
+        if (!font.Declares(folded) && !(descriptors && font.preloaded) &&
+            (!free_id || font.orders.front() <
+                             registered_fonts.at(free_id).orders.front())) {
+          free_id = existing_id;
+        }
+      }
+      if (free_id) {
+        addPathName(free_id, name, alias_arg, alias, typeface);
+        setDescriptors(free_id, name, descriptors);
+        return free_id;
+      }
+      int index = 0;
+      const sk_sp<SkTypeface>& first =
+          registered_fonts.at(same.front()).typeface;
+      std::unique_ptr<SkStreamAsset> stream =
+          first ? first->openStream(&index) : nullptr;
+      sk_sp<SkTypeface> twin =
+          stream ? MakeCanvasTypeface(std::move(stream)) : nullptr;
+      if (!twin) {
+        // This mode cannot make a face of the kept data: no key, no listing
+        // (the call fails as it does when the file is not replaced).
+        return 0;
+      }
+      typeface = std::move(twin);
+    }
 
-    // Store path (not data) - avoid duplicates if alias equals original name
+    // The path hash, else the next free key past it (linear probe); a
+    // twin's key is one never issued before (NextTwinKey); a private
+    // registration's is no FontKey (PrivateKey).
+    const RegistrationKey id = owner          ? PrivateKey()
+                               : same.empty() ? FreeKey(content_hash)
+                                              : NextTwinKey();
+    if (id == 0) {
+      return 0;  // Overflow protection - treat as registration failure
+    }
+
+    // Store path (not data) for rebuild
     RegisteredFont font_info;
     font_info.path = path;
     font_info.typeface = typeface;
-    font_info.aliases.push_back(originalName);
-    font_info.orders.push_back(++registrations);
-    font_info.alias_args.push_back(false);
-
-    // Only add alias if different from original name
-    if (aliasStr != originalName) {
-      font_info.aliases.push_back(aliasStr);
-      font_info.orders.push_back(++registrations);
-      font_info.alias_args.push_back(true);
-      // effing: registered under the alias alone.
-      markShadowable(font_info, originalName, *typeface);
+    font_info.owner = owner;
+    if (owner && same.empty() && alias_arg) {
+      // A private registration (node-canvas registerFont) with a family is
+      // a FontFace of that family only, as new FontFace('X', ...) in Chrome:
+      // the face's own family is not listed, so it stays whatever else
+      // gives it (an installed font, a GlobalFonts registration) whether
+      // loadFontsFromDir loads the file before or after this call.
+      font_info.AddName(name, true, true, ++registrations);
+    } else if (same.empty()) {
+      // The own family first, then the alias (when not the same name).
+      font_info.AddName(originalName, false, !alias_arg, ++registrations);
+      if (alias_arg) {
+        font_info.AddName(name, true, true, ++registrations);
+        // effing: registered under the alias alone.
+        markShadowable(font_info, originalName, *typeface);
+      }
+    } else {
+      // A twin is a FontFace of its name only.
+      font_info.AddName(name, alias_arg, true, ++registrations);
+    }
+    for (const std::string& listed : font_info.aliases) {
+      this->registerTypeface(typeface, SkString(listed.c_str()));
     }
     registered_fonts[id] = std::move(font_info);
 
-    // Update secondary index
-    content_hash_index[content_hash].insert(id);
-
-    // Register under original name
-    this->registerTypeface(typeface);
-
-    // Only register under alias if different from original
-    if (aliasStr != originalName) {
-      this->registerTypeface(std::move(typeface), alias);
+    // Update secondary index (a private registration is in its own only)
+    if (owner) {
+      private_index[owner][path].insert(id);
+    } else {
+      content_hash_index[content_hash].insert(static_cast<uint32_t>(id));
     }
+    setDescriptors(id, name, descriptors);
     registerMoreFaces(registered_fonts[id], /*system=*/false);  // effing
     return id;
   }
@@ -978,10 +1192,31 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   // Remove typeface from tracking
   // Note: caller must also drop the set_aliases made from it
   // (skiac_font_collection::dropAliasesOf)
-  bool removeTypeface(uint32_t typeface_id) {
+  bool removeTypeface(RegistrationKey typeface_id) {
     auto it = registered_fonts.find(typeface_id);
     if (it == registered_fonts.end()) {
       return false;
+    }
+    for (const auto& [name, unused] : it->second.descriptors) {
+      forgetDescribedName(name);
+    }
+    // A private registration: out of its own index (private_index).
+    if (const uint32_t owner = it->second.owner) {
+      auto owned = private_index.find(owner);
+      if (owned != private_index.end()) {
+        auto keys = owned->second.find(it->second.path);
+        if (keys != owned->second.end()) {
+          keys->second.erase(typeface_id);
+          if (keys->second.empty()) {
+            owned->second.erase(keys);
+          }
+        }
+        if (owned->second.empty()) {
+          private_index.erase(owned);
+        }
+      }
+      registered_fonts.erase(it);
+      return true;
     }
 
     // Get the content hash to update the secondary index
@@ -999,10 +1234,10 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
       return true;
     }
 
-    // Remove from secondary index
+    // Remove from secondary index (a FontKey: not private)
     auto index_it = content_hash_index.find(content_hash);
     if (index_it != content_hash_index.end()) {
-      index_it->second.erase(typeface_id);
+      index_it->second.erase(static_cast<uint32_t>(typeface_id));
       if (index_it->second.empty()) {
         content_hash_index.erase(index_it);
       }
@@ -1016,12 +1251,46 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   // replays both in this order).
   uint64_t nextOrder() { return ++registrations; }
 
-  // Remove all typefaces from tracking
+  // Whether `key` is a private registration's key (PrivateKey), no FontKey.
+  static bool IsPrivateKey(RegistrationKey key) {
+    return key >= kPrivateKeyBase;
+  }
+
+  // A rebuild: the twin keys `old` issued stay issued (NextTwinKey), as do
+  // the private ones (PrivateKey).
+  void keepTwinKeys(const TypefaceFontProviderCustom& old) {
+    twin_keys_next = old.twin_keys_next;
+    private_keys_next = old.private_keys_next;
+  }
+
+  // Removes the private registrations of `owner` (RegisteredFont::owner,
+  // found through private_index) as removeTypeface removes a font. Returns
+  // their keys.
+  // Note: caller must also drop the set_aliases made from them
+  // (skiac_font_collection::dropAliasesOf)
+  std::set<RegistrationKey> removePrivate(uint32_t owner) {
+    std::set<RegistrationKey> ids;
+    auto owned = owner ? private_index.find(owner) : private_index.end();
+    if (owned == private_index.end()) {
+      return ids;
+    }
+    for (const auto& [path, keys] : owned->second) {
+      ids.insert(keys.begin(), keys.end());
+    }
+    for (RegistrationKey id : ids) {
+      removeTypeface(id);
+    }
+    return ids;
+  }
+
+  // Remove all typefaces from tracking; the twin keys issued stay issued.
   // Note: caller must also clear set_aliases in skiac_font_collection
   size_t removeAllTypefaces() {
     size_t count = registered_fonts.size();
     registered_fonts.clear();
     content_hash_index.clear();
+    private_index.clear();
+    described_names.clear();
     return count;
   }
 
@@ -1038,29 +1307,19 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   // an aliased font can be, is a registered face there from now on, and
   // shadows the rest of the family as a font registered afresh would. So is
   // every other face of a collection, under its own name.
-  void promoteOwnName(RegisteredFont& font, sk_sp<SkTypeface> typeface) {
-    if (font.aliases.empty() || font.shadowable_names.empty()) {
+  void promoteOwnName(RegisteredFont& font) {
+    if (font.shadowable_names.empty() || !font.typeface) {
       return;
     }
-    std::vector<sk_sp<SkTypeface>> faces = {std::move(typeface)};
+    std::vector<sk_sp<SkTypeface>> faces = {font.typeface};
     faces.insert(faces.end(), font.more_faces.begin(), font.more_faces.end());
     std::set<std::string> promoted;
-    for (size_t i = 0; i < faces.size(); i++) {
+    for (const auto& face : faces) {
       SkString name;
-      faces[i]->getFamilyName(&name);
-      if (font.shadowable_names.count(name.c_str()) == 0) {
-        continue;
-      }
-      // The caller made the first face afresh, the others are copies of the
-      // shadowable ones; a font manager that hands out a cached typeface
-      // would give the shadowable one back.
-      sk_sp<SkTypeface> face =
-          i == 0 ? faces[0] : faces[i]->makeClone(SkFontArguments());
-      if (face != nullptr) {
+      face->getFamilyName(&name);
+      if (font.shadowable_names.count(name.c_str()) > 0) {
         promoted.insert(name.c_str());
         shadowable_faces.remove(name, *face);
-        font.promoted.push_back(face);
-        this->registerTypeface(std::move(face), name);
       }
     }
     for (const auto& name : promoted) {
@@ -1070,87 +1329,261 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
 
   // effing: registers the faces after the first of the font collection
   // (.ttc, .otc) `font` was made from, whose first face the caller
-  // registered, as that face is: each under its own family name and under
-  // the names `font.aliases` lists after the first. A face joins its own
-  // family without shadowing it when `font` is a system font or is
-  // registered under an alias other than that family.
+  // registered, as that face is: each under its own family name when `font`
+  // lists the first face's own family (its first name, no alias), and under
+  // the alias names `font.aliases` lists. A face joins its own family
+  // without shadowing it when `font` is a system font or is registered
+  // under an alias other than that family.
   void registerMoreFaces(RegisteredFont& font, bool system) {
     font.more_faces = effing::more_faces(font.path, font.data);
+    const bool lists_own = !font.aliases.empty() && !font.alias_args[0];
     for (const auto& face : font.more_faces) {
       SkString own;
       face->getFamilyName(&own);
       bool shadowable = system;
-      for (size_t i = 1; i < font.aliases.size(); i++) {
+      bool under_own = lists_own;
+      bool own_alias = false;
+      for (size_t i = 0; i < font.aliases.size(); i++) {
+        if (!font.alias_args[i]) {
+          continue;
+        }
         if (font.aliases[i] != own.c_str()) {
           this->registerTypeface(face, SkString(font.aliases[i].c_str()));
           shadowable = true;
+        } else {
+          under_own = own_alias = true;
         }
       }
-      if (shadowable) {
-        markShadowable(font, own.c_str(), *face);
+      if (under_own) {
+        if (shadowable && !own_alias) {
+          markShadowable(font, own.c_str(), *face);
+        }
+        this->registerTypeface(face);
       }
-      this->registerTypeface(face);
     }
   }
 
-  // effing: a rebuild registering `font` under `name` (addRebuiltAlias)
-  // registers the faces after the first of its collection as they were:
-  // under their own family names with its first name, where
-  // `font.shadowable_names` says which join their family without shadowing
-  // it, and under each later name that is not their own.
-  void replayMoreFaces(RegisteredFont& font, const std::string& name) {
-    const bool own_names = font.aliases.size() == 1;
+  // effing: a rebuild registering `font` under its name `index`
+  // (addRebuiltAlias) registers the faces after the first of its collection
+  // as they were: under their own family names with its own family name,
+  // where `font.shadowable_names` says which join their family without
+  // shadowing it, and under each alias name that is not their own (their
+  // own family for one that is).
+  void replayMoreFaces(RegisteredFont& font, size_t index) {
+    const std::string& name = font.aliases[index];
+    const bool own_name = !font.alias_args[index];
     for (const auto& face : font.more_faces) {
       SkString own;
       face->getFamilyName(&own);
-      if (own_names) {
+      if (own_name) {
         if (font.shadowable_names.count(own.c_str()) > 0) {
           shadowable_faces.add(own, *face);
         }
         this->registerTypeface(face);
       } else if (name != own.c_str()) {
         this->registerTypeface(face, SkString(name.c_str()));
+      } else if (!effing::has_face(
+                     TypefaceFontProvider::onMatchFamily(own.c_str()), *face)) {
+        this->registerTypeface(face);
       }
     }
   }
 
   // effing: registers the faces after the first of the font collection
-  // `font` was made from under `alias`, which the caller registered its
-  // first face under. A face of that family is registered there under its
-  // own name already; where it joined the family without shadowing it, it is
-  // a registered face there from now on, as promoteOwnName makes the first.
-  void registerMoreFacesAs(RegisteredFont& font, const SkString& alias) {
+  // `font` was made from under `name`, a name the caller just listed its
+  // first face under. Under an alias: a face of another family goes there;
+  // a face of that family is registered there under its own name already,
+  // and where it joined the family without shadowing it, it is a registered
+  // face there from now on, as promoteOwnName makes the first. Under the
+  // own family (a twin first registered under an alias alone): each face
+  // under its own family.
+  void registerMoreFacesAs(RegisteredFont& font,
+                           const std::string& name,
+                           bool alias_arg) {
     bool promoted = false;
     for (const auto& face : font.more_faces) {
       SkString own;
       face->getFamilyName(&own);
-      if (own != alias) {
-        this->registerTypeface(face, alias);
-      } else if (font.shadowable_names.count(own.c_str()) > 0) {
-        // A copy, as promoteOwnName registers.
-        if (sk_sp<SkTypeface> copy = face->makeClone(SkFontArguments())) {
-          shadowable_faces.remove(own, *copy);
-          font.promoted.push_back(copy);
-          this->registerTypeface(std::move(copy), own);
-          promoted = true;
+      if (!alias_arg) {
+        if (!effing::has_face(TypefaceFontProvider::onMatchFamily(own.c_str()),
+                              *face)) {
+          this->registerTypeface(face);
         }
+      } else if (name != own.c_str()) {
+        this->registerTypeface(face, SkString(name.c_str()));
+      } else if (font.shadowable_names.count(own.c_str()) > 0) {
+        shadowable_faces.remove(own, *face);
+        promoted = true;
+      } else if (!effing::has_face(
+                     TypefaceFontProvider::onMatchFamily(own.c_str()), *face)) {
+        this->registerTypeface(face);
       }
     }
     if (promoted) {
-      font.shadowable_names.erase(alias.c_str());
+      font.shadowable_names.erase(name);
+    }
+  }
+
+  // The font `id` declares `name` (RegisteredFont::call_names), a new
+  // spelling listing its face.
+  void addCallName(RegistrationKey id,
+                   const std::string& name,
+                   bool alias_arg) {
+    RegisteredFont& font_info = registered_fonts.at(id);
+    if (!alias_arg) {
+      promoteOwnName(font_info);  // effing
+    }
+    for (size_t i = 0; i < font_info.aliases.size(); ++i) {
+      if (font_info.aliases[i] == name) {
+        font_info.call_names[i] = true;
+        return;
+      }
+    }
+    font_info.AddName(name, alias_arg, true, ++registrations);
+    // The font's own face, so the alias name is that registration
+    // (registrationOf finds it) as after a rebuild.
+    this->registerTypeface(font_info.typeface, SkString(name.c_str()));
+    registerMoreFacesAs(font_info, name, alias_arg);  // effing
+  }
+
+  // registerFromPath: the path font `id` declares `name` (call_names). A
+  // new spelling lists its face; for a FontFace name of a file
+  // loadFontsFromDir loaded, its web twin (one per font, shared by its
+  // FontFace names), made from the data of the font's face as a rebuild
+  // makes it: the same path is not read again, so a file replaced since
+  // then does not give the name other bytes in one renderer mode only. When
+  // this mode cannot read that data, the font gets no twin (no_web_twin).
+  // `typeface` (the face this call made) only when the font's face gives no
+  // data. A call with no alias leaves such a file's own family undeclared:
+  // it stays an installed font (RelistRegistered).
+  void addPathName(RegistrationKey id,
+                   const std::string& name,
+                   bool alias_arg,
+                   const char* alias,
+                   const sk_sp<SkTypeface>& typeface) {
+    RegisteredFont& font = registered_fonts.at(id);
+    if (!alias_arg) {
+      promoteOwnName(font);  // effing
+    }
+    if (!alias && font.preloaded) {
+      return;
+    }
+    auto& aliases = font.aliases;
+    auto listed = std::find(aliases.begin(), aliases.end(), name);
+    if (listed != aliases.end()) {
+      font.call_names[listed - aliases.begin()] = true;
+      return;
+    }
+    font.AddName(name, alias_arg, true, ++registrations);
+    if (font.WebName(aliases.size() - 1) && !font.web_typeface) {
+      int index = 0;
+      std::unique_ptr<SkStreamAsset> stream =
+          font.typeface ? font.typeface->openStream(&index) : nullptr;
+      if (stream) {
+        font.web_typeface = MakeCanvasTypeface(std::move(stream));
+        font.no_web_twin = !font.web_typeface;
+      } else {
+        font.web_typeface = typeface;
+      }
+    }
+    // The font's own face (or its twin), so the alias name is that
+    // registration (registrationOf finds it) as after a rebuild.
+    this->registerTypeface(font.NameFace(aliases.size() - 1),
+                           SkString(name.c_str()));
+    registerMoreFacesAs(font, name, alias_arg);  // effing
+  }
+
+  // A declaration twin's FontKey: the next key of a counter that is never
+  // decremented or reset (also not by removeAllTypefaces), past any live
+  // key, so no key is issued twice. A stale key never removes another
+  // FontFace, as FontFaceSet.delete: a removed twin's key is not issued
+  // again, also not to the same declaration made again. 0 when the keys run
+  // out.
+  uint32_t NextTwinKey() {
+    while (twin_keys_next != UINT32_MAX &&
+           registered_fonts.count(twin_keys_next)) {
+      ++twin_keys_next;
+    }
+    return twin_keys_next == UINT32_MAX ? 0 : twin_keys_next++;
+  }
+
+  // A private registration's key (RegisteredFont::owner): the next of a
+  // counter of its own past every uint32_t (kPrivateKeyBase), never reset,
+  // so it is no FontKey, and FreeKey and NextTwinKey never meet one (they
+  // issue what they issue with no private registration). A private key never
+  // reaches JS. 0 when the keys run out.
+  RegistrationKey PrivateKey() {
+    return private_keys_next == UINT64_MAX ? 0 : private_keys_next++;
+  }
+
+  // The first key from `id` on (linear probe) that no live registration has
+  // and that was never issued to a twin (NextTwinKey), so a stale twin key
+  // never goes to a registration either. 0 when none is left.
+  uint32_t FreeKey(uint32_t id) const {
+    while (true) {
+      if (id >= kTwinKeyBase && id < twin_keys_next) {
+        id = twin_keys_next;
+      }
+      if (!registered_fonts.count(id)) {
+        return id;
+      }
+      if (++id == 0) {
+        return 0;
+      }
+    }
+  }
+
+  // Whether `map` holds `descriptors` for the folded name (null: none).
+  static bool SameDescriptors(
+      const std::map<std::string, skiac_face_descriptors>& map,
+      const std::string& folded,
+      const skiac_face_descriptors* descriptors) {
+    auto it = map.find(folded);
+    if (it == map.end() || !descriptors) {
+      return (it == map.end()) == !descriptors;
+    }
+    auto same = [](const skiac_face_range& a, const skiac_face_range& b) {
+      return a.min == b.min && a.max == b.max && a.from_auto == b.from_auto;
+    };
+    return same(it->second.weight, descriptors->weight) &&
+           same(it->second.slope, descriptors->slope) &&
+           same(it->second.width, descriptors->width);
+  }
+
+  void forgetDescribedName(const std::string& folded) {
+    auto it = described_names.find(folded);
+    if (it != described_names.end() && --it->second == 0) {
+      described_names.erase(it);
     }
   }
 
   sk_sp<SkFontMgr> font_mgr;
   skiac_font_collection* split_owner = nullptr;
   mutable std::map<std::string, sk_sp<SkFontStyleSet>> split_families;
-  std::map<uint32_t, RegisteredFont> registered_fonts;
+  mutable std::map<std::string, std::shared_ptr<const FontFaceCore>>
+      font_face_cores;
+  std::map<RegistrationKey, RegisteredFont> registered_fonts;
+  // How many registrations declare descriptors for each folded name.
+  std::map<std::string, size_t> described_names;
   uint64_t registrations = 0;
   // Secondary index: content hash -> set of registered IDs with that hash
   // This enables fast duplicate detection even after removals break the probe
   // chain. Complexity is O(k) where k is the number of hash collisions
   // (typically 1-2).
   std::map<uint32_t, std::set<uint32_t>> content_hash_index;
+  // The twin keys issued so far are [kTwinKeyBase, twin_keys_next)
+  // (NextTwinKey), kept across rebuilds and removeAll.
+  static constexpr uint32_t kTwinKeyBase = 0x80000000u;
+  uint32_t twin_keys_next = kTwinKeyBase;
+  // The private keys issued so far are [kPrivateKeyBase, private_keys_next)
+  // (PrivateKey), kept across rebuilds and removeAll.
+  static constexpr RegistrationKey kPrivateKeyBase = RegistrationKey{1} << 32;
+  RegistrationKey private_keys_next = kPrivateKeyBase;
+  // The private registrations (RegisteredFont::owner) by owner, then path:
+  // registerFont finds the ones of the same path, and deregisterAllFonts the
+  // owner's, with no walk over every registration.
+  std::map<uint32_t, std::map<std::string, std::set<RegistrationKey>>>
+      private_index;
   effing::ShadowableFaces shadowable_faces;  // effing
 };
 
@@ -1209,18 +1642,24 @@ struct skiac_font_collection {
     // the alias family, also when it is an installed one
     // (font_families.cpp FamilyResolver::Faces).
     SkTypefaceID face_id = 0;
-    // The registration (FontKey) that face came from, through alias chains
-    // (TypefaceFontProviderCustom::registrationOf); 0 for an installed
-    // font. Removing that font drops the alias (dropAliasesOf), whatever
-    // names either was registered under; removing another font keeps it.
-    uint32_t font_key = 0;
+    // The registration (FontKey, or a private registration's key:
+    // TypefaceFontProviderCustom::IsPrivateKey) that face came from, through
+    // alias chains (TypefaceFontProviderCustom::registrationOf); 0 for an
+    // installed font. Removing that font drops the alias (dropAliasesOf),
+    // whatever names either was registered under; removing another font
+    // keeps it.
+    RegistrationKey font_key = 0;
     // The face is that font's web twin (a FontFace name of a file
     // loadFontsFromDir loaded: RegisteredFont::web_typeface), so a rebuild
     // gives the alias the twin made again.
     bool web_face = false;
+    // FoldFamilyName of `family` and `alias`, for the descriptor lookups
+    // through the alias (text_styles.cpp DescriptorsUnder).
+    std::string folded_family;
+    std::string folded_alias;
     // effing: the face, when it is one a rebuild keeps as it is (a font
-    // collection's later face, or a promoted one: keptFaceOf), so the
-    // alias keeps it rather than the font's first face made again.
+    // collection's later face: keptFaceOf), so the alias keeps it rather
+    // than the font's first face made again.
     sk_sp<SkTypeface> kept_face;
     // effing: the call registered the face under the alias (not the
     // idempotent case), so a rebuild registers it again whatever the alias
@@ -1233,7 +1672,7 @@ struct skiac_font_collection {
   // so none moves to another face of the same name (another registration
   // of it, or the installed family). The aliases of an installed font or
   // of a kept registration stay.
-  void dropAliasesOf(const std::set<uint32_t>& ids) {
+  void dropAliasesOf(const std::set<RegistrationKey>& ids) {
     set_aliases.erase(std::remove_if(set_aliases.begin(), set_aliases.end(),
                                      [&](const SetAlias& entry) {
                                        return entry.font_key &&
@@ -1252,23 +1691,54 @@ struct skiac_font_collection {
                    bool installed,
                    SkTypefaceID face_id) {
     bool web_face = false;
-    const uint32_t font_key = assets->registrationOf(face_id, &web_face);
+    const RegistrationKey font_key = assets->registrationOf(face_id, &web_face);
     if (!registered) {
-      for (auto& entry : set_aliases) {
+      for (auto it = set_aliases.begin(); it != set_aliases.end(); ++it) {
+        SetAlias& entry = *it;
+        // An entry of a private registration (node-canvas registerFont,
+        // TypefaceFontProviderCustom::IsPrivateKey) is reused only for that
+        // registration, and only such a call reuses it: the entry goes with
+        // its registration (dropAliasesOf), so a call of another one keeps
+        // an entry of its own, and an earlier entry of a public face stays
+        // when the private one goes. Entries of public registrations and
+        // installed fonts are reused by the name pair alone.
+        if (entry.font_key != font_key &&
+            (TypefaceFontProviderCustom::IsPrivateKey(entry.font_key) ||
+             TypefaceFontProviderCustom::IsPrivateKey(font_key))) {
+          continue;
+        }
         if (entry.family == family && entry.alias == alias) {
           // The provider lists the alias with the family's face.
-          const bool changed = !entry.active || entry.face_id != face_id;
+          bool changed = !entry.active || entry.face_id != face_id;
           entry.active = true;
           entry.face_id = face_id;
           entry.font_key = font_key;
           entry.web_face = web_face;
           entry.kept_face = assets->keptFaceOf(font_key, face_id);  // effing
+          // The call is one more FontFace of the alias name, the newest of
+          // its segment (Blink FontFaceList keeps insertion order): a
+          // declaration or an alias of the face under the name made since
+          // the entry's turn goes before it now. The entry moves to the end
+          // (the replay and ResolveDescriptors go by the vector's order).
+          bool newer = assets->latestDeclarationOrder(
+                           face_id, entry.folded_alias) > entry.order;
+          for (auto later = it + 1; !newer && later != set_aliases.end();
+               ++later) {
+            newer = later->active && later->face_id == face_id &&
+                    later->folded_alias == entry.folded_alias;
+          }
+          if (newer) {
+            entry.order = assets->nextOrder();
+            std::rotate(it, it + 1, set_aliases.end());
+            changed = true;
+          }
           return changed;
         }
       }
     }
     set_aliases.push_back({family, alias, assets->nextOrder(), installed, true,
-                           face_id, font_key, web_face,
+                           face_id, font_key, web_face, FoldFamilyName(family),
+                           FoldFamilyName(alias),
                            assets->keptFaceOf(font_key, face_id),  // effing
                            registered});
     return true;
@@ -1291,7 +1761,7 @@ struct skiac_font_collection {
   // Fonts loadSystemFonts / loadFontsFromDir registered (font_families.cpp
   // skiac_font_collection_register_system_font): Blink keeps tiny system
   // fonts' ascent and descent unrounded, never a web font's.
-  std::set<uint32_t> system_font_ids;
+  std::set<RegistrationKey> system_font_ids;
   std::set<SkTypefaceID> system_typeface_ids;
   // text_words.cpp CanShapeWordByWord: whether a face's GPOS / GSUB lookups
   // touch the space glyph (HarfBuzz's cmap), per typeface (cleared with the
@@ -1305,6 +1775,11 @@ struct skiac_font_collection {
   // a new line's time with the system renderer when uncached.
   static constexpr size_t kMaxSystemTypefaces = 1024;
   std::unordered_map<SkTypefaceID, bool> system_typefaces;
+  // text_styles.cpp CollectionIndex: the TTC face index of a typeface, so
+  // SkFontArguments::setCollectionIndex matches Fontations and DirectWrite
+  // onMakeClone.
+  static constexpr size_t kMaxTtcIndices = 1024;
+  std::unordered_map<SkTypefaceID, int> ttc_indices;
   // text_caps.cpp: the OpenType caps features of a face for a script.
   std::map<std::pair<SkTypefaceID, uint32_t>, uint8_t> caps_features;
   // FontCollection keeps a clone of every face for every list of font
@@ -1316,6 +1791,14 @@ struct skiac_font_collection {
   std::unordered_set<size_t> font_arguments;
   std::vector<size_t> layout_font_arguments;
   bool caches_over_budget = false;
+  // font_families.cpp AtRequest: every distinct request weight and oblique
+  // angle tag is a family name of its own, kept in the provider's tagged
+  // sets (split_families) and FontCollection's caches even when each picks
+  // the same face. Past kMaxRequestTags distinct tags the caches and the
+  // tagged sets are dropped after the layout (`drop_split_families`).
+  static constexpr size_t kMaxRequestTags = 256;
+  std::unordered_set<std::string> request_tags;
+  bool drop_split_families = false;
   // text.cpp: the resolved families, primary font metrics and laid out lines
   // of recent requests; dropped with the match caches.
   std::unique_ptr<TextCaches, TextCachesDeleter> text_caches;
@@ -1330,7 +1813,23 @@ struct skiac_font_collection {
   // The tables (cmap, identity) the installed-font fallback source read from
   // faces, for skiac_debug_text_line's fallbackReads.
   uint64_t installed_fallback_reads = 0;
-#if defined(__APPLE__)
+  // The faces the family entries' own instances were looked up for
+  // (shaper.cpp FamilyFaces; each one a clone unless cached), for
+  // skiac_debug_text_line's familyInstanceFaces.
+  uint64_t family_instance_faces = 0;
+  // The faces looked up at the request's coordinates for the family list
+  // (shaper.cpp FamilyFaces: the whole list, or one family at a time when a
+  // face has its own instance; each one a clone unless cached), for
+  // skiac_debug_text_line's requestInstanceFaces.
+  uint64_t request_instance_faces = 0;
+  // The registrationOf walks DeclaredDescriptors made (text_styles.cpp), for
+  // skiac_debug_text_line's descriptorLookups: none while no font declares
+  // descriptors.
+  uint64_t descriptor_lookups = 0;
+  // The FontFaceCores built (font_families.cpp MakeFontFaceCore), for
+  // skiac_debug_text_line's fontFaceCores: one per web family and flush.
+  uint64_t font_face_cores = 0;
+#if defined(__APPLE__) || defined(_WIN32)
   // loadSystemFonts turned the installed fonts on (kept across renderer
   // switches); they are registered the first time a font is looked up or
   // registered.
@@ -1341,13 +1840,18 @@ struct skiac_font_collection {
   bool installed_lookup = false;
   uint32_t installed_font_count = 0;
   // The installed font files (Rust's FONT_PATH and user folders), in order.
-  // Without the system renderer face 0 of each is registered, as
-  // loadSystemFonts does elsewhere.
+  // Without the system renderer every face of each file is registered.
   std::vector<std::string> installed_files;
   // The installed faces each mode listed ([0] portable, [1] system), so a
   // switch back registers the same faces again instead of new ones. Dropped
   // when installed_files grows.
   std::vector<sk_sp<SkTypeface>> installed_faces[2];
+  // Each mode's installed font managers, made once: a new one per switch
+  // would scan the installed fonts again and make new faces for them.
+  sk_sp<SkFontMgr> portable_font_mgr;
+  sk_sp<SkFontMgr> system_font_mgr;
+#endif
+#if defined(__APPLE__)
   // font_families.cpp MatchCoreText: CoreText's family for a case-folded
   // name it does not list, empty for none.
   std::map<std::string, std::string> coretext_families;
@@ -1357,10 +1861,6 @@ struct skiac_font_collection {
   // fonts; FontCollection asks it after them (its test font manager).
   sk_sp<SkFontMgr> system_ui;
   std::set<SkTypefaceID> system_ui_ids;
-  // Each mode's installed font managers, made once: a new one per switch
-  // would scan the installed fonts again and make new faces for them.
-  sk_sp<SkFontMgr> portable_font_mgr;
-  sk_sp<SkFontMgr> coretext_font_mgr;
   sk_sp<SkFontMgr> coretext_system_ui;
   std::set<SkTypefaceID> coretext_system_ui_ids;
 #endif
@@ -1378,17 +1878,16 @@ struct skiac_font_collection {
     // paragraph: skparagraph's own cache stays off.
     collection->getParagraphCache()->turnOn(false);
     assets->setSplitFamilies(this);
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
     portable_font_mgr = font_mgr;
 #endif
   }
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
   // `paths` (count of them) are the installed font files; new ones are kept.
-  // With the system renderer, Chrome's font set on macOS is every font
-  // CoreText lists, and CoreText picks the fallback font for a character.
-  // Without loadSystemFonts (DISABLE_SYSTEM_FONTS_LOAD) only registered
-  // fonts resolve then.
+  // With the system renderer, Chrome's font set on macOS / Windows is every
+  // font CoreText / DirectWrite lists. Without loadSystemFonts
+  // (DISABLE_SYSTEM_FONTS_LOAD) only registered fonts resolve then.
   void enableInstalledFonts(const char* const* paths, size_t count) {
     for (size_t i = 0; i < count; ++i) {
       std::string path(paths[i]);
@@ -1414,7 +1913,7 @@ struct skiac_font_collection {
 
   // Registers every installed face (once) in `target`, their IDs in `ids`.
   uint32_t registerInstalledFonts(TypefaceFontProviderCustom* target,
-                                  std::set<uint32_t>* ids) {
+                                  std::set<RegistrationKey>* ids) {
     if (!installed_fonts_pending) {
       return installed_font_count;
     }
@@ -1448,6 +1947,9 @@ struct skiac_font_collection {
   // The installed faces of the current mode, in listing order.
   void listInstalledFaces(std::vector<sk_sp<SkTypeface>>* faces) {
     if (SystemFontRenderer()) {
+      if (!font_mgr) {
+        return;
+      }
       const int families = font_mgr->countFamilies();
       for (int i = 0; i < families; ++i) {
         sk_sp<SkFontStyleSet> set = font_mgr->createStyleSet(i);
@@ -1490,7 +1992,7 @@ struct skiac_font_collection {
 
   // Before a lookup: the installed fonts loadSystemFonts turned on.
   void prepareLookup() {
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
     registerInstalledFonts();
 #endif
   }
@@ -1511,8 +2013,10 @@ struct skiac_font_collection {
       assets->clearSplitFamilies();
       hb_space_in_lookups.clear();
       system_typefaces.clear();
+      ttc_indices.clear();
       caps_features.clear();
       font_arguments.clear();
+      request_tags.clear();
       text_caches.reset();
       caches_dirty = false;
     }
@@ -1530,13 +2034,30 @@ struct skiac_font_collection {
     }
   }
 
+  // Called by AtRequest for the tag it puts before a declared family. Past
+  // kMaxRequestTags it marks the caches over budget, with the tagged sets.
+  void noteRequestTag(const std::string& tag) {
+    if (request_tags.insert(tag).second &&
+        request_tags.size() > kMaxRequestTags) {
+      caches_over_budget = true;
+      drop_split_families = true;
+    }
+  }
+
   // After a layout: the drop noteFontArguments asked for, keeping the font
-  // argument lists that layout noted.
+  // argument lists that layout noted; and the tagged sets noteRequestTag
+  // asked for (the layout's faces do not hold them).
   void dropCachesIfOverBudget() {
+    if (drop_split_families) {
+      assets->clearSplitFamilies();
+      request_tags.clear();
+      drop_split_families = false;
+    }
     if (caches_over_budget) {
       collection->clearCaches();
       hb_space_in_lookups.clear();
       system_typefaces.clear();
+      ttc_indices.clear();
       caps_features.clear();
       text_caches.reset();
       font_arguments.clear();
@@ -1567,8 +2088,10 @@ struct skiac_font_collection {
     collection->clearCaches();
     hb_space_in_lookups.clear();
     system_typefaces.clear();
+    ttc_indices.clear();
     caps_features.clear();
     font_arguments.clear();
+    request_tags.clear();
     text_caches.reset();
     if (system_fallbacks) {
       ForgetSystemFallbackFaces(system_fallbacks.get());
@@ -1579,6 +2102,7 @@ struct skiac_font_collection {
     // Create new provider
     auto new_assets = sk_make_sp<TypefaceFontProviderCustom>(font_mgr);
     new_assets->setSplitFamilies(this);
+    new_assets->keepTwinKeys(*assets);
 
     // Re-register all remaining fonts, preserving original IDs, under each
     // name in the order the names were registered (IDs are hashes, and a
@@ -1588,7 +2112,7 @@ struct skiac_font_collection {
     const int previous_mode = relist_installed ? 1 - mode : mode;
     // {order, kind, font ID, alias index or set_aliases index}
     enum : uint8_t { kName, kSetAlias, kRelist };
-    std::vector<std::tuple<uint64_t, uint8_t, uint32_t, size_t>> names;
+    std::vector<std::tuple<uint64_t, uint8_t, RegistrationKey, size_t>> names;
     for (const auto& [id, font_info] : old_fonts) {
       for (size_t i = 0; i < font_info.aliases.size(); ++i) {
         names.emplace_back(font_info.orders[i], kName, id, i);
@@ -1607,13 +2131,13 @@ struct skiac_font_collection {
       entry.active = false;
       entry.face_id = 0;
     }
-    std::set<uint32_t> kept_system_font_ids;
+    std::set<RegistrationKey> kept_system_font_ids;
     system_typeface_ids.clear();
     // Each font made again, by ID; null when it is not kept.
-    std::map<uint32_t, sk_sp<SkTypeface>> made;
+    std::map<RegistrationKey, sk_sp<SkTypeface>> made;
     // The web twin of each font made again that has one
     // (RegisteredFont::web_typeface).
-    std::map<uint32_t, sk_sp<SkTypeface>> made_web;
+    std::map<RegistrationKey, sk_sp<SkTypeface>> made_web;
     [[maybe_unused]] bool relisted = false;
     for (const auto& [order, kind, id, index] : names) {
       if (kind == kRelist) {
@@ -1625,7 +2149,7 @@ struct skiac_font_collection {
         continue;
       }
       if (kind == kSetAlias) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
         // setAlias lists the installed fonts first (prepareLookup).
         if (relist_installed && !relisted) {
           relisted = true;
@@ -1666,6 +2190,9 @@ struct skiac_font_collection {
           ++families_generation;
           typeface =
               MatchNamedFamily(this, entry.family.c_str(), SkFontStyle());
+          // The sets this lookup made are of the provider as far as it is
+          // made: the fonts replayed after it change them.
+          new_assets->clearSplitFamilies();
           ++families_generation;
           assets = std::move(old_assets);
         }
@@ -1701,7 +2228,7 @@ struct skiac_font_collection {
       }
       const RegisteredFont& font_info = old_fonts.at(id);
       if (font_info.installed && relist_installed) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
         if (!relisted) {
           relisted = true;
           registerInstalledFonts(new_assets.get(), &kept_system_font_ids);
@@ -1781,14 +2308,12 @@ struct skiac_font_collection {
           if (system_font_ids.count(id)) {
             kept_system_font_ids.insert(id);
             system_typeface_ids.insert(typeface->uniqueID());
-          }
-          new_assets->addRebuiltFont(id, font_info, typeface, mode_typefaces,
-                                     web_typeface, web_mode_typefaces);
-          if (system_font_ids.count(id)) {  // effing: a collection's faces
-            for (const auto& face : font_info.more_faces) {
+            for (const auto& face : font_info.more_faces) {  // effing
               system_typeface_ids.insert(face->uniqueID());
             }
           }
+          new_assets->addRebuiltFont(id, font_info, typeface, mode_typefaces,
+                                     web_typeface, web_mode_typefaces);
         }
         if (web_typeface) {
           made_web.emplace(id, web_typeface);
@@ -1797,10 +2322,11 @@ struct skiac_font_collection {
       }
       if (it->second) {
         new_assets->addRebuiltAlias(id, font_info.aliases[index],
-                                    font_info.alias_args[index]);
+                                    font_info.alias_args[index],
+                                    font_info.call_names[index]);
       }
     }
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
     // None was registered yet: they are listed after the replay, as at the
     // next lookup.
     if (relist_installed && !relisted) {
@@ -1828,7 +2354,7 @@ struct skiac_font_collection {
     }
     // Typefaces made from here on are made in the new mode.
     SetSystemFontRenderer(enabled);
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
     // The installed fonts belong to the mode they were listed in: the
     // rebuild puts the new mode's in their place.
     bool listed = false;
@@ -1845,10 +2371,12 @@ struct skiac_font_collection {
     }
     collection->setAssetFontManager(
         effing::with_css_matching(font_mgr));  // effing
+#if defined(__APPLE__)
     system_ui = nullptr;
     system_ui_ids.clear();
     collection->setTestFontManager(nullptr);
     coretext_families.clear();
+#endif
     installed_fonts_pending = false;
     installed_font_count = 0;
     // Registered installed fonts are listed now, so they keep their place
@@ -1865,7 +2393,7 @@ struct skiac_font_collection {
     }
 #endif
     rebuildAssets(/*relist_installed=*/true);
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
     if (installed_fonts_enabled && !eager) {
       startInstalledFonts();
     }
@@ -1874,7 +2402,7 @@ struct skiac_font_collection {
   }
 
  private:
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
   // The installed fonts of the current mode resolve by name, and are
   // registered at the next lookup.
   void startInstalledFonts() {
@@ -1883,20 +2411,27 @@ struct skiac_font_collection {
     markCachesDirty();
   }
 
-  // With the system renderer, CoreText's installed fonts resolve by name.
+  // With the system renderer, CoreText's / DirectWrite's installed fonts
+  // resolve by name.
   void useInstalledLookup() {
     if (SystemFontRenderer()) {
-      if (!coretext_font_mgr) {
-        coretext_font_mgr = MakeCoreTextFontManager();
+      if (!system_font_mgr) {
+#if defined(__APPLE__)
+        system_font_mgr = MakeCoreTextFontManager();
         coretext_system_ui = MakeSystemUiFontManager(&coretext_system_ui_ids);
+#else
+        system_font_mgr = MakeDirectWriteFontManager();
+#endif
       }
-      font_mgr = coretext_font_mgr;
+      font_mgr = system_font_mgr;
       collection->setAssetFontManager(
           effing::with_css_matching(font_mgr));  // effing
+#if defined(__APPLE__)
       system_ui = coretext_system_ui;
       system_ui_ids = coretext_system_ui_ids;
       collection->setTestFontManager(system_ui);
       coretext_families.clear();
+#endif
     }
   }
 #endif
@@ -2152,6 +2687,8 @@ struct skiac_text_request {
   // The draw may get LCD glyph masks (macOS): an alpha:false raster canvas,
   // source-over, no filter layer. text_raster.cpp checks the size and matrix.
   bool lcd_text;
+  // ctx.antialias: 0 default, 1 none, 2 gray, 3 subpixel.
+  uint8_t antialias;
 };
 
 extern "C" {
@@ -2336,8 +2873,11 @@ void skiac_canvas_clip_rect(skiac_canvas* c_canvas,
                             float x,
                             float y,
                             float w,
-                            float h);
-void skiac_canvas_clip_path(skiac_canvas* c_canvas, skiac_path* c_path);
+                            float h,
+                            bool aa);
+void skiac_canvas_clip_path(skiac_canvas* c_canvas,
+                            skiac_path* c_path,
+                            bool aa);
 void skiac_canvas_save(skiac_canvas* c_canvas);
 void skiac_canvas_save_layer(skiac_canvas* c_canvas, skiac_paint* c_paint);
 void skiac_canvas_restore(skiac_canvas* c_canvas);
@@ -2671,7 +3211,9 @@ void skiac_image_encode_data(skiac_image* c_image,
                              float quality,
                              bool lossless,
                              bool crop_to_max_dimension,
-                             bool unpremul_readback);
+                             bool unpremul_readback,
+                             int png_zlib_level,
+                             int png_filters);
 bool skiac_image_read_pixels(skiac_image* c_image,
                              uint8_t* dst,
                              size_t row_bytes,
@@ -2820,11 +3362,13 @@ uint32_t skiac_font_collection_register(
     skiac_font_collection* c_font_collection,
     const uint8_t* font,
     size_t length,
-    const char* name_alias);
+    const char* name_alias,
+    const skiac_face_descriptors* descriptors);
 uint32_t skiac_font_collection_register_from_path(
     skiac_font_collection* c_font_collection,
     const char* font_path,
-    const char* name_alias);
+    const char* name_alias,
+    const skiac_face_descriptors* descriptors);
 size_t skiac_font_collection_unregister(
     skiac_font_collection* c_font_collection,
     uint32_t typeface_id);
@@ -2834,6 +3378,23 @@ size_t skiac_font_collection_unregister_batch(
     size_t count);
 size_t skiac_font_collection_unregister_all(
     skiac_font_collection* c_font_collection);
+// node-canvas registerFont: as skiac_font_collection_register_from_path, as
+// a private registration of the N-API env token `owner` (RegisteredFont::
+// owner), except that a non-empty alias is the face's only name (the
+// embedded family is not listed) and its key is no FontKey. Returns whether
+// it registered: false on failure, and when `owner` is 0.
+bool skiac_font_collection_register_from_path_private(
+    skiac_font_collection* c_font_collection,
+    const char* font_path,
+    const char* name_alias,
+    const skiac_face_descriptors* descriptors,
+    uint32_t owner);
+// node-canvas deregisterAllFonts: removes the private registrations of
+// `owner` as skiac_font_collection_unregister_batch removes fonts. Returns
+// whether any went.
+bool skiac_font_collection_release_private(
+    skiac_font_collection* c_font_collection,
+    uint32_t owner);
 bool skiac_font_collection_set_alias(skiac_font_collection* c_font_collection,
                                      const char* family,
                                      const char* alias);

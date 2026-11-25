@@ -210,10 +210,16 @@ test.serial('loadSystemFontsFromDir loads every face of a font collection as a s
   near(t, measure('20px "Effing Collection Serif"'), SERIF)
 
   // The collection registered from its path is a registered font from then
-  // on, every face of it.
+  // on, every face of it, in a Paragraph. Canvas text (and so the shaper
+  // engine) keeps it an installed font, as upstream does from 1.2.0 for a
+  // file loaded from a font folder and registered again with no alias, so
+  // the family's FontFace (the Lato registered under its name) still draws
+  // there.
   const collection = GlobalFonts.registerFromPath(path)
   t.truthy(collection)
-  near(t, measure('bold 20px "Effing Collection"'), BOLD)
+  const bold = new Paragraph(TEXT, { fontFamily: 'Effing Collection', fontSize: 20, fontWeight: 700 })
+  near(t, bold.layout(1000).lines[0].width, process.env.EFFING_PARAGRAPH_ENGINE === 'shaper' ? REGULAR : BOLD)
+  near(t, measure('bold 20px "Effing Collection"'), REGULAR)
   t.true(GlobalFonts.remove(lato!))
   t.deepEqual(styles('Effing Collection'), ['400 normal', '700 normal'])
   near(t, measure('bold 20px "Effing Collection"'), BOLD)
