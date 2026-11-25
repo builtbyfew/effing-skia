@@ -25,7 +25,7 @@ upstream file has at most a few marked hook lines.
 
 | Layer                  | Fork code                                                                                                                                                                                                          | Upstream hooks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,paragraph_blink,line_box,justify,word_break,group,filter_layer,fonts,pixels,surface}.{hpp,cpp}`                                                                                     | `skia-c/text.cpp` (include, the unsnapped draw in `MeasureOrDraw`, `shaping_whole_runs` in `AppendLineKey`, `effing_lay_out_text_line`), `skia-c/shaper.cpp` (include, the `geometricPrecision` font size and hinting in `LineFonts::Finish`, no word-by-word shaping under `shaping_whole_runs`, `effing_primary_face`), `skia-c/font_families.cpp` (`FamilyResolver::Faces` takes a family's own registered faces as web faces, `MatchNamedFamily` matches as CSS does), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names` and `more_faces`, the font provider's `onMatchFamily` (tagged families too) and `onCreateStyleSet`, `registerAlias`, `isShadowable`, `registrationOf` finding a collection's other faces, the registration and rebuild hooks that mark faces shadowable and load a collection's other faces, the asset font manager), `skia-c/skia_c.cpp` (`setAlias` registers its face through `registerAlias`), `skia-c/font_families.cpp` and `skia-c/text.hpp` (system fonts registered as such, `effing_font_collection_register_installed_font`, which counts a collection's other faces as installed) |
+| C++ bridge to Skia     | `skia-c/effing/{text,paragraph,paragraph_blink,line_box,justify,word_break,group,filter_layer,fonts,pixels,surface}.{hpp,cpp}`                                                                                     | `skia-c/text.cpp` (include, the unsnapped draw in `MeasureOrDraw`, aliased under `ctx.antialias = 'none'`, `shaping_whole_runs` in `AppendLineKey`, `effing_lay_out_text_line`), `skia-c/shaper.cpp` (include, the `geometricPrecision` font size and hinting in `LineFonts::Finish`, no word-by-word shaping under `shaping_whole_runs`, `effing_primary_face`), `skia-c/font_families.cpp` (`FamilyResolver::Faces` leaves a family's shadowable faces out), `skia-c/skia_c.hpp` (include, `RegisteredFont::shadowable_names` and `more_faces`, the font provider's `onMatchFamily` (installed tagged families too) and `onCreateStyleSet`, `registerAlias`, `isShadowable`, `promoteOwnName`, `registrationOf`, `isAliasArg` and `isCallName` finding a collection's other faces, the registration and rebuild hooks that mark faces shadowable and load a collection's other faces, the asset font manager), `skia-c/skia_c.cpp` (`setAlias` registers its face through `registerAlias`), `skia-c/font_families.cpp` and `skia-c/text.hpp` (system fonts registered as such, `effing_font_collection_register_installed_font`, which counts a collection's other faces as installed) |
 | Rust wrappers          | `src/sk/effing.rs`, `src/sk/effing/{text,paragraph,group,filter_layer,fonts,pixels,surface}.rs`                                                                                                                    | `src/sk.rs` (`mod effing`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Rust 2D context (napi) | `src/ctx/effing.rs`, `src/ctx/effing/{text,paragraph,group,filter_layer}.rs`                                                                                                                                       | `src/ctx.rs` (`mod effing`, `save_with`, `group_saves`, `end_group_content`, `account_unsnapped_text`, `draw_fitted_filter_layer`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Global fonts (napi)    | `src/global_fonts/effing.rs` (`loadSystemFontsFromDir`, `loadSystemFontsInBackground`, `waitForSystemFonts`, `fontRevision`)                                                                                       | `src/global_fonts.rs` (`mod effing`, `load_fonts_from_dir`'s `system`, `.otc` files, `get_font` waits for the startup fonts)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -1020,24 +1020,39 @@ registered faces.
 
 From 1.1.1 upstream resolves the families of `fillText`, `strokeText` and
 `measureText` itself, as Chrome does (`skia-c/font_families.cpp`
-`FamilyResolver`): a name registered over an installed family is a
-`FontFace`, which a font list that names it takes alone, while a generic
-family (`sans-serif`, ...) that resolves to that installed family keeps the
-installed faces, as in Chrome; spellings of a family that differ only in
-case are one family; and of the registered faces of one style, the one
-added last draws, the older ones its fallback. The fork keeps all of that
-and adds one thing: upstream counts a font registered under its own family
-name (`registerFromPath(path)`, or `register(buffer, name)` with the font's
-own name) as that family again rather than a `FontFace`, so the installed
-faces stayed first: the case this section opens with. In the
-fork it is a `FontFace` too, unless it joins its family without shadowing
-it (a font registered under an alias alone, under its own name). So a font
-registered under the name of an installed family draws wherever canvas text
-names that family, in every style, as before.
+`FamilyResolver`), and from 1.2.0 every `register` or `registerFromPath`
+call is a `FontFace` of the name it gives (the alias, or the font's own
+family when it has none), with the `@font-face` descriptors it is given
+(`register(font, name, { weight, style, stretch })`): a font list that
+names such a family takes its `FontFace`s alone, while a generic family
+(`sans-serif`, ...) that resolves to an installed family of that name keeps
+the installed faces, as in Chrome; spellings of a family that differ only
+in case are one family; and its faces are chosen by their descriptors, as
+Chrome chooses among `@font-face` rules, the one added last winning among
+equal ones. A face registered with no descriptors is `auto`, which matches
+as `normal` (400, upright, 100%): of a family of such faces, the one
+registered last draws every style, made bold or italic as a browser
+synthesizes a style. So a font family registered one file per style needs
+each file's `{ weight, style }` for canvas text (and the `shaper` engine of
+a `Paragraph`) to draw its bold or italic faces; `loadFontsFromDir`'s
+installed fonts keep matching by their files' own styles.
 
-A `Paragraph` still resolves family names as the rest of this section
-describes: case-sensitively, the first registered of equally good faces
-winning.
+The fork keeps all of that. What it adds: a font's own family that a call
+did not give (a font registered under an alias alone) is a shadowable face
+there, as everywhere else (see above), and a system font registered again
+from its path, which upstream keeps an installed font, then shadows the
+rest of its installed family (in canvas text it stays an installed font,
+so a `FontFace` of that family still draws there). A font collection's
+other faces are `FontFace`s of the names its call gave, and of their own
+families when the call gave the collection's own family; registered with no
+descriptors, every face of a collection keeps its file's own style rather
+than `normal` (one call can't declare each face's), so its bold face draws
+bold text.
+
+A `Paragraph` on the default (`skparagraph`) engine still resolves family
+names as the rest of this section describes: case-sensitively, by the
+files' own styles, the first registered of equally good faces winning;
+`@font-face` descriptors don't apply to it.
 
 ### Loading the system fonts
 
@@ -1093,7 +1108,11 @@ as Chrome implements it, wherever a family is resolved: `ctx.font` for `fillText
 `font-family` list, SVG text, and the default style `setAlias` takes, for
 registered and system families alike (`__test__/effing-font-matching.spec.ts`),
 among the faces the fork loads, every face of a font collection included
-(see font collections).
+(see font collections). The exception, from 1.2.0: in canvas text (and a
+`Paragraph` on the `shaper` engine), a family of registered faces
+(`FontFace`s) picks a face by its `@font-face` descriptors, as upstream
+and Chrome do (see canvas text under registered fonts over system fonts);
+its installed families match as below.
 Of a family's faces it narrows down by one property after the other, each
 checked in CSS's order:
 
@@ -1129,7 +1148,11 @@ the bold 1·256 + 1000 = 1256 and the italic 3·256 + 400 = 1168, and took
 the bold. For the same reason it took an italic over a bold for a normal
 style in a family with no regular face, and an upright bold over an oblique
 face for an italic. Above normal width its stretch score also ranked a
-wider face over one of the desired width. The fork's font provider and the
+wider face over one of the desired width. From 1.2.0 upstream has a
+matcher of its own (`MatchStyleCSS3` in `skia-c/font_families.cpp`), which
+fixes both but still ranks an italic face over an oblique one for italic
+and the other way round for oblique, before the weight. The fork's font
+provider (its untagged families and the installed tagged ones) and the
 system font directory's font manager hand out their families as style sets
 whose `matchStyle` is `effing::match_css` (`effing::with_css_matching`).
 
@@ -1478,6 +1501,28 @@ the CI matrix.
 ## Changelog
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
+
+### Unreleased
+
+- On upstream 1.2.1 (by way of 1.2.0), with what upstream changed there:
+  among others, Skia chrome/m158, `@font-face` descriptors in
+  `GlobalFonts.register` and `registerFromPath` (`weight`, `style`,
+  `stretch`), `ctx.antialias`, PNG `compressionLevel` and `filters`, and
+  DirectWrite for the system text renderer on Windows. See upstream's
+  changelog.
+- Canvas text and the `shaper` engine of a `Paragraph` choose among a
+  family's registered faces by their `@font-face` descriptors (upstream's
+  change). A face registered with none matches as `normal`, so in a family
+  registered one file per style without descriptors the file registered
+  last draws every style, its bold and italic synthesized: pass each
+  file's `{ weight, style }` to `register` to keep drawing the bold and
+  italic files (see canvas text under registered fonts over system fonts).
+  The default `skparagraph` engine still matches by the files' own styles.
+- `ctx.antialias = 'none'` draws `geometricPrecision` text's outlines
+  aliased too.
+- The encode pool, async rasterising, QOI, registered fonts over system
+  fonts, CSS font matching, font collections and the shaper engine are as
+  before, re-hooked into upstream's new font registration.
 
 ### 1.1.1-effing.1
 
