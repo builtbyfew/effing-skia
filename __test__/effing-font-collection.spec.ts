@@ -68,6 +68,29 @@ test.serial('register() registers every face of a font collection, under one key
   t.deepEqual(styles('Effing Collection Serif'), [])
 })
 
+// A rebuild (GlobalFonts.remove of another font) registers the faces again in
+// the order they were first registered, so the first of equal faces stays
+// the one that draws.
+test.serial("a rebuild keeps a collection's faces in order under an alias of a later face's family", (t) => {
+  // A copy: a path registered before is registered again, not afresh.
+  const dir = mkdtempSync(join(tmpdir(), 'effing-collection-'))
+  tmpDirs.push(dir)
+  const path = join(dir, 'collection.ttc')
+  copyFileSync(COLLECTION, path)
+  const key = GlobalFonts.registerFromPath(path, 'Effing Collection Serif')
+  t.truthy(key)
+  const paragraph = () =>
+    new Paragraph(TEXT, { fontFamily: 'Effing Collection Serif', fontSize: 20 }).layout(1000).lines[0].width
+  // The collection's first face comes before its Serif face. (Placed before
+  // the tests that leave faces of the family registered.)
+  const before = paragraph()
+  near(t, before, REGULAR)
+  const other = GlobalFonts.registerFromPath(LATO, 'Rebuild Trigger')
+  t.true(GlobalFonts.remove(other!))
+  near(t, paragraph(), before, 'after a rebuild')
+  t.true(GlobalFonts.remove(key!))
+})
+
 // The weights Chrome's canvas takes in `ctx.font`, any number from 1 to
 // 1000 (CSS Fonts 4), with the face it picks of a family of a 400 and a 700
 // face, measured in Chrome 154: up to 500, the 400 face; from 550, the 700
@@ -224,28 +247,6 @@ test.serial('loadSystemFontsFromDir loads every face of a font collection as a s
   t.deepEqual(styles('Effing Collection'), ['400 normal', '700 normal'])
   near(t, measure('bold 20px "Effing Collection"'), BOLD)
   near(t, measure('20px "Effing Collection Serif"'), SERIF)
-})
-
-// A rebuild (GlobalFonts.remove of another font) registers the faces again in
-// the order they were first registered, so the first of equal faces stays
-// the one that draws.
-test.serial("a rebuild keeps a collection's faces in order under an alias of a later face's family", (t) => {
-  // A copy: a path registered before is registered again, not afresh.
-  const dir = mkdtempSync(join(tmpdir(), 'effing-collection-'))
-  tmpDirs.push(dir)
-  const path = join(dir, 'collection.ttc')
-  copyFileSync(COLLECTION, path)
-  const key = GlobalFonts.registerFromPath(path, 'Effing Collection Serif')
-  t.truthy(key)
-  const paragraph = () =>
-    new Paragraph(TEXT, { fontFamily: 'Effing Collection Serif', fontSize: 20 }).layout(1000).lines[0].width
-  // Faces earlier tests left in the family come first; the collection's
-  // first face comes before its Serif face.
-  const before = paragraph()
-  const other = GlobalFonts.registerFromPath(LATO, 'Rebuild Trigger')
-  t.true(GlobalFonts.remove(other!))
-  near(t, paragraph(), before, 'after a rebuild')
-  t.true(GlobalFonts.remove(key!))
 })
 
 // A collection's faces are FontFaces as new as the call that registered
