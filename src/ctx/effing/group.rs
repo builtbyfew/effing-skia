@@ -136,10 +136,11 @@ impl Context {
       && paint
         .as_ref()
         .is_some_and(|paint| paint.group_fits_content(&self.state.transform));
+    let aa = self.state.antialias.is_enabled();
     if fits_content {
       self.save_with(|canvas| canvas.save());
     } else {
-      self.save_with(|canvas| canvas.save_group(paint.as_ref(), backdrop.as_ref(), bounds));
+      self.save_with(|canvas| canvas.save_group(paint.as_ref(), backdrop.as_ref(), bounds, aa));
     }
     self.group_saves.push(self.states.len() - 1);
     if let Some(ref recorder) = self.page_recorder {
@@ -148,6 +149,7 @@ impl Context {
         paint,
         bounds,
         transform: self.state.transform.clone(),
+        aa,
         clip: recorder.clip_bounds(),
       };
       recorder.begin_group(layer, fits_content);

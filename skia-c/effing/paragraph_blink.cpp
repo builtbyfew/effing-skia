@@ -1640,7 +1640,8 @@ void blink_paragraph_paint(const BlinkParagraph* p,
       }
       paint_glyphs_unsnapped(canvas, shaped.fonts[font], ids.data(),
                              positions.data(), static_cast<int>(ids.size()),
-                             x + line.left, y + line.baseline, paint);
+                             x + line.left, y + line.baseline, paint,
+                             paint.isAntiAlias());
     }
   }
   effing_take_text_painted(painted);

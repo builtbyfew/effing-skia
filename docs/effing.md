@@ -856,9 +856,9 @@ value) and CSS `filter`. That is what CSS `opacity`, `mix-blend-mode` and
 `backdropFilter` starts the group from the filtered content behind it,
 clamped at the edges like a browser does at the viewport edge, for CSS
 `backdrop-filter`. `bounds` (`[x, y, width, height]` in the current
-coordinate space) clips the group's content, anti-aliased like `ctx.clip()`. A non-numeric `opacity`, an
-unknown `blendMode` or malformed `bounds` throw; `opacity` outside 0 to 1 is
-clamped.
+coordinate space) clips the group's content, anti-aliased like `ctx.clip()`
+(aliased under `ctx.antialias = 'none'`). A non-numeric `opacity`, an unknown
+`blendMode` or malformed `bounds` throw; `opacity` outside 0 to 1 is clamped.
 
 On a raster canvas a group's offscreen buffer is sized to what it draws, so
 a translucent element costs about as much as its own area, not the canvas's
@@ -1518,8 +1518,12 @@ Changes to the fork's public surface, for `@effing/canvas` to follow.
   file's `{ weight, style }` to `register` to keep drawing the bold and
   italic files (see canvas text under registered fonts over system fonts).
   The default `skparagraph` engine still matches by the files' own styles.
-- `ctx.antialias = 'none'` draws `geometricPrecision` text's outlines
+- `ctx.antialias = 'none'` draws `geometricPrecision` text's outlines,
+  `fillParagraph` and `strokeParagraph`, and a group's `bounds` clip
   aliased too.
+- A font collection's later faces are `FontFace`s as new as its first (the
+  newest face of a style draws it), and keep their order in a family across
+  a rebuild (`GlobalFonts.remove`).
 - The encode pool, async rasterising, QOI, registered fonts over system
   fonts, CSS font matching, font collections and the shaper engine are as
   before, re-hooked into upstream's new font registration.

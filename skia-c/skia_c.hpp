@@ -69,6 +69,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -260,6 +261,11 @@ struct RegisteredFont {
   // effing: the faces after the first of a font collection (.ttc, .otc),
   // which a rebuild registers again as they are.
   std::vector<sk_sp<SkTypeface>> more_faces;
+  // effing: the own families of the faces in more_faces that were
+  // registered there along with an alias of the same name, after the first
+  // face's names (registerMoreFaces): a rebuild registers them with that
+  // alias, not with the own name.
+  std::set<std::string> alias_own_families;
   // The descriptors of the names registered with them, by FoldFamilyName.
   std::map<std::string, skiac_face_descriptors> descriptors;
   // When each alias was registered (parallel to aliases). A rebuild
@@ -356,6 +362,25 @@ struct RegisteredFont {
   // preloaded font (when it could be made), else the font's face.
   const sk_sp<SkTypeface>& NameFace(size_t i) const {
     return WebName(i) && web_typeface ? web_typeface : typeface;
+  }
+  // effing: the name name `i` lists the collection's later face
+  // `typeface_id` (more_faces) under: the alias for an alias name, the
+  // face's own family for the own name (registerMoreFaces); nothing when it
+  // is not such a face.
+  std::optional<std::string> MoreFaceName(size_t i,
+                                          SkTypefaceID typeface_id) const {
+    for (const auto& face : more_faces) {
+      if (!face || face->uniqueID() != typeface_id) {
+        continue;
+      }
+      if (alias_args[i]) {
+        return aliases[i];
+      }
+      SkString own;
+      face->getFamilyName(&own);
+      return std::string(own.c_str());
+    }
+    return std::nullopt;
   }
 };
 
@@ -497,12 +522,17 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   }
 
   // effing: whether the face `typeface_id` is a face of a registered font
-  // collection (.ttc, .otc: RegisteredFont::more_faces), its first one too.
+  // collection (.ttc, .otc: RegisteredFont::more_faces), its first one too,
+  // and the web twin of that one (RegisteredFont::web_typeface).
   bool isCollectionFace(SkTypefaceID typeface_id) const {
+    const auto is = [typeface_id](const sk_sp<SkTypeface>& face) {
+      return face && face->uniqueID() == typeface_id;
+    };
     for (const auto& [id, font_info] : registered_fonts) {
       if (!font_info.more_faces.empty() &&
-          ((font_info.typeface &&
-            font_info.typeface->uniqueID() == typeface_id) ||
+          (is(font_info.typeface) || is(font_info.web_typeface) ||
+           is(font_info.web_mode_typefaces[0]) ||
+           is(font_info.web_mode_typefaces[1]) ||
            effing::lists_face(font_info.more_faces, typeface_id))) {
         return true;
       }
@@ -680,7 +710,11 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
         // FontFace names).
         if (font_info.aliases[i] != name || !font_info.NameFace(i) ||
             font_info.NameFace(i)->uniqueID() != typeface_id) {
-          continue;
+          // effing: a collection's later face takes the order of the name
+          // it was registered with.
+          if (font_info.MoreFaceName(i, typeface_id) != name) {
+            continue;
+          }
         }
         if (!latest) {
           order = std::min(order, font_info.orders[i]);
@@ -707,10 +741,18 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     const RegisteredFont& font_info = registered_fonts.at(key);
     uint64_t order = 0;
     for (size_t i = 0; i < font_info.aliases.size(); ++i) {
-      if (!font_info.call_names[i] || !font_info.NameFace(i) ||
+      if (!font_info.call_names[i]) {
+        continue;
+      }
+      if (!font_info.NameFace(i) ||
           font_info.NameFace(i)->uniqueID() != typeface_id ||
           FoldFamilyName(font_info.aliases[i]) != folded) {
-        continue;
+        // effing: a collection's later face, declared with the name it was
+        // registered with.
+        const auto more_name = font_info.MoreFaceName(i, typeface_id);
+        if (!more_name || FoldFamilyName(*more_name) != folded) {
+          continue;
+        }
       }
       order = std::max(order, font_info.orders[i]);
       if (i < font_info.relists.size()) {
@@ -913,6 +955,7 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     // other faces of a collection, registered again as they were.
     font_info.shadowable_names = old.shadowable_names;
     font_info.more_faces = old.more_faces;
+    font_info.alias_own_families = old.alias_own_families;
     registered_fonts[id] = std::move(font_info);
 
     // A private registration (RegisteredFont::owner) is in its own index
@@ -993,16 +1036,28 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
     // This handles the case where the probe chain was broken by a removal
     auto index_it = content_hash_index.find(content_hash);
     if (index_it != content_hash_index.end()) {
+      uint32_t found = 0;  // effing
       for (uint32_t existing_id : index_it->second) {
         auto font_it = registered_fonts.find(existing_id);
         if (font_it != registered_fonts.end() &&
             !font_it->second.path.empty() && font_it->second.path == path) {
           // Found matching path via index - true duplicate
+          // effing: every registration of the file is promoted, as the one
+          // that joined its family without shadowing it can be a later one
+          // (a declaration twin).
           if (!system) {
-            promoteOwnName(font_it->second);  // effing
+            promoteOwnName(font_it->second);
           }
-          return existing_id;
+          if (found == 0) {
+            found = existing_id;
+          }
+          if (system) {
+            break;
+          }
         }
+      }
+      if (found != 0) {
+        return found;
       }
     }
 
@@ -1358,6 +1413,9 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
         if (shadowable && !own_alias) {
           markShadowable(font, own.c_str(), *face);
         }
+        if (own_alias) {
+          font.alias_own_families.insert(own.c_str());
+        }
         this->registerTypeface(face);
       }
     }
@@ -1368,7 +1426,9 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
   // as they were: under their own family names with its own family name,
   // where `font.shadowable_names` says which join their family without
   // shadowing it, and under each alias name that is not their own (their
-  // own family for one that is).
+  // own family for one that is). A face registerMoreFaces registered with an
+  // alias of its own family (alias_own_families) is registered with that
+  // alias, after the first face, as it was then.
   void replayMoreFaces(RegisteredFont& font, size_t index) {
     const std::string& name = font.aliases[index];
     const bool own_name = !font.alias_args[index];
@@ -1376,10 +1436,16 @@ class TypefaceFontProviderCustom : public TypefaceFontProvider {
       SkString own;
       face->getFamilyName(&own);
       if (own_name) {
+        if (font.alias_own_families.count(own.c_str()) > 0) {
+          continue;
+        }
         if (font.shadowable_names.count(own.c_str()) > 0) {
           shadowable_faces.add(own, *face);
         }
-        this->registerTypeface(face);
+        if (!effing::has_face(TypefaceFontProvider::onMatchFamily(own.c_str()),
+                              *face)) {
+          this->registerTypeface(face);
+        }
       } else if (name != own.c_str()) {
         this->registerTypeface(face, SkString(name.c_str()));
       } else if (!effing::has_face(

@@ -242,8 +242,10 @@ void paint_paragraph_unsnapped(Paragraph* paragraph,
     // relative to wherever the line goes.
     const SkScalar run_x = x + origin.fX + (run->origin.fX - skia_origin.fX);
     const SkScalar run_y = y + origin.fY;
+    // The paint carries ctx.antialias.
     draw_run_as_paths(canvas, run->font, run->glyphs, run->positions,
-                      run->count, run_x, run_y, paint, painted);
+                      run->count, run_x, run_y, paint, painted,
+                      paint.isAntiAlias());
   });
 }
 

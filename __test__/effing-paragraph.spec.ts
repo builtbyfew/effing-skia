@@ -432,3 +432,20 @@ test('fillParagraph honours the context shadow', (t) => {
   }
   t.true(red > 0)
 })
+
+test("fillParagraph and strokeParagraph draw hard-edged text under ctx.antialias = 'none'", (t) => {
+  const paragraph = new Paragraph('Hello', { ...STYLE, fontSize: 30 })
+  paragraph.layout(200)
+  for (const draw of [fillParagraph, strokeParagraph]) {
+    for (const antialias of ['default', 'none'] as const) {
+      const ctx = createCanvas(200, 60).getContext('2d')
+      ctx.antialias = antialias
+      draw(ctx, paragraph, 5.3, 5.3)
+      const data = ctx.getImageData(0, 0, 200, 60).data
+      let partial = 0
+      for (let i = 3; i < data.length; i += 4) if (data[i] > 0 && data[i] < 255) partial++
+      if (antialias === 'none') t.is(partial, 0, draw.name)
+      else t.true(partial > 0, draw.name)
+    }
+  }
+})

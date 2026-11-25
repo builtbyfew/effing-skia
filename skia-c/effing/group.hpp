@@ -11,11 +11,13 @@ extern "C" {
 // composites nothing needs no layer, and a vector device may not have one. A
 // `backdrop` filter initializes the group with the filtered content behind
 // it. `bounds` (x, y, w, h in local space) is a size hint that also clips the
-// group's content. All may be null. Owes one restore.
+// group's content, anti-aliased when `aa` (ctx.antialias). All may be null.
+// Owes one restore.
 void effing_canvas_save_group(skiac_canvas* canvas,
                               skiac_paint* paint,
                               skiac_image_filter* backdrop,
-                              const float* bounds);
+                              const float* bounds,
+                              bool aa);
 
 // Whether a group composited with `paint` under `matrix` leaves everything
 // outside what it draws alone, so that its layer can be sized to its content:
@@ -25,8 +27,11 @@ void effing_canvas_save_group(skiac_canvas* canvas,
 // skews, where the filtered layer is resampled.
 bool effing_group_fits_content(skiac_paint* paint, skiac_matrix* matrix);
 
-// Clips `canvas` to `bounds` (x, y, w, h in local space).
-void effing_canvas_clip_bounds(skiac_canvas* canvas, const float* bounds);
+// Clips `canvas` to `bounds` (x, y, w, h in local space), anti-aliased when
+// `aa`.
+void effing_canvas_clip_bounds(skiac_canvas* canvas,
+                               const float* bounds,
+                               bool aa);
 
 // The device-space region a group's content is recorded in, as x, y, w, h in
 // `out`: the canvas within `clip`, the device-space bounds of the clip as

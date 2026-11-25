@@ -2121,7 +2121,9 @@ sk_sp<SkFontStyleSet> MakeSplitFamilyAt(
   for (auto& face : faces) {
     set->appendTypeface(std::move(face));
   }
-  return WrapCss3StyleSet(std::move(set));
+  // effing: CSS font matching (docs/effing.md), as for the fork's other
+  // typeface sets.
+  return effing::with_css_matching(std::move(set));
 }
 
 class Css3StyleSet final : public SkFontStyleSet {

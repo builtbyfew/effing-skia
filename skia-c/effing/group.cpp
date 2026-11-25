@@ -15,7 +15,8 @@ extern "C" {
 void effing_canvas_save_group(skiac_canvas* c_canvas,
                               skiac_paint* c_paint,
                               skiac_image_filter* c_backdrop,
-                              const float* bounds) {
+                              const float* bounds,
+                              bool aa) {
   SkRect rect;
   if (bounds != nullptr) {
     rect = SkRect::MakeXYWH(bounds[0], bounds[1], bounds[2], bounds[3]);
@@ -35,8 +36,8 @@ void effing_canvas_save_group(skiac_canvas* c_canvas,
   if (bounds != nullptr) {
     // Layer bounds are only a size hint to Skia; the clip is ours to apply.
     // It lives inside the layer, so the restore undoes it. It is
-    // anti-aliased, as ctx.clip() is.
-    canvas->clipRect(rect, true);
+    // anti-aliased as ctx.clip() is: unless ctx.antialias is 'none'.
+    canvas->clipRect(rect, aa);
   }
 }
 
@@ -68,9 +69,11 @@ bool effing_group_fits_content(skiac_paint* c_paint, skiac_matrix* c_matrix) {
           reinterpret_cast<SkMatrix*>(c_matrix)->isScaleTranslate());
 }
 
-void effing_canvas_clip_bounds(skiac_canvas* c_canvas, const float* bounds) {
+void effing_canvas_clip_bounds(skiac_canvas* c_canvas,
+                               const float* bounds,
+                               bool aa) {
   reinterpret_cast<SkCanvas*>(c_canvas)->clipRect(
-      SkRect::MakeXYWH(bounds[0], bounds[1], bounds[2], bounds[3]), true);
+      SkRect::MakeXYWH(bounds[0], bounds[1], bounds[2], bounds[3]), aa);
 }
 
 void effing_group_content_bounds(skiac_paint* c_paint,
