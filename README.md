@@ -29,7 +29,7 @@ the same way, on the platforms listed above.
 # `skr canvas`
 
 [![CI](https://github.com/Brooooooklyn/canvas/actions/workflows/CI.yaml/badge.svg)](https://github.com/Brooooooklyn/canvas/actions/workflows/CI.yaml)
-![Skia Version](https://img.shields.io/badge/Skia-chrome%2Fm157-hotpink)
+![Skia Version](https://img.shields.io/badge/Skia-chrome%2Fm158-hotpink)
 [![Downloads](https://img.shields.io/npm/dm/@napi-rs/canvas.svg?sanitize=true)](https://npmcharts.com/compare/@napi-rs/canvas?minimal=true)
 
 > 🚀 Help me to become a full-time open-source developer by [sponsoring me on Github](https://github.com/sponsors/Brooooooklyn)
@@ -151,6 +151,29 @@ const jpeg = await canvas.encode('jpeg', { quality: 90, resolution: 300, copyrig
 
 WebP, AVIF and GIF output ignore these options. `toDataURL`, `toDataURLAsync`, `toBlob`, `convertToBlob`, `encodeStream` and `savePng` never write metadata. To save a file with metadata, write the Buffer from `toBuffer` or `encode`. With an options object, `toBuffer('image/jpeg', ...)` encodes at quality 92; use `encode` or `encodeSync` for another quality.
 
+### PNG encoding options
+
+For PNG output, `toBuffer('image/png', options)`, `encode('png', options)` and `encodeSync('png', options)` also accept `compressionLevel` (zlib level `0–9`, default `6`) and `filters` (libpng row filter bitmask from `PngFilter`, default `PngFilter.All` / `0xF8`) in the same options object:
+
+```js
+const { createCanvas, PngFilter } = require('@napi-rs/canvas')
+
+// Fast PNG encoding (Chromium's canvas preset: zlib level 1, Up filter only)
+const png = await canvas.encode('png', {
+  compressionLevel: 1,
+  filters: PngFilter.Up, // 0x20
+})
+```
+
+| `PngFilter` constant | Value  | Description           |
+| -------------------- | ------ | --------------------- |
+| `PngFilter.None`     | `0x08` | None filter           |
+| `PngFilter.Sub`      | `0x10` | Sub filter            |
+| `PngFilter.Up`       | `0x20` | Up filter             |
+| `PngFilter.Avg`      | `0x40` | Average filter        |
+| `PngFilter.Paeth`    | `0x80` | Paeth filter          |
+| `PngFilter.All`      | `0xF8` | All filters (default) |
+
 ## Text rendering
 
 By default text is drawn the same way on every OS. Every font is drawn with FreeType, with Skia's default text gamma, no LCD (subpixel) text and one font family table (the one Linux uses).
@@ -174,11 +197,26 @@ ctx.font = '20px MyLato'
 ctx.lang = 'en'
 ```
 
-A name registered over an installed family (for example `Helvetica`) works like a CSS `@font-face` in Chrome: only font lists that name it use it, for every style (bold and italic are made from the faces you registered when you registered no bold or italic face). The generic families, such as `sans-serif`, keep the installed family. To change a generic family, register the font under the keyword itself:
+A name registered over an installed family (for example `Helvetica`) works like a CSS `@font-face` in Chrome: only font lists that name it use it, for every style (the faces are chosen as described below; bold or italic is made from the chosen face when that file is not bold or italic). The generic families, such as `sans-serif`, keep the installed family. To change a generic family, register the font under the keyword itself:
 
 ```js
 GlobalFonts.registerFromPath('./fonts/Lato-Regular.ttf', 'sans-serif')
 ```
+
+For the unquoted keyword (`sans-serif`), each face of that font is matched by the file's own style and descriptors are ignored; bold is made from weight 600, as for other registered fonts. Only the quoted name (`"sans-serif"`) follows the descriptor and newest-face rule below.
+
+Faces of one family are chosen by their descriptors, as with `@font-face`. Without descriptors every face is `auto` and the newest face wins; give `{ weight, style, stretch }` for each file of a family, or use `loadFontsFromDir` (installed fonts match by the file's own style):
+
+```js
+GlobalFonts.registerFromPath('./fonts/Lato-Regular.ttf', 'MyLato', { weight: 400 })
+GlobalFonts.registerFromPath('./fonts/Lato-Bold.ttf', 'MyLato', { weight: 700 })
+```
+
+> **Behavior change**: registered faces with no descriptors are all `auto`, so in such a family the face registered last draws every style (made bold or italic when that file is not), as Chrome draws `@font-face` rules with no descriptors. Before, each face was picked by the file's own style.
+
+`registerFont(path, { family, weight, style })` from `@napi-rs/canvas/node-canvas` passes `weight` and `style` as these descriptors, so one call per face file picks each face. A field that is not given is `auto`, and a value the `@font-face` grammar rejects (`'bolder'`) counts as not given while the other field is kept; a value it accepts (`calc(700)` too) works exactly as in `registerFromPath`. A face declared bold or italic is not made bold or italic when its file is not, and an explicit weight (`'normal'` included) pins a variable font to it. `registerFont`'s faces are its own, so a file also registered through `GlobalFonts` or `loadFontsFromDir` has a face from each (`GlobalFonts.families` shows both) until `deregisterAllFonts`. `deregisterAllFonts` removes the `registerFont` faces of its own thread only (the main thread or one worker), and a worker's faces stay after it exits, as in node-canvas. A later worker does not reuse them, so each worker that calls `registerFont` adds its faces for the life of the process (only `GlobalFonts.removeAll()` removes them then): a pool that recycles workers should call `deregisterAllFonts()` in each worker before it exits.
+
+> **Behavior change**: `registerFont(path, { family: 'X' })` lists the face under `X` only, as `new FontFace('X', ...)` does in Chrome, so the face is no longer usable under the family name embedded in the file. Pass `family: ''` (or the embedded name) to register it under its embedded name.
 
 These still depend on the OS and the machine:
 
@@ -195,7 +233,7 @@ Set `DISABLE_SYSTEM_FONTS_LOAD=1` to keep installed fonts out of `GlobalFonts.fa
 
 ### `setTextRenderer()`
 
-`setTextRenderer('system')` draws text the way Chrome does on each OS: CoreText on macOS (with CoreText's installed fonts and fallback), Fontations on Linux and FreeType on Windows, plus each OS's text gamma, LCD text on opaque macOS canvases, Chrome's per-OS font families and the macOS metric rules. This was the default in 1.0.12 and 1.0.13. `'portable'` is the default.
+`setTextRenderer('system')` draws text the way Chrome does on each OS: CoreText on macOS (with CoreText's installed fonts and fallback), Fontations on Linux and DirectWrite on Windows (with Fontations for color/CFF2/avar2 web fonts), plus each OS's text gamma, LCD text on opaque macOS canvases, Chrome's per-OS font families and the macOS metric rules. This was the default on macOS and Linux in 1.0.12 and 1.0.13. `'portable'` is the default.
 
 ```js
 const { setTextRenderer, getTextRenderer } = require('@napi-rs/canvas')

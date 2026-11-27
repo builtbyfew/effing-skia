@@ -1236,6 +1236,18 @@ static SkWebpEncoder::Options webp_options(float quality, bool lossless) {
   return options;
 }
 
+// -1 keeps Skia's default (zlib level 6, all row filters).
+static SkPngEncoder::Options png_options(int zlib_level, int filters) {
+  SkPngEncoder::Options options;
+  if (zlib_level >= 0) {
+    options.fZLibLevel = zlib_level;
+  }
+  if (filters >= 0) {
+    options.fFilterFlags = static_cast<SkPngEncoder::FilterFlag>(filters);
+  }
+  return options;
+}
+
 bool skiac_surface_save(skiac_surface* c_surface, const char* path) {
   auto snapshot = SURFACE_CAST->makeImageSnapshot();
   auto image = encodable_image(snapshot.get());
@@ -1474,7 +1486,7 @@ void skiac_surface_encode_data(skiac_surface* c_surface,
                                bool lossless) {
   auto snapshot = SURFACE_CAST->makeImageSnapshot();
   skiac_image_encode_data(reinterpret_cast<skiac_image*>(snapshot.get()), data,
-                          format, quality, lossless, false, false);
+                          format, quality, lossless, false, false, -1, -1);
 }
 
 bool skiac_surface_encode_stream(skiac_surface* c_surface,
@@ -2120,7 +2132,8 @@ void skiac_canvas_draw_image(skiac_canvas* c_canvas,
   }
   const SkMatrix ctm = conv_from_transform(c_ctm);
   SkPaint paint = c_paint ? *PAINT_CAST : SkPaint();
-  paint.setAntiAlias(ShouldDrawImageAntialiased(ctm, dst.w, dst.h));
+  const bool allow_aa = c_paint ? paint.isAntiAlias() : true;
+  paint.setAntiAlias(allow_aa && ShouldDrawImageAntialiased(ctm, dst.w, dst.h));
   const SkRect src_rect = src.ToSkRect();
   const SkRect dst_rect = dst.ToSkRect();
   // DrawImageRectOp::RasterWithFlags (cc/paint/paint_op.cc:1456-1457).
@@ -2244,13 +2257,16 @@ void skiac_canvas_clip_rect(skiac_canvas* c_canvas,
                             float x,
                             float y,
                             float w,
-                            float h) {
+                            float h,
+                            bool aa) {
   auto rect = SkRect::MakeXYWH(x, y, w, h);
-  CANVAS_CAST->clipRect(rect, true);
+  CANVAS_CAST->clipRect(rect, aa);
 }
 
-void skiac_canvas_clip_path(skiac_canvas* c_canvas, skiac_path* c_path) {
-  CANVAS_CAST->clipPath(c_path->path(), true);
+void skiac_canvas_clip_path(skiac_canvas* c_canvas,
+                            skiac_path* c_path,
+                            bool aa) {
+  CANVAS_CAST->clipPath(c_path->path(), aa);
 }
 
 void skiac_canvas_save(skiac_canvas* c_canvas) {
@@ -2381,6 +2397,7 @@ void skiac_canvas_draw_picture_rect(skiac_canvas* c_canvas,
 
   const auto dst_rect = SkRect::MakeXYWH(dx, dy, dw, dh);
   const SkPaint* paint = PAINT_CAST;
+  const bool clip_aa = paint ? paint->isAntiAlias() : true;
 
   if (isolate) {
     // drawImage of a canvas draws its pixels: the source's own copy, clears
@@ -2404,7 +2421,7 @@ void skiac_canvas_draw_picture_rect(skiac_canvas* c_canvas,
       canvas->saveLayer(nullptr, paint);
     }
     canvas->setMatrix(ctm);
-    canvas->clipRect(dst_rect, SkClipOp::kIntersect, true /* antialias */);
+    canvas->clipRect(dst_rect, SkClipOp::kIntersect, clip_aa);
     canvas->drawPicture(picture, &matrix, nullptr);
     canvas->restore();
     canvas->restore();
@@ -2414,7 +2431,7 @@ void skiac_canvas_draw_picture_rect(skiac_canvas* c_canvas,
   canvas->save();
   // The source crop -- `drawPicture` replays the whole picture. The clip
   // would truncate a halo, so `paint` must carry no image filter.
-  canvas->clipRect(dst_rect, SkClipOp::kIntersect, true /* antialias */);
+  canvas->clipRect(dst_rect, SkClipOp::kIntersect, clip_aa);
 
   // Optimization: skip paint if it's default (SrcOver blend, full alpha, no
   // filter) This matches skia-canvas behavior
@@ -3727,7 +3744,9 @@ void skiac_image_encode_data(skiac_image* c_image,
                              float quality,
                              bool lossless,
                              bool crop_to_max_dimension,
-                             bool unpremul_readback) {
+                             bool unpremul_readback,
+                             int png_zlib_level,
+                             int png_filters) {
   auto image_ref = encodable_image(IMAGE_CAST);
   if (unpremul_readback && image_ref->alphaType() == kPremul_SkAlphaType &&
       image_ref->colorType() != kRGBA_8888_SkColorType &&
@@ -3759,7 +3778,8 @@ void skiac_image_encode_data(skiac_image* c_image,
       ok = SkJpegEncoder::Encode(&stream, pixmap,
                                  jpeg_options(static_cast<int>(quality)));
     } else if (format == int(SkEncodedImageFormat::kPNG)) {
-      ok = SkPngEncoder::Encode(&stream, pixmap, SkPngEncoder::Options());
+      ok = SkPngEncoder::Encode(&stream, pixmap,
+                                png_options(png_zlib_level, png_filters));
     } else if (format == int(SkEncodedImageFormat::kWEBP)) {
       ok = SkWebpEncoder::Encode(&stream, pixmap,
                                  webp_options(quality, lossless));
@@ -3771,8 +3791,8 @@ void skiac_image_encode_data(skiac_image* c_image,
     encoded_data = SkJpegEncoder::Encode(
         nullptr, image, jpeg_options(static_cast<int>(quality)));
   } else if (format == int(SkEncodedImageFormat::kPNG)) {
-    encoded_data =
-        SkPngEncoder::Encode(nullptr, image, SkPngEncoder::Options());
+    encoded_data = SkPngEncoder::Encode(
+        nullptr, image, png_options(png_zlib_level, png_filters));
   } else if (format == int(SkEncodedImageFormat::kWEBP)) {
     encoded_data =
         SkWebpEncoder::Encode(nullptr, image, webp_options(quality, lossless));
@@ -4599,14 +4619,16 @@ void skiac_font_collection_get_family(
 
 // register / registerFromPath of a font registered before (the same buffer
 // or path: the call returned its FontKey) is a FontFace added again: its
-// face becomes the newest under the call's name (the alias, else its own
-// family name). A font loadFontsFromDir or loadSystemFonts registered keeps
-// its place under its own names (an installed font, not a FontFace); a
-// FontFace name a call gave a file loadFontsFromDir loaded is a FontFace
-// (its web twin, RegisteredFont::WebName) and moves too (Chrome 157,
-// FontFaces "ReX" Lato, Oswald, Lato, Oswald: Oswald draws, 37.32).
+// face becomes the newest under the call's name (the alias, else the family
+// of the face the registration keeps, as the provider names the call: a
+// file replaced on disk since gives no other family). A font loadFontsFromDir
+// or loadSystemFonts registered keeps its place under its own names (an
+// installed font, not a FontFace); a FontFace name a call gave a file
+// loadFontsFromDir loaded is a FontFace (its web twin, RegisteredFont::WebName)
+// and moves too (Chrome 157, FontFaces "ReX" Lato, Oswald, Lato, Oswald: Oswald
+// draws, 37.32).
 static void RelistRegistered(skiac_font_collection* c_font_collection,
-                             uint32_t id,
+                             RegistrationKey id,
                              size_t registered,
                              const sk_sp<SkTypeface>& typeface,
                              const char* name_alias) {
@@ -4622,8 +4644,11 @@ static void RelistRegistered(skiac_font_collection* c_font_collection,
   if (name_alias) {
     name = name_alias;
   } else {
+    // The kept face; this call's read only when there is none.
+    const sk_sp<SkTypeface>& kept =
+        it->second.typeface ? it->second.typeface : typeface;
     SkString family;
-    typeface->getFamilyName(&family);
+    kept->getFamilyName(&family);
     name.assign(family.c_str(), family.size());
   }
   if (c_font_collection->system_font_ids.count(id) &&
@@ -4637,7 +4662,8 @@ uint32_t skiac_font_collection_register(
     skiac_font_collection* c_font_collection,
     const uint8_t* font,
     size_t length,
-    const char* name_alias) {
+    const char* name_alias,
+    const skiac_face_descriptors* descriptors) {
   // Installed fonts register first, as loadSystemFonts does elsewhere.
   c_font_collection->prepareLookup();
   auto typeface_data = SkData::MakeWithCopy(font, length);
@@ -4647,15 +4673,11 @@ uint32_t skiac_font_collection_register(
   }
   const size_t registered =
       c_font_collection->assets->getRegisteredFonts().size();
-  uint32_t typeface_id;
-  if (name_alias) {
-    auto alias = SkString(name_alias);
-    typeface_id = c_font_collection->assets->registerTypefaceWithTracking(
-        typeface_data, typeface, alias);
-  } else {
-    typeface_id = c_font_collection->assets->registerTypefaceWithTracking(
-        typeface_data, typeface);
-  }
+  // The registration declares the name with `descriptors` (a twin of
+  // another declaration of the same bytes gets a FontKey of its own).
+  const uint32_t typeface_id =
+      c_font_collection->assets->registerTypefaceWithTracking(
+          typeface_data, typeface, name_alias, descriptors);
   if (typeface_id) {
     RelistRegistered(c_font_collection, typeface_id, registered, typeface,
                      name_alias);
@@ -4667,7 +4689,8 @@ uint32_t skiac_font_collection_register(
 uint32_t skiac_font_collection_register_from_path(
     skiac_font_collection* c_font_collection,
     const char* font_path,
-    const char* name_alias) {
+    const char* name_alias,
+    const skiac_face_descriptors* descriptors) {
   // Installed fonts register first, as loadSystemFonts does elsewhere.
   c_font_collection->prepareLookup();
   // Use lazy loading - don't load entire file into memory
@@ -4677,27 +4700,67 @@ uint32_t skiac_font_collection_register_from_path(
   if (!typeface) {
     return 0;
   }
-
-  std::string path_str(font_path);
   const size_t registered =
       c_font_collection->assets->getRegisteredFonts().size();
-  uint32_t typeface_id;
-  if (name_alias) {
-    auto alias = SkString(name_alias);
-    typeface_id =
-        c_font_collection->assets->registerTypefaceFromPathWithTracking(
-            path_str, typeface, alias);
-  } else {
-    typeface_id =
-        c_font_collection->assets->registerTypefaceFromPathWithTracking(
-            path_str, typeface);
-  }
+  // As register: the call declares the name with `descriptors` (a twin of
+  // another declaration of the same path gets a FontKey of its own). With
+  // no owner the key is a FontKey.
+  const uint32_t typeface_id = static_cast<uint32_t>(
+      c_font_collection->assets->registerTypefaceFromPathWithTracking(
+          font_path, typeface, name_alias, descriptors));
   if (typeface_id) {
     RelistRegistered(c_font_collection, typeface_id, registered, typeface,
                      name_alias);
     c_font_collection->markCachesDirty();
   }
   return typeface_id;
+}
+
+bool skiac_font_collection_register_from_path_private(
+    skiac_font_collection* c_font_collection,
+    const char* font_path,
+    const char* name_alias,
+    const skiac_face_descriptors* descriptors,
+    uint32_t owner) {
+  if (!owner) {
+    return false;
+  }
+  // As skiac_font_collection_register_from_path, over the private
+  // registrations of `owner` only (a non-empty alias is the face's only
+  // name): the file is read now, never taken from a registration a
+  // GlobalFonts call or loadFontsFromDir made.
+  c_font_collection->prepareLookup();
+  auto typeface = MakeCanvasTypefaceFromFile(font_path);
+  if (!typeface) {
+    return false;
+  }
+  const size_t registered =
+      c_font_collection->assets->getRegisteredFonts().size();
+  const RegistrationKey typeface_id =
+      c_font_collection->assets->registerTypefaceFromPathWithTracking(
+          font_path, typeface, name_alias, descriptors, owner);
+  if (!typeface_id) {
+    return false;
+  }
+  RelistRegistered(c_font_collection, typeface_id, registered, typeface,
+                   name_alias);
+  c_font_collection->markCachesDirty();
+  return true;
+}
+
+bool skiac_font_collection_release_private(
+    skiac_font_collection* c_font_collection,
+    uint32_t owner) {
+  const std::set<RegistrationKey> removed_ids =
+      c_font_collection->assets->removePrivate(owner);
+  if (removed_ids.empty()) {
+    return false;
+  }
+  // As skiac_font_collection_unregister_batch: the setAlias entries made
+  // from them go too, and one rebuild.
+  c_font_collection->dropAliasesOf(removed_ids);
+  c_font_collection->rebuildAssets();
+  return true;
 }
 
 size_t skiac_font_collection_unregister(
@@ -4721,7 +4784,7 @@ size_t skiac_font_collection_unregister_batch(
     const uint32_t* typeface_ids,
     size_t count) {
   size_t removed_count = 0;
-  std::set<uint32_t> removed_ids;
+  std::set<RegistrationKey> removed_ids;
   for (size_t i = 0; i < count; i++) {
     if (c_font_collection->assets->removeTypeface(typeface_ids[i])) {
       removed_count++;
@@ -4742,7 +4805,7 @@ size_t skiac_font_collection_unregister_all(
   // The installed fonts loadSystemFonts turned on go too, as if registered.
   c_font_collection->prepareLookup();
   size_t removed_count = c_font_collection->assets->removeAllTypefaces();
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
   c_font_collection->disableInstalledFonts();
 #endif
   if (removed_count > 0) {
@@ -4760,7 +4823,9 @@ bool skiac_font_collection_set_alias(skiac_font_collection* c_font_collection,
   if (family[0] == '\x01' || alias[0] == '\x01') {
     return false;
   }
-  c_font_collection->prepareLookup();
+  // The faces registered since the last lookup: MatchNamedFamily reuses the
+  // family's cached FontFaces (font_face_cores) until a flush.
+  c_font_collection->flushCachesIfDirty();
   auto style = SkFontStyle();
   // The face text naming `family` uses now: a name registered over an
   // installed family gives its registered face (font_families.cpp
@@ -4818,7 +4883,7 @@ void skiac_font_collection_enable_installed_fonts(
     skiac_font_collection* c_font_collection,
     const char* const* paths,
     size_t count) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
   c_font_collection->enableInstalledFonts(paths, count);
 #else
   (void)c_font_collection;
@@ -4831,7 +4896,7 @@ uint32_t skiac_font_collection_load_installed_fonts(
     skiac_font_collection* c_font_collection,
     const char* const* paths,
     size_t count) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
   c_font_collection->enableInstalledFonts(paths, count);
   return c_font_collection->registerInstalledFonts();
 #else
@@ -4869,7 +4934,7 @@ int skiac_typeface_get_variation_design_position(
     return 0;
   }
 
-  c_font_collection->prepareLookup();
+  c_font_collection->flushCachesIfDirty();
   auto font_style = SkFontStyle(weight, width, (SkFontStyle::Slant)slant);
   // The face text naming the family draws (a name registered over an
   // installed family gives its registered faces).
@@ -4927,7 +4992,7 @@ bool skiac_font_has_variations(skiac_font_collection* c_font_collection,
     return false;
   }
 
-  c_font_collection->prepareLookup();
+  c_font_collection->flushCachesIfDirty();
   auto font_style = SkFontStyle(weight, width, (SkFontStyle::Slant)slant);
   // The face text naming the family draws (MatchNamedFamily).
   auto typeface = MatchNamedFamily(c_font_collection, family_name, font_style);
@@ -5172,7 +5237,10 @@ void skiac_svg_text_to_path(const uint8_t* data,
   auto svg_root = svg_dom->getRoot();
   auto svg_container_size =
       svg_root->intrinsicSize(SkSVGLengthContext(SkSize::Make(0, 0)));
+  // As RenderPrepared: the drop the text's instances ask for, after it.
+  c_collection->layout_font_arguments.clear();
   WriteTextToPath(svg_dom.get(), svg_container_size, output_data);
+  c_collection->dropCachesIfOverBudget();
 }
 
 void skiac_svg_text_to_path_prepared(const uint8_t* data,
@@ -5197,7 +5265,9 @@ void skiac_svg_text_to_path_prepared(const uint8_t* data,
   SkSize size;
   RootSize(root, root_len, &size);
   svg_dom->setContainerSize(size);
+  c_collection->layout_font_arguments.clear();
   WriteTextToPath(svg_dom.get(), size, output_data);
+  c_collection->dropCachesIfOverBudget();
 }
 
 bool skiac_svg_root_size(const char* root,

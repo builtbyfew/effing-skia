@@ -647,7 +647,7 @@ mod tests {
   fn laid_out_paragraph(text: &str) -> Paragraph {
     {
       let fonts = get_font().unwrap();
-      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None);
+      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None, None);
     }
     let content = vec![ContentPart::Text(text.to_owned())];
     let mut paragraph = Paragraph::with_content(content, style("Lato")).unwrap();
@@ -720,7 +720,11 @@ mod tests {
   fn draw_paragraph_charges_a_text_blob_typeface_once() {
     {
       let fonts = get_font().unwrap();
-      fonts.register_from_path("__test__/fonts/COLR-v1.ttf", Some("Colrv1".to_owned()));
+      fonts.register_from_path(
+        "__test__/fonts/COLR-v1.ttf",
+        Some("Colrv1".to_owned()),
+        None,
+      );
     }
     let content = vec![ContentPart::Text("abc".to_owned())];
     let mut paragraph = Paragraph::with_content(content, style("Colrv1")).unwrap();

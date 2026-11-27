@@ -36,6 +36,22 @@ pub mod ffi {
 
   #[repr(C)]
   #[derive(Copy, Clone, Debug)]
+  pub struct skiac_face_range {
+    pub min: f32,
+    pub max: f32,
+    pub from_auto: bool,
+  }
+
+  #[repr(C)]
+  #[derive(Copy, Clone, Debug)]
+  pub struct skiac_face_descriptors {
+    pub weight: skiac_face_range,
+    pub slope: skiac_face_range,
+    pub width: skiac_face_range,
+  }
+
+  #[repr(C)]
+  #[derive(Copy, Clone, Debug)]
   pub struct skiac_w_memory_stream {
     _unused: [u8; 0],
   }
@@ -401,6 +417,7 @@ pub mod ffi {
     pub size_adjust_value: f32,
     pub size_adjust_from_font: bool,
     pub lcd_text: bool,
+    pub antialias: u8,
   }
 
   #[repr(C)]
@@ -584,6 +601,12 @@ pub mod ffi {
       modifiers = "+bundle,+whole-archive"
     )
   )]
+  #[cfg_attr(
+    target_os = "windows",
+    link(name = "skiac_fontations", kind = "static")
+  )]
+  // Skia's DirectWrite font manager and scaler on Windows (build.rs).
+  #[cfg_attr(target_os = "windows", link(name = "skiac_dwrite", kind = "static"))]
   unsafe extern "C" {
 
     pub fn skiac_clear_all_cache();
@@ -842,9 +865,16 @@ pub mod ffi {
 
     pub fn skiac_canvas_get_device_clip_bounds(canvas: *mut skiac_canvas, ltrb: *mut i32) -> bool;
 
-    pub fn skiac_canvas_clip_rect(canvas: *mut skiac_canvas, x: f32, y: f32, w: f32, h: f32);
+    pub fn skiac_canvas_clip_rect(
+      canvas: *mut skiac_canvas,
+      x: f32,
+      y: f32,
+      w: f32,
+      h: f32,
+      aa: bool,
+    );
 
-    pub fn skiac_canvas_clip_path(canvas: *mut skiac_canvas, path: *mut skiac_path);
+    pub fn skiac_canvas_clip_path(canvas: *mut skiac_canvas, path: *mut skiac_path, aa: bool);
 
     pub fn skiac_canvas_save(canvas: *mut skiac_canvas);
 
@@ -1325,6 +1355,8 @@ pub mod ffi {
       lossless: bool,
       crop_to_max_dimension: bool,
       unpremul_readback: bool,
+      png_zlib_level: i32,
+      png_filters: i32,
     );
 
     pub fn skiac_image_read_pixels(
@@ -1538,13 +1570,28 @@ pub mod ffi {
       font: *const u8,
       length: usize,
       maybe_name_alias: *const c_char,
+      descriptors: *const skiac_face_descriptors,
     ) -> u32;
 
     pub fn skiac_font_collection_register_from_path(
       c_font_collection: *mut skiac_font_collection,
       font_path: *const c_char,
       maybe_name_alias: *const c_char,
+      descriptors: *const skiac_face_descriptors,
     ) -> u32;
+
+    pub fn skiac_font_collection_register_from_path_private(
+      c_font_collection: *mut skiac_font_collection,
+      font_path: *const c_char,
+      maybe_name_alias: *const c_char,
+      descriptors: *const skiac_face_descriptors,
+      owner: u32,
+    ) -> bool;
+
+    pub fn skiac_font_collection_release_private(
+      c_font_collection: *mut skiac_font_collection,
+      owner: u32,
+    ) -> bool;
 
     pub fn skiac_font_collection_register_system_font(
       c_font_collection: *mut skiac_font_collection,
@@ -2503,6 +2550,45 @@ impl TextRendering {
   }
 }
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Antialias {
+  #[default]
+  Default = 0,
+  None = 1,
+  Gray = 2,
+  Subpixel = 3,
+}
+
+impl Antialias {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::Default => "default",
+      Self::None => "none",
+      Self::Gray => "gray",
+      Self::Subpixel => "subpixel",
+    }
+  }
+
+  pub fn is_enabled(&self) -> bool {
+    !matches!(self, Self::None)
+  }
+}
+
+impl FromStr for Antialias {
+  type Err = ();
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s {
+      "default" => Ok(Self::Default),
+      "none" => Ok(Self::None),
+      "gray" => Ok(Self::Gray),
+      "subpixel" => Ok(Self::Subpixel),
+      _ => Err(()),
+    }
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum SkEncodedImageFormat {
@@ -3314,7 +3400,7 @@ pub(crate) fn unit_from_u8(v: u8) -> f32 {
 #[repr(transparent)]
 pub struct Canvas(pub(crate) *mut ffi::skiac_canvas);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FontVariation {
   pub tag: u32,
   pub value: f32,
@@ -3345,6 +3431,7 @@ pub struct TextSettings {
   /// alpha:false raster canvas, a source-over draw and no `ctx.filter` layer.
   /// skia-c checks the transform and size (text_raster.cpp UsesLcdText).
   pub lcd_text: bool,
+  pub antialias: Antialias,
 }
 
 impl TextSettings {
@@ -3424,6 +3511,7 @@ impl TextSettings {
       size_adjust_value,
       size_adjust_from_font,
       lcd_text: self.lcd_text,
+      antialias: self.antialias as u8,
     };
     f(&request)
   }
@@ -3708,15 +3796,15 @@ impl Canvas {
     }
   }
 
-  pub fn set_clip_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
+  pub fn set_clip_rect(&mut self, x: f32, y: f32, w: f32, h: f32, aa: bool) {
     unsafe {
-      ffi::skiac_canvas_clip_rect(self.0, x, y, w, h);
+      ffi::skiac_canvas_clip_rect(self.0, x, y, w, h, aa);
     }
   }
 
-  pub fn set_clip_path(&mut self, path: &Path) {
+  pub fn set_clip_path(&mut self, path: &Path, aa: bool) {
     unsafe {
-      ffi::skiac_canvas_clip_path(self.0, path.0);
+      ffi::skiac_canvas_clip_path(self.0, path.0, aa);
     }
   }
 
@@ -6546,7 +6634,12 @@ impl FontCollection {
     names
   }
 
-  pub fn register<S: AsRef<str>>(&self, font: &[u8], maybe_name_alias: Option<S>) -> Option<u32> {
+  pub fn register<S: AsRef<str>>(
+    &self,
+    font: &[u8],
+    maybe_name_alias: Option<S>,
+    descriptors: Option<&ffi::skiac_face_descriptors>,
+  ) -> Option<u32> {
     let name_alias_ptr = match maybe_name_alias {
       Some(name_alias) => match CString::new(name_alias.as_ref()) {
         Ok(cstring) => cstring.into_raw(),
@@ -6555,8 +6648,13 @@ impl FontCollection {
       None => ptr::null_mut(),
     };
     let result = unsafe {
-      let typeface_id =
-        ffi::skiac_font_collection_register(self.0, font.as_ptr(), font.len(), name_alias_ptr);
+      let typeface_id = ffi::skiac_font_collection_register(
+        self.0,
+        font.as_ptr(),
+        font.len(),
+        name_alias_ptr,
+        descriptors.map_or(ptr::null(), |d| d as *const _),
+      );
       if typeface_id > 0 {
         Some(typeface_id)
       } else {
@@ -6584,6 +6682,7 @@ impl FontCollection {
     &self,
     font_path: &str,
     maybe_name_alias: Option<S>,
+    descriptors: Option<&ffi::skiac_face_descriptors>,
   ) -> Option<u32> {
     if let Ok(fp) = CString::new(font_path) {
       let name_alias_ptr = match maybe_name_alias {
@@ -6594,8 +6693,12 @@ impl FontCollection {
         None => ptr::null_mut(),
       };
       let result = unsafe {
-        let typeface_id =
-          ffi::skiac_font_collection_register_from_path(self.0, fp.as_ptr(), name_alias_ptr);
+        let typeface_id = ffi::skiac_font_collection_register_from_path(
+          self.0,
+          fp.as_ptr(),
+          name_alias_ptr,
+          descriptors.map_or(ptr::null(), |d| d as *const _),
+        );
         if typeface_id > 0 {
           Some(typeface_id)
         } else {
@@ -6612,6 +6715,49 @@ impl FontCollection {
     } else {
       None
     }
+  }
+
+  /// node-canvas registerFont: [`Self::register_from_path`] as a private
+  /// registration of the N-API env token `owner` (not 0), except that a
+  /// non-empty alias is the face's only name (the embedded family is not
+  /// listed) and its key is no FontKey: only the same owner's calls share
+  /// it, and it goes with [`Self::release_private`].
+  /// Returns whether it was registered.
+  pub fn register_from_path_private(
+    &self,
+    font_path: &str,
+    maybe_name_alias: Option<&str>,
+    descriptors: Option<&ffi::skiac_face_descriptors>,
+    owner: u32,
+  ) -> bool {
+    let Ok(fp) = CString::new(font_path) else {
+      return false;
+    };
+    // Unlike register_from_path, an alias with a NUL is refused: it would
+    // otherwise be no alias and list the face under the file's own family.
+    let alias = match maybe_name_alias {
+      Some(name) => match CString::new(name) {
+        Ok(alias) => Some(alias),
+        Err(_) => return false,
+      },
+      None => None,
+    };
+    unsafe {
+      ffi::skiac_font_collection_register_from_path_private(
+        self.0,
+        fp.as_ptr(),
+        alias.as_ref().map_or(ptr::null(), |a| a.as_ptr()),
+        descriptors.map_or(ptr::null(), |d| d as *const _),
+        owner,
+      )
+    }
+  }
+
+  /// node-canvas deregisterAllFonts: removes the private registrations of
+  /// `owner` whole, as [`Self::unregister_batch`] removes fonts. Returns
+  /// whether any went.
+  pub fn release_private(&self, owner: u32) -> bool {
+    unsafe { ffi::skiac_font_collection_release_private(self.0, owner) }
   }
 
   pub fn unregister(&self, typeface_id: u32) -> bool {
@@ -6898,13 +7044,14 @@ impl SkImage {
   /// ignored for PNG, and for a lossless WebP). `crop_to_max_dimension`:
   /// encode the top-left part the encoder can hold. `unpremul_readback`:
   /// encode toDataURL's unpremultiplied readback of a float16 image.
-  pub fn encode_data(
+  pub(crate) fn encode_data(
     &self,
     format: SkEncodedImageFormat,
     quality: f32,
     lossless: bool,
     crop_to_max_dimension: bool,
     unpremul_readback: bool,
+    png: crate::encoding::PngOptions,
   ) -> Option<SkiaDataRef> {
     unsafe {
       let mut data = ffi::skiac_sk_data {
@@ -6920,6 +7067,8 @@ impl SkImage {
         lossless,
         crop_to_max_dimension,
         unpremul_readback,
+        png.zlib_level.map_or(-1, i32::from),
+        png.filters.map_or(-1, i32::from),
       );
 
       if data.ptr.is_null() {
@@ -7335,6 +7484,7 @@ mod text_line_tests {
       size_adjust: FontSizeAdjust::None,
       optical_sizing: FontOpticalSizing::Auto,
       lcd_text: false,
+      antialias: Antialias::default(),
     }
   }
 
@@ -7364,7 +7514,7 @@ mod text_line_tests {
     );
     assert!(
       collection
-        .register_from_path(lato, Some("CacheLato"))
+        .register_from_path(lato, Some("CacheLato"), None)
         .is_some()
     );
     let settings = settings();
@@ -7406,7 +7556,11 @@ mod text_line_tests {
       ("NotoSansDevanagari-subset.ttf", "DropDeva"),
     ] {
       let path = format!("{}/__test__/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
-      assert!(collection.register_from_path(&path, Some(name)).is_some());
+      assert!(
+        collection
+          .register_from_path(&path, Some(name), None)
+          .is_some()
+      );
     }
     collection
   }

@@ -20,7 +20,7 @@ const FONT_PATH: &str = "/system/fonts";
 #[cfg(target_os = "macos")]
 const FONT_PATH: &str = "/System/Library/Fonts/";
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 static FONT_DIR: OnceLock<napi::Result<u32>> = OnceLock::new();
 
 static GLOBAL_FONT_COLLECTION: OnceLock<Mutex<FontCollection>> = OnceLock::new();
@@ -186,21 +186,265 @@ fn set_system_font_renderer(enabled: bool) -> napi::Result<()> {
   Ok(())
 }
 
+/// What a FontFaceDescriptors object declares.
+enum Declared {
+  /// A descriptor that does not parse: the FontFace's status is "error".
+  Invalid,
+  /// Every field `auto` (also after the calc reset): the same capabilities
+  /// as no descriptors, so none are stored (`describes()` stays false).
+  Auto,
+  Explicit(crate::sk::ffi::skiac_face_descriptors),
+}
+
+/// The descriptors `register` declares, parsed as Chrome's FontFace does
+/// (FontFace::SetPropertyFromString, then GetFontSelectionCapabilities): a
+/// missing member is the IDL default "normal". A weight math function
+/// outside [1, 1000] makes every descriptor `auto` (`normal_capabilities`).
+fn face_descriptors(weight: Option<&str>, style: Option<&str>, stretch: Option<&str>) -> Declared {
+  use crate::font::{
+    FaceWeight, parse_font_face_stretch, parse_font_face_style, parse_font_face_weight,
+  };
+  use crate::sk::ffi::{skiac_face_descriptors, skiac_face_range};
+  let (Some(weight), Some(slope), Some(width)) = (
+    parse_font_face_weight(weight.unwrap_or("normal")),
+    parse_font_face_style(style.unwrap_or("normal")),
+    parse_font_face_stretch(stretch.unwrap_or("normal")),
+  ) else {
+    return Declared::Invalid;
+  };
+  let FaceWeight::Range(weight) = weight else {
+    return Declared::Auto;
+  };
+  if weight.from_auto && slope.from_auto && width.from_auto {
+    return Declared::Auto;
+  }
+  let range = |r: crate::font::FaceRange| skiac_face_range {
+    min: r.min,
+    max: r.max,
+    from_auto: r.from_auto,
+  };
+  Declared::Explicit(skiac_face_descriptors {
+    weight: range(weight),
+    slope: range(slope),
+    width: range(width),
+  })
+}
+
+/// FontFaceDescriptors (font_face_descriptors.idl): `descriptors` must be an
+/// object, else a TypeError, as the FontFace constructor throws. Its members
+/// are DOMStrings, converted in IDL order (stretch, style, weight); a
+/// conversion may throw (a Symbol). A number weight is ToString'd too (`700.5`
+/// is "700.5", `1e21` "1e+21").
+fn read_face_descriptors(
+  env: napi::sys::napi_env,
+  value: napi::sys::napi_value,
+) -> napi::Result<Declared> {
+  if !matches!(
+    webidl::type_of(env, value)?,
+    ValueType::Object | ValueType::Function
+  ) {
+    return Err(webidl::type_error(
+      env,
+      "The provided value is not of type 'FontFaceDescriptors'.",
+    ));
+  }
+  let prefix =
+    |key: &str| format!("Failed to read the '{key}' property from 'FontFaceDescriptors': ");
+  let read = |key: &str| -> napi::Result<Option<String>> {
+    match webidl::member(env, value, key)? {
+      Some(member) => Ok(Some(webidl::to_dom_string(env, member, &prefix(key))?)),
+      None => Ok(None),
+    }
+  };
+  let stretch = read("stretch")?;
+  let style = read("style")?;
+  let weight = read("weight")?;
+  Ok(face_descriptors(
+    weight.as_deref(),
+    style.as_deref(),
+    stretch.as_deref(),
+  ))
+}
+
+/// The registerFont env token of each N-API env (node-canvas.js), by the
+/// env's address, and the last token issued. Each registerFont call makes a
+/// private registration of its env's token (RegisteredFont::owner in
+/// skia_c.hpp): only registerFont calls of the same env share it, and no
+/// GlobalFonts call or loadFontsFromDir ever reuses it.
+/// deregisterAllFonts removes the env's private registrations whole, as
+/// GlobalFonts.remove removes one (the token stays for the env's later
+/// calls). When the env goes (a worker exits, or the process), its
+/// registrations stay, as in node-canvas: a worker that preloads fonts does
+/// not change the main thread's text when it exits. An env cleanup hook only
+/// drops the entry, so the exited env's registrations stay private (no
+/// FontKey names them, and no later env's deregisterAllFonts removes them);
+/// only GlobalFonts.removeAll does. A later env never reuses them (its
+/// token is new), so each worker that calls registerFont and exits without
+/// deregisterAllFonts adds its faces for the life of the process: a pool
+/// that recycles workers should deregister in each worker (README). Every node-canvas.js instance of one env
+/// shares the token (a Jest-style reload of the package keeps the .node
+/// binding, so its env). An entry lives from the first registerFont of its
+/// env to the env's cleanup, so an address reused by a later env gets a new
+/// token; a token is never issued twice. Lock order: the font lock, then
+/// this.
+#[cfg_attr(test, allow(dead_code))]
+static ENV_OWNERS: Mutex<(u32, Vec<(usize, u32)>)> = Mutex::new((0, Vec::new()));
+
+#[cfg_attr(test, allow(dead_code))]
+fn env_owners<'a>() -> MutexGuard<'a, (u32, Vec<(usize, u32)>)> {
+  ENV_OWNERS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The env cleanup hook: the env `key` goes. Its entry goes, so a later env
+/// at the same address gets a new token, never this one; its private
+/// registrations stay registered (ENV_OWNERS).
+#[cfg_attr(test, allow(dead_code))]
+fn forget_env_owner(key: usize) {
+  env_owners().1.retain(|(env, _)| *env != key);
+}
+
+/// node-canvas registerFont (node-canvas.js): registers the file as a
+/// private registration of this env (ENV_OWNERS), made as
+/// `GlobalFonts.registerFromPath(font_path, name_alias, { weight, style })`
+/// makes a path it never saw, except that a family name (`name_alias`) is
+/// its only name, as `new FontFace(family, ...)` in Chrome: the file's own
+/// (embedded) family is listed only for family '' or that same name.
+/// Behavior change from 1.2.0, where registerFont also made the face
+/// usable under its embedded family. Only this env's registerFont calls
+/// share it: the same declaration again reuses it (and makes it the
+/// newest). `weight` and `style` are read each on its own with the
+/// @font-face grammar: one it rejects counts as not given (`auto`), as
+/// node-canvas ignores unknown values instead of throwing, and the other is
+/// kept. Returns whether the file was registered. Not API: reachable through
+/// js-binding, as `_toNumber` is.
+// Only JS calls it: the lib test build registers no napi exports.
+#[cfg_attr(test, allow(dead_code))]
+#[napi(js_name = "_registerFontFace")]
+pub fn register_font_face(
+  env: &Env,
+  font_path: String,
+  name_alias: Option<String>,
+  weight: String,
+  style: String,
+) -> napi::Result<bool> {
+  use crate::font::{parse_font_face_style, parse_font_face_weight};
+  let maybe_name_alias = name_alias.filter(|s| !s.is_empty());
+  let weight = match parse_font_face_weight(&weight) {
+    Some(_) => weight.as_str(),
+    None => "auto",
+  };
+  let style = match parse_font_face_style(&style) {
+    Some(_) => style.as_str(),
+    None => "auto",
+  };
+  // Both parse, and the stretch is the IDL default "normal", as
+  // registerFromPath reads `{ weight, style }`: never Invalid.
+  let descriptors = match face_descriptors(Some(weight), Some(style), None) {
+    Declared::Explicit(descriptors) => Some(descriptors),
+    Declared::Auto | Declared::Invalid => None,
+  };
+  let font = get_font().map_err(into_napi_error)?;
+  let key = env.raw() as usize;
+  let mut owners = env_owners();
+  // The first registerFont of this env issues its token and adds the hook
+  // that drops the entry when the env goes (before anything is registered,
+  // so a hook that cannot be added registers nothing).
+  let owner = match owners.1.iter().find(|(env, _)| *env == key) {
+    Some((_, owner)) => *owner,
+    None => {
+      // No token left.
+      let Some(owner) = owners.0.checked_add(1) else {
+        return Ok(false);
+      };
+      env.add_env_cleanup_hook(key, forget_env_owner)?;
+      owners.0 = owner;
+      owners.1.push((key, owner));
+      owner
+    }
+  };
+  drop(owners);
+  if !font.register_from_path_private(
+    font_path.as_str(),
+    maybe_name_alias.as_deref(),
+    descriptors.as_ref(),
+    owner,
+  ) {
+    return Ok(false);
+  }
+  note_font_collection_mutation();
+  Ok(true)
+}
+
+/// node-canvas deregisterAllFonts (node-canvas.js): removes this env's
+/// private registrations (ENV_OWNERS) whole, as GlobalFonts.remove removes
+/// one, the setAlias entries made from them included. GlobalFonts
+/// registrations and loadFontsFromDir fonts are never touched. Returns
+/// whether anything went. Not API: reachable through js-binding, as
+/// `_toNumber` is.
+// Only JS calls it: the lib test build registers no napi exports.
+#[cfg_attr(test, allow(dead_code))]
+#[napi(js_name = "_releaseFontFaces")]
+pub fn release_font_faces(env: &Env) -> napi::Result<bool> {
+  let font = get_font().map_err(into_napi_error)?;
+  let key = env.raw() as usize;
+  // The entry stays: its hook is still added, and the env's later calls
+  // register with the same token.
+  let Some(owner) = env_owners()
+    .1
+    .iter()
+    .find(|(env, _)| *env == key)
+    .map(|(_, owner)| *owner)
+  else {
+    return Ok(false);
+  };
+  let changed = font.release_private(owner);
+  if changed {
+    note_font_collection_mutation();
+  }
+  Ok(changed)
+}
+
 #[napi(js_name = "GlobalFonts")]
 #[allow(non_snake_case)]
 pub mod global_fonts {
   use napi::bindgen_prelude::*;
 
-  #[cfg(not(target_os = "macos"))]
+  #[cfg(not(any(target_os = "macos", target_os = "windows")))]
   use super::FONT_DIR;
   use super::{FontKey, get_font, into_napi_error};
 
+  /// `descriptors`: the face's @font-face descriptors
+  /// (super::read_face_descriptors); an invalid one registers nothing and
+  /// gives null. Without them, or all `auto`, none.
+  ///
+  /// `font_data` (a Uint8Array) is read after the descriptors convert, as
+  /// FontFace::Create takes the source's ByteSpan() after its bindings
+  /// converted them: their getters may detach or shrink its buffer, which
+  /// then gives the bytes left (none for a detached one).
   #[napi]
-  pub fn register(font_data: &[u8], name_alias: Option<String>) -> Result<Option<FontKey>> {
+  pub fn register(
+    env: &Env,
+    #[napi(ts_arg_type = "Buffer")] font_data: Unknown,
+    name_alias: Option<String>,
+    descriptors: Option<Unknown>,
+  ) -> Result<Option<FontKey>> {
+    // The `&[u8]` conversion checks the type first, as before; its slice is
+    // not kept, since JavaScript runs before the data is read.
+    unsafe { <&[u8]>::from_napi_value(env.raw(), font_data.raw())? };
     let maybe_name_alias = name_alias.filter(|s| !s.is_empty());
+    let descriptors = match descriptors {
+      Some(d) => match super::read_face_descriptors(env.raw(), d.raw())? {
+        super::Declared::Invalid => return Ok(None),
+        super::Declared::Auto => None,
+        super::Declared::Explicit(descriptors) => Some(descriptors),
+      },
+      None => None,
+    };
+    // No JavaScript runs from here until the bytes are copied.
+    let font_data = unsafe { <&[u8]>::from_napi_value(env.raw(), font_data.raw())? };
     let font = get_font().map_err(into_napi_error)?;
     let result = font
-      .register(font_data, maybe_name_alias)
+      .register(font_data, maybe_name_alias, descriptors.as_ref())
       .map(|typeface_id| FontKey { typeface_id });
     if result.is_some() {
       super::note_font_collection_mutation();
@@ -213,6 +457,8 @@ pub mod global_fonts {
   /// Fonts registered via path are deduplicated by the path string itself, not by file contents.
   /// This means:
   /// - Registering the same path multiple times returns the existing registration
+  ///   (a call declaring a name it already has with other descriptors makes a
+  ///   twin with a FontKey of its own, as register does for the same bytes)
   /// - If the font file is modified on disk and `registerFromPath` is called again,
   ///   the new contents will NOT be loaded - it returns the existing registration
   ///
@@ -226,18 +472,31 @@ pub mod global_fonts {
   ///
   /// Note: The `register()` function (buffer-based) deduplicates by content hash,
   /// so it will detect when font data has changed.
+  ///
+  /// `descriptors`: as register's. A file loadFontsFromDir loaded takes
+  /// none (an installed font): with them, the call registers the file again.
   // TODO: Do file extensions in font_path need to be converted to lowercase?
   // Windows and macOS are case-insensitive, Linux is not.
   // See: https://github.com/Brooooooklyn/canvas/actions/runs/5893418006/job/15985737723
   #[napi]
   pub fn register_from_path(
+    env: &Env,
     font_path: String,
     name_alias: Option<String>,
+    descriptors: Option<Unknown>,
   ) -> Result<Option<FontKey>> {
     let maybe_name_alias = name_alias.filter(|s| !s.is_empty());
+    let descriptors = match descriptors {
+      Some(d) => match super::read_face_descriptors(env.raw(), d.raw())? {
+        super::Declared::Invalid => return Ok(None),
+        super::Declared::Auto => None,
+        super::Declared::Explicit(descriptors) => Some(descriptors),
+      },
+      None => None,
+    };
     let font = get_font().map_err(into_napi_error)?;
     let result = font
-      .register_from_path(font_path.as_str(), maybe_name_alias)
+      .register_from_path(font_path.as_str(), maybe_name_alias, descriptors.as_ref())
       .map(|typeface_id| FontKey { typeface_id });
     if result.is_some() {
       super::note_font_collection_mutation();
@@ -251,20 +510,20 @@ pub mod global_fonts {
     Ok(serde_json::to_vec(&font.get_families())?.into())
   }
 
-  /// Registers the installed fonts and returns how many. On macOS they are
-  /// the faces CoreText lists (Chrome's font set there), user fonts included,
-  /// with the system font renderer; else face 0 of each file in
-  /// /System/Library/Fonts.
+  /// Registers the installed fonts and returns how many. On macOS and Windows
+  /// they are the faces CoreText / DirectWrite list (Chrome's font set there),
+  /// user fonts included, with the system font renderer; else the files under
+  /// the OS and user font folders.
   #[napi]
   pub fn load_system_fonts() -> Result<u32> {
     super::effing::wait_for_startup_fonts(); // effing
-    // The installed fonts follow the renderer mode, so macOS asks each time
-    // (they are listed once per mode).
-    #[cfg(target_os = "macos")]
+    // The installed fonts follow the renderer mode, so macOS and Windows ask
+    // each time (they are listed once per mode).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
       super::load_system_fonts()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
       FONT_DIR
         .get_or_init(super::load_system_fonts)
@@ -274,10 +533,10 @@ pub mod global_fonts {
     }
   }
 
-  /// What index.js runs at startup, with the user font folders. macOS lists
-  /// the installed fonts at the first font lookup instead, as listing them
-  /// takes about 150 ms; elsewhere this is `loadSystemFonts`, then
-  /// `loadFontsFromDir` for each folder.
+  /// What index.js runs at startup, with the user font folders. macOS and
+  /// Windows list the installed fonts at the first font lookup instead;
+  /// elsewhere this is `loadSystemFonts`, then `loadFontsFromDir` for each
+  /// folder.
   #[napi]
   pub fn enable_system_fonts(user_font_dirs: Option<Vec<String>>) -> Result<()> {
     // effing: index.js loads the startup fonts with
@@ -382,17 +641,17 @@ pub mod global_fonts {
   }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn load_system_fonts() -> napi::Result<u32> {
   load_fonts_from_dir(FONT_PATH, true) // effing: as system fonts
 }
 
 /// What `GlobalFonts.enableSystemFonts` does: the system fonts, then the user
-/// font folders as system fonts. macOS lists the installed fonts at the first
-/// font lookup instead. effing: the startup load
+/// font folders as system fonts. macOS and Windows list the installed fonts
+/// at the first font lookup instead. effing: the startup load
 /// (`loadSystemFontsInBackground`) runs it, so it doesn't wait for that load.
 fn enable_system_fonts(user_font_dirs: Vec<String>) -> napi::Result<()> {
-  #[cfg(target_os = "macos")]
+  #[cfg(any(target_os = "macos", target_os = "windows"))]
   {
     let mut files = font_files(FONT_PATH);
     for dir in &user_font_dirs {
@@ -403,7 +662,7 @@ fn enable_system_fonts(user_font_dirs: Vec<String>) -> napi::Result<()> {
     note_font_collection_mutation();
     Ok(())
   }
-  #[cfg(not(target_os = "macos"))]
+  #[cfg(not(any(target_os = "macos", target_os = "windows")))]
   {
     FONT_DIR
       .get_or_init(load_system_fonts)
@@ -424,6 +683,22 @@ fn load_system_fonts() -> napi::Result<u32> {
   files.extend(font_files("/Library/Fonts"));
   if let Some(home) = std::env::var_os("HOME") {
     files.extend(font_files(path::Path::new(&home).join("Library/Fonts")));
+  }
+  let font_collection = lock_font_collection().map_err(into_napi_error)?; // effing
+  let count = font_collection.load_installed_fonts(&files);
+  note_font_collection_mutation();
+  Ok(count)
+}
+
+#[cfg(target_os = "windows")]
+fn load_system_fonts() -> napi::Result<u32> {
+  // DirectWrite's installed fonts also include the per-user font folder,
+  // which index.js passes at startup.
+  let mut files = font_files(FONT_PATH);
+  if let Some(home) = std::env::var_os("USERPROFILE") {
+    files.extend(font_files(
+      path::Path::new(&home).join("AppData/Local/Microsoft/Windows/Fonts"),
+    ));
   }
   let font_collection = lock_font_collection().map_err(into_napi_error)?; // effing
   let count = font_collection.load_installed_fonts(&files);
@@ -452,7 +727,7 @@ fn is_font_file(p: &path::Path) -> bool {
 }
 
 /// The font files under `dir`, in the order load_fonts_from_dir visits them.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn font_files<P: AsRef<path::Path>>(dir: P) -> Vec<String> {
   let mut files = Vec::new();
   if let Ok(dir) = read_dir(dir) {
@@ -462,8 +737,10 @@ fn font_files<P: AsRef<path::Path>>(dir: P) -> Vec<String> {
         if meta.is_dir() {
           files.extend(font_files(p));
         } else if is_font_file(&p) {
-          // A symlink (e.g. /Library/Fonts/Arial Unicode.ttf) names its
-          // target, so a file linked from two folders is listed once.
+          // A symlink on macOS (e.g. /Library/Fonts/Arial Unicode.ttf) names
+          // its target, so a file linked from two folders is listed once.
+          // Skip canonicalize on Windows, where it adds a `\\?\` prefix.
+          #[cfg(target_os = "macos")]
           let p = std::fs::canonicalize(&p).unwrap_or(p);
           if let Some(p) = p.to_str() {
             files.push(p.to_owned());

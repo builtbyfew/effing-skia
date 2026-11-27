@@ -8,12 +8,13 @@ unsafe extern "C" {
     paint: *mut ffi::skiac_paint,
     backdrop: *mut ffi::skiac_image_filter,
     bounds: *const f32,
+    aa: bool,
   );
   fn effing_group_fits_content(
     paint: *mut ffi::skiac_paint,
     matrix: *mut ffi::skiac_matrix,
   ) -> bool;
-  fn effing_canvas_clip_bounds(canvas: *mut ffi::skiac_canvas, bounds: *const f32);
+  fn effing_canvas_clip_bounds(canvas: *mut ffi::skiac_canvas, bounds: *const f32, aa: bool);
   fn effing_group_content_bounds(
     paint: *mut ffi::skiac_paint,
     matrix: *mut ffi::skiac_matrix,
@@ -44,8 +45,8 @@ impl Paint {
 
 impl Canvas {
   /// Clips to `bounds` (x, y, w, h in local space).
-  pub fn clip_bounds(&mut self, bounds: [f32; 4]) {
-    unsafe { effing_canvas_clip_bounds(self.0, bounds.as_ptr()) }
+  pub fn clip_bounds(&mut self, bounds: [f32; 4], aa: bool) {
+    unsafe { effing_canvas_clip_bounds(self.0, bounds.as_ptr(), aa) }
   }
 
   /// Composites a group's `content`, recorded in device space, with `paint`
@@ -68,6 +69,7 @@ impl Canvas {
     paint: Option<&Paint>,
     backdrop: Option<&ImageFilter>,
     bounds: Option<[f32; 4]>,
+    aa: bool,
   ) {
     unsafe {
       effing_canvas_save_group(
@@ -75,6 +77,7 @@ impl Canvas {
         paint.map_or(std::ptr::null_mut(), |p| p.0),
         backdrop.map_or(std::ptr::null_mut(), |f| f.0),
         bounds.as_ref().map_or(std::ptr::null(), |b| b.as_ptr()),
+        aa,
       );
     }
   }
@@ -89,6 +92,9 @@ pub struct GroupLayer {
   pub bounds: Option<[f32; 4]>,
   /// The transform `bounds` are in.
   pub transform: Matrix,
+  /// Whether the `bounds` clip is anti-aliased (ctx.antialias when the group
+  /// opened).
+  pub aa: bool,
   /// The bounds of the clip in effect when the group opened, in device
   /// space, as `[left, top, right, bottom]`: the content's composite can't
   /// reach beyond them.
@@ -103,7 +109,7 @@ impl GroupLayer {
   /// clipped like the first recording clipped it.
   pub fn reopen(&self, canvas: &mut Canvas) {
     self.restore_opening_state(canvas);
-    canvas.save_group(self.paint.as_ref(), None, self.bounds);
+    canvas.save_group(self.paint.as_ref(), None, self.bounds, self.aa);
   }
 
   /// Like `reopen` for a group drawn on its own (see `begin_content`): the
@@ -147,7 +153,7 @@ impl GroupLayer {
   pub fn begin_content(&self, canvas: &mut Canvas) {
     canvas.set_transform(&self.transform);
     if let Some(bounds) = self.bounds {
-      canvas.clip_bounds(bounds);
+      canvas.clip_bounds(bounds, self.aa);
     }
   }
 }

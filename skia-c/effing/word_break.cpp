@@ -133,6 +133,9 @@ class WordBreakUnicode final : public SkUnicode {
   bool isSpace(SkUnichar c) override { return fIcu->isSpace(c); }
   bool isTabulation(SkUnichar c) override { return fIcu->isTabulation(c); }
   bool isHardBreak(SkUnichar c) override { return fIcu->isHardBreak(c); }
+  bool isDefaultIgnorable(SkUnichar c) override {
+    return fIcu->isDefaultIgnorable(c);
+  }
   bool isEmoji(SkUnichar c) override { return fIcu->isEmoji(c); }
   bool isEmojiComponent(SkUnichar c) override {
     return fIcu->isEmojiComponent(c);

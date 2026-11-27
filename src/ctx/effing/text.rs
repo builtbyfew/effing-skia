@@ -65,8 +65,12 @@ mod tests {
   fn ctx(font: &str, text_rendering: TextRendering) -> Context {
     {
       let fonts = get_font().unwrap();
-      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None);
-      fonts.register_from_path("__test__/fonts/COLR-v1.ttf", Some("Colrv1".to_owned()));
+      fonts.register_from_path::<String>("__test__/fonts/Lato-Regular.ttf", None, None);
+      fonts.register_from_path(
+        "__test__/fonts/COLR-v1.ttf",
+        Some("Colrv1".to_owned()),
+        None,
+      );
     }
     let mut ctx = Context::new(64, 64, ColorSpace::default()).expect("raster context");
     ctx.set_font(font).unwrap();

@@ -42,22 +42,23 @@ export function setTextRenderer(renderer: TextRenderer): void
 export function getTextRenderer(): TextRenderer
 
 interface CanvasRenderingContext2D
-  extends CanvasCompositing,
-  CanvasDrawPath,
-  CanvasFillStrokeStyles,
-  CanvasFilters,
-  CanvasImageData,
-  CanvasImageSmoothing,
-  CanvasPath,
-  CanvasPathDrawingStyles,
-  CanvasRect,
-  CanvasSettings,
-  CanvasShadowStyles,
-  CanvasState,
-  CanvasText,
-  CanvasTextDrawingStyles,
-  CanvasTransform,
-  CanvasPDFAnnotations { }
+  extends
+    CanvasCompositing,
+    CanvasDrawPath,
+    CanvasFillStrokeStyles,
+    CanvasFilters,
+    CanvasImageData,
+    CanvasImageSmoothing,
+    CanvasPath,
+    CanvasPathDrawingStyles,
+    CanvasRect,
+    CanvasSettings,
+    CanvasShadowStyles,
+    CanvasState,
+    CanvasText,
+    CanvasTextDrawingStyles,
+    CanvasTransform,
+    CanvasPDFAnnotations {}
 
 interface CanvasState {
   isContextLost(): boolean
@@ -289,13 +290,7 @@ type CanvasFontStretch =
   | 'ultra-condensed'
   | 'ultra-expanded'
 type CanvasFontVariantCaps =
-  | 'all-petite-caps'
-  | 'all-small-caps'
-  | 'normal'
-  | 'petite-caps'
-  | 'small-caps'
-  | 'titling-caps'
-  | 'unicase'
+  'all-petite-caps' | 'all-small-caps' | 'normal' | 'petite-caps' | 'small-caps' | 'titling-caps' | 'unicase'
 type CanvasTextAlign = 'center' | 'end' | 'left' | 'right' | 'start'
 type CanvasTextBaseline = 'alphabetic' | 'bottom' | 'hanging' | 'ideographic' | 'middle' | 'top'
 type CanvasTextRendering = 'auto' | 'geometricPrecision' | 'optimizeLegibility' | 'optimizeSpeed'
@@ -311,7 +306,6 @@ interface CanvasTextDrawingStyles {
   textBaseline: CanvasTextBaseline
   textRendering: CanvasTextRendering
   wordSpacing: string
-  fontVariationSettings: string
   lang: string
 }
 
@@ -533,7 +527,7 @@ type OmitNeverOfMatrix = OmitMatrixMethod[keyof OmitMatrixMethod]
 
 export const DOMMatrix: {
   prototype: DOMMatrix
-  new(init?: string | number[]): DOMMatrix
+  new (init?: string | number[]): DOMMatrix
   fromFloat32Array(array32: Float32Array): DOMMatrix
   fromFloat64Array(array64: Float64Array): DOMMatrix
   fromMatrix(other?: DOMMatrixInit): DOMMatrix
@@ -560,7 +554,7 @@ export interface DOMRect extends DOMRectReadOnly {
 
 export const DOMRect: {
   prototype: DOMRect
-  new(x?: number, y?: number, width?: number, height?: number): DOMRect
+  new (x?: number, y?: number, width?: number, height?: number): DOMRect
   fromRect(other?: DOMRectInit): DOMRect
 }
 
@@ -582,7 +576,7 @@ export interface DOMPoint extends DOMPointReadOnly {
 
 export const DOMPoint: {
   prototype: DOMPoint
-  new(x?: number, y?: number, z?: number, w?: number): DOMPoint
+  new (x?: number, y?: number, z?: number, w?: number): DOMPoint
   fromPoint(other?: DOMPointInit): DOMPoint
 }
 
@@ -744,8 +738,27 @@ export interface SKRSContext2D extends CanvasRenderingContext2D {
   getContextAttributes(): Required<CanvasRenderingContext2DSettings>
   getTransform(): DOMMatrix
 
+  /**
+   * Non-standard (`node-canvas` extension): controls raster antialiasing for
+   * subsequent drawing operations. Default `"default"`.
+   *
+   * - `"none"`: disables antialiasing on raster shapes, clips, text, and bitmap
+   *   image borders (vector SVG/PDF output and SVG `Image` content are unaffected).
+   * - `"default" | "gray" | "subpixel"`: keeps antialiasing enabled.
+   *
+   * Invalid values are silently ignored.
+   */
+  antialias: 'default' | 'none' | 'gray' | 'subpixel'
+
   letterSpacing: string
   wordSpacing: string
+  /**
+   * Non-standard: Chrome's CanvasRenderingContext2D has no such attribute.
+   * Behaves like the CSS `font-variation-settings` property in Chrome.
+   * Invalid values are ignored. Default `"normal"`.
+   * @experimental
+   */
+  fontVariationSettings: string
   /**
    * Non-standard: Chrome's CanvasRenderingContext2D has no such attribute.
    * Behaves like the CSS `font-feature-settings` property in Chrome.
@@ -872,6 +885,33 @@ export interface ImageMetadata {
 export interface JpegEncodeOptions extends ImageMetadata {
   /** 0-100; a larger value is 100. Default 92. */
   quality?: number
+}
+
+/**
+ * libpng row filter flags for {@link PngEncodeOptions.filters}, combinable with `|`.
+ * Use `None` (`0x08`) to disable row filtering; default is `All` (`0xF8`).
+ */
+export enum PngFilter {
+  None = 0x08,
+  Sub = 0x10,
+  Up = 0x20,
+  Avg = 0x40,
+  Paeth = 0x80,
+  All = 0xf8,
+}
+
+export interface PngEncodeOptions extends ImageMetadata {
+  /**
+   * zlib compression level, an integer from 0 (uncompressed, fastest) to 9 (smallest).
+   * Out-of-range, fractional and non-number values use the default (6).
+   */
+  compressionLevel?: number
+  /**
+   * libpng row filter bitmask (see {@link PngFilter}): a non-zero OR of
+   * `0x08` (none), `0x10` (sub), `0x20` (up), `0x40` (average), `0x80` (Paeth).
+   * Any other value (including `0`) uses the default (`0xF8`, all filters).
+   */
+  filters?: number
 }
 
 /** GIF encoding configuration for single-frame encoding */
@@ -1059,20 +1099,20 @@ export class Canvas {
   getContext(contextType: '2d', contextAttributes?: ContextAttributes): SKRSContext2D
   encodeSync(format: 'webp' | 'jpeg', quality?: number): Buffer
   encodeSync(format: 'jpeg', options: JpegEncodeOptions): Buffer
-  encodeSync(format: 'png', options?: ImageMetadata): Buffer
+  encodeSync(format: 'png', options?: PngEncodeOptions): Buffer
   encodeSync(format: 'avif', cfg?: AvifConfig | number): Buffer
   encodeSync(format: 'gif', quality?: number): Buffer
   encodeSync(format: 'qoi'): Buffer // effing: lossless, see docs/effing.md
   encode(format: 'webp' | 'jpeg', quality?: number): Promise<Buffer>
   encode(format: 'jpeg', options: JpegEncodeOptions): Promise<Buffer>
-  encode(format: 'png', options?: ImageMetadata): Promise<Buffer>
+  encode(format: 'png', options?: PngEncodeOptions): Promise<Buffer>
   encode(format: 'avif', cfg?: AvifConfig | number): Promise<Buffer>
   encode(format: 'gif', quality?: number): Promise<Buffer>
   encode(format: 'qoi'): Promise<Buffer> // effing
-  /** Writes no image metadata; use `encode` and stream the Buffer for that. */
+  /** Writes no image metadata and uses default PNG options; use `encode` and stream the Buffer for those. */
   encodeStream(format: 'webp' | 'jpeg', quality?: number): ReadableStream<Buffer>
   encodeStream(format: 'png'): ReadableStream<Buffer>
-  toBuffer(mime: 'image/png', options?: ImageMetadata): Buffer
+  toBuffer(mime: 'image/png', options?: PngEncodeOptions): Buffer
   toBuffer(mime: 'image/jpeg' | 'image/webp', quality?: number): Buffer
   /**
    * JPEG with metadata, at quality 92: toBuffer does not read a quality from an
@@ -1137,12 +1177,77 @@ export interface FontVariationAxis {
   hidden: boolean
 }
 
+/**
+ * A font's `@font-face` descriptors, as `new FontFace(name, data, descriptors)`
+ * takes them. An invalid value fails the registration (FontFace's status
+ * 'error'); unknown keys are ignored. Values are kept in quarter steps, as
+ * Chrome keeps them (300.7 is 300.5).
+ */
+export interface FontFaceDescriptors {
+  /**
+   * A FontFace weight, as a CSS string or a number (converted with
+   * `String()` first): `normal` (default), `bold`, `auto`, a number from 1
+   * to 1000, a `calc()` number, or a range `<a> <b>` (a reversed one is
+   * swapped). A `calc()` weight outside 1-1000 makes every descriptor
+   * `auto`, as Chrome does. `bolder`, `lighter` and any other value are
+   * invalid.
+   */
+  weight?: number | 'normal' | 'bold' | 'auto' | `${number}` | `${number} ${number}` | (string & {})
+  /**
+   * `normal` (default), `italic`, `oblique`, `oblique <angle>`,
+   * `oblique <angle> <angle>` (a range; a reversed one is swapped) or
+   * `auto`, in any ASCII case. An angle is a CSS angle such as `10deg`,
+   * `0.2rad` or `calc(5deg)`; a written number from -90 to 90. A value that
+   * is not a string is converted with `String()` first (`null` is 'null',
+   * invalid).
+   */
+  style?: 'normal' | 'italic' | 'oblique' | 'auto' | `oblique ${string}`
+  /**
+   * `normal` (default), `auto`, one of the eight stretch keywords
+   * (`ultra-condensed`, `extra-condensed`, `condensed`, `semi-condensed`,
+   * `semi-expanded`, `expanded`, `extra-expanded`, `ultra-expanded`), a
+   * non-negative CSS percentage or `calc()` percentage, or a two-value
+   * percentage range `<a> <b>` (a reversed one is swapped), in any ASCII
+   * case. `normal` and `auto` keep the font's own `wdth` axis unclamped;
+   * `100%` and the other keywords/percentages clamp it. A value that is not
+   * a string is converted with `String()` first (`null` is 'null',
+   * invalid).
+   */
+  stretch?: CanvasFontStretch | 'auto' | `${number}%` | `${number}% ${number}%` | (string & {})
+}
+
 interface IGlobalFonts {
   readonly families: { family: string; styles: { weight: number; width: string; style: string }[] }[]
-  // return FontKey if succeeded, null if failed
-  register(font: Buffer, nameAlias?: string): FontKey | null
-  // absolute path - returns FontKey if succeeded, null if failed
-  registerFromPath(path: string, nameAlias?: string): FontKey | null
+  /**
+   * The FontKey, or null if it failed (also for invalid `descriptors`, which
+   * registers nothing; a `descriptors` that is not an object, or a Symbol
+   * value, throws a TypeError). `descriptors`: the font's descriptors under
+   * this name; a text font list uses them where this name matches the font.
+   * Without them (or with every one `auto`), `auto`: the face is picked as
+   * `normal` (weight 400, upright, width 100%), and the font's own weight,
+   * style and width axis ranges are kept for variations (no clamping).
+   * Faces of one family are chosen by their descriptors, as with
+   * `@font-face`. Without descriptors every face is `auto` and the newest
+   * face wins; give `{ weight, style, stretch }` for each file of a family,
+   * or use `loadFontsFromDir` (installed fonts match by the file's own style).
+   * A font registered under a generic keyword (`serif`, `sans-serif`, ...):
+   * for that keyword written unquoted, each face is matched by the file's
+   * own style and descriptors are ignored (bold is made from weight 600, as
+   * for other registered fonts). Only the quoted name (`"serif"`) follows
+   * the descriptor and newest-face rule.
+   */
+  register(font: Buffer, nameAlias?: string, descriptors?: FontFaceDescriptors): FontKey | null
+  /**
+   * Absolute path. The FontKey, or null if it failed. `descriptors`: as
+   * `register`'s; a file `loadFontsFromDir` loaded is an installed font and
+   * takes none, so a call with them registers the file again. Faces of one
+   * family are chosen as for `register`: without descriptors the newest
+   * face wins. Exceptions: an unquoted generic keyword name, and a file
+   * `loadFontsFromDir` already loaded, given again with no descriptors and
+   * no other alias, which stays an installed font and keeps matching by the
+   * file's own style.
+   */
+  registerFromPath(path: string, nameAlias?: string, descriptors?: FontFaceDescriptors): FontKey | null
   has(name: string): boolean
   loadFontsFromDir(path: string): number
   /**

@@ -109,6 +109,27 @@ test('bounds clip anti-aliased, like ctx.clip()', (t) => {
   }
 })
 
+test("bounds clip hard-edged under ctx.antialias = 'none', like ctx.clip()", (t) => {
+  for (const opacity of [0.5, 1]) {
+    const ctx = createCanvas(60, 60).getContext('2d')
+    ctx.antialias = 'none'
+    ctx.translate(30, 30)
+    ctx.rotate(0.3)
+    ctx.translate(-30, -30)
+    beginGroup(ctx, { opacity, bounds: [10.5, 10.5, 40, 40] })
+    ctx.fillRect(0, 0, 60, 60)
+    endGroup(ctx)
+    const data = ctx.getImageData(0, 0, 60, 60).data
+    const alphas = new Set<number>()
+    for (let i = 3; i < data.length; i += 4) alphas.add(data[i])
+    t.deepEqual(
+      [...alphas].sort((a, b) => a - b),
+      [0, Math.round(255 * opacity)],
+      `opacity ${opacity}`,
+    )
+  }
+})
+
 test("reading the canvas mid-group keeps the group's options", (t) => {
   const ctx = createCanvas(100, 100).getContext('2d')
   ctx.fillStyle = 'black'

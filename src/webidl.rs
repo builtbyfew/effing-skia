@@ -168,7 +168,7 @@ pub(crate) fn to_js_string(env: sys::napi_env, value: sys::napi_value) -> Result
 }
 
 /// Dictionary member `key`; None when it is undefined. Runs getters.
-fn member(
+pub(crate) fn member(
   env: sys::napi_env,
   dictionary: sys::napi_value,
   key: &str,
@@ -221,6 +221,7 @@ sites! {
   SetLineDashOffset: set "lineDashOffset" on "CanvasRenderingContext2D";
   CtxSetLineDash: execute "setLineDash" on "CanvasRenderingContext2D";
   SetGlobalCompositeOperation: set "globalCompositeOperation" on "CanvasRenderingContext2D";
+  SetAntialias: set "antialias" on "CanvasRenderingContext2D";
   SetImageSmoothingQuality: set "imageSmoothingQuality" on "CanvasRenderingContext2D";
   SetLineCap: set "lineCap" on "CanvasRenderingContext2D";
   SetLineJoin: set "lineJoin" on "CanvasRenderingContext2D";
@@ -236,6 +237,7 @@ sites! {
   SetTextBaseline: set "textBaseline" on "CanvasRenderingContext2D";
   SetFontStretch: set "fontStretch" on "CanvasRenderingContext2D";
   SetFontKerning: set "fontKerning" on "CanvasRenderingContext2D";
+  SetFontVariationSettings: set "fontVariationSettings" on "CanvasRenderingContext2D";
   SetFontFeatureSettings: set "fontFeatureSettings" on "CanvasRenderingContext2D";
   SetFontVariantLigatures: set "fontVariantLigatures" on "CanvasRenderingContext2D";
   SetFontVariantNumeric: set "fontVariantNumeric" on "CanvasRenderingContext2D";

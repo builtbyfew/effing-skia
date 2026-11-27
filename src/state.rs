@@ -6,16 +6,15 @@ use super::{
   font::{ComputedFont, FontStretch},
   pattern::Pattern,
   sk::{
-    FilterQuality, FontKerning, FontVariantCaps, Paint, TextAlign, TextBaseline, TextDirection,
-    TextRendering,
+    Antialias, FilterQuality, FontKerning, FontVariantCaps, Paint, TextAlign, TextBaseline,
+    TextDirection, TextRendering,
   },
 };
 
 use crate::font_props::{
   FontFeatureSettings, FontOpticalSizing, FontSizeAdjust, FontVariantLigatures, FontVariantNumeric,
-  FontVariantPosition,
+  FontVariantPosition, FontVariationSettings,
 };
-use crate::sk::FontVariation;
 
 pub const BLINK_IDENTITY: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
@@ -61,12 +60,12 @@ pub struct Context2dRenderingState {
   pub line_dash_offset: f32,
   pub image_smoothing_enabled: bool,
   pub image_smoothing_quality: FilterQuality,
+  pub antialias: Antialias,
   pub paint: Paint,
   pub font_style: ComputedFont,
-  pub font_variation_settings: String,
-  pub font_variations: Vec<FontVariation>,
-  /// The six non-standard CSS font properties, parsed; the getters serialize
+  /// Non-standard CSS font properties, parsed; the getters serialize
   /// them (`font_props.rs`). `ctx.font` keeps them.
+  pub font_variation_settings: FontVariationSettings,
   pub font_feature_settings: FontFeatureSettings,
   pub font_variant_ligatures: FontVariantLigatures,
   pub font_variant_numeric: FontVariantNumeric,
@@ -135,10 +134,10 @@ impl Default for Context2dRenderingState {
       line_dash_offset: 0.0,
       image_smoothing_enabled: true,
       image_smoothing_quality: FilterQuality::default(),
+      antialias: Antialias::Default,
       paint: Paint::default(),
       font_style: ComputedFont::default(),
-      font_variation_settings: "normal".to_owned(),
-      font_variations: vec![],
+      font_variation_settings: FontVariationSettings::default(),
       font_feature_settings: FontFeatureSettings::default(),
       font_variant_ligatures: FontVariantLigatures::default(),
       font_variant_numeric: FontVariantNumeric::default(),

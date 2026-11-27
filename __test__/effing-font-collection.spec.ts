@@ -1,4 +1,4 @@
-import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -66,6 +66,29 @@ test.serial('register() registers every face of a font collection, under one key
   t.true(GlobalFonts.remove(key!))
   t.deepEqual(styles('Effing Collection'), [])
   t.deepEqual(styles('Effing Collection Serif'), [])
+})
+
+// A rebuild (GlobalFonts.remove of another font) registers the faces again in
+// the order they were first registered, so the first of equal faces stays
+// the one that draws.
+test.serial("a rebuild keeps a collection's faces in order under an alias of a later face's family", (t) => {
+  // A copy: a path registered before is registered again, not afresh.
+  const dir = mkdtempSync(join(tmpdir(), 'effing-collection-'))
+  tmpDirs.push(dir)
+  const path = join(dir, 'collection.ttc')
+  copyFileSync(COLLECTION, path)
+  const key = GlobalFonts.registerFromPath(path, 'Effing Collection Serif')
+  t.truthy(key)
+  const paragraph = () =>
+    new Paragraph(TEXT, { fontFamily: 'Effing Collection Serif', fontSize: 20 }).layout(1000).lines[0].width
+  // The collection's first face comes before its Serif face. (Placed before
+  // the tests that leave faces of the family registered.)
+  const before = paragraph()
+  near(t, before, REGULAR)
+  const other = GlobalFonts.registerFromPath(LATO, 'Rebuild Trigger')
+  t.true(GlobalFonts.remove(other!))
+  near(t, paragraph(), before, 'after a rebuild')
+  t.true(GlobalFonts.remove(key!))
 })
 
 // The weights Chrome's canvas takes in `ctx.font`, any number from 1 to
@@ -210,12 +233,53 @@ test.serial('loadSystemFontsFromDir loads every face of a font collection as a s
   near(t, measure('20px "Effing Collection Serif"'), SERIF)
 
   // The collection registered from its path is a registered font from then
-  // on, every face of it.
+  // on, every face of it, in a Paragraph. Canvas text (and so the shaper
+  // engine) keeps it an installed font, as upstream does from 1.2.0 for a
+  // file loaded from a font folder and registered again with no alias, so
+  // the family's FontFace (the Lato registered under its name) still draws
+  // there.
   const collection = GlobalFonts.registerFromPath(path)
   t.truthy(collection)
-  near(t, measure('bold 20px "Effing Collection"'), BOLD)
+  const bold = new Paragraph(TEXT, { fontFamily: 'Effing Collection', fontSize: 20, fontWeight: 700 })
+  near(t, bold.layout(1000).lines[0].width, process.env.EFFING_PARAGRAPH_ENGINE === 'shaper' ? REGULAR : BOLD)
+  near(t, measure('bold 20px "Effing Collection"'), REGULAR)
   t.true(GlobalFonts.remove(lato!))
   t.deepEqual(styles('Effing Collection'), ['400 normal', '700 normal'])
   near(t, measure('bold 20px "Effing Collection"'), BOLD)
   near(t, measure('20px "Effing Collection Serif"'), SERIF)
+})
+
+// A collection's faces are FontFaces as new as the call that registered
+// them, the later faces too: the newest face of a weight draws it.
+test.serial("a collection's later faces are as new as its first", (t) => {
+  const harmattan = GlobalFonts.registerFromPath(join(__dirname, 'fonts', 'Harmattan-Regular.ttf'), 'Newest Brand', {
+    weight: 'bold',
+  })
+  const key = GlobalFonts.registerFromPath(COLLECTION, 'Newest Brand')
+  t.truthy(harmattan)
+  t.truthy(key)
+  near(t, measure('bold 20px "Newest Brand"'), BOLD)
+  t.true(GlobalFonts.remove(key!))
+  t.true(GlobalFonts.remove(harmattan!))
+})
+
+// A collection from a font folder registered again under an alias lists the
+// web twin of its first face there (upstream's FontFace of a preloaded
+// file), which keeps that face's file style like the collection's others.
+test.serial('a font-folder collection registered under an alias keeps each face its style', (t) => {
+  const buffer = readFileSync(COLLECTION)
+  // Swap the first two faces in the TTC header: the 700 face comes first.
+  const first = buffer.readUInt32BE(12)
+  buffer.writeUInt32BE(buffer.readUInt32BE(16), 12)
+  buffer.writeUInt32BE(first, 16)
+  const dir = mkdtempSync(join(tmpdir(), 'effing-collection-'))
+  tmpDirs.push(dir)
+  const path = join(dir, 'bold-first.ttc')
+  writeFileSync(path, buffer)
+  t.is(GlobalFonts.loadFontsFromDir(dir), 1)
+  const key = GlobalFonts.registerFromPath(path, 'Preloaded Collection')
+  t.truthy(key)
+  near(t, measure('20px "Preloaded Collection"'), REGULAR)
+  near(t, measure('bold 20px "Preloaded Collection"'), BOLD)
+  t.true(GlobalFonts.remove(key!))
 })

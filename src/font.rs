@@ -187,9 +187,223 @@ enum SpecifiedSize {
 }
 
 /// FontSelectionValue(double): truncated to a quarter, saturating to int16.
-fn font_selection_value(v: f64) -> f32 {
+pub(crate) fn font_selection_value(v: f64) -> f32 {
   let raw = (v * FONT_SELECTION_STEP).clamp(i16::MIN as f64, i16::MAX as f64);
   (raw.trunc() / FONT_SELECTION_STEP) as f32
+}
+
+/// The lengths a FontFace descriptor resolves against
+/// (FontFace::EnsureLengthResolver): the initial style's media values, a
+/// 16px font without font data (MediaValues em, ex, ch), no viewport.
+fn font_face_lengths() -> Lengths {
+  let initial = FontRelativeUnits::fallback(ROOT_FONT_SIZE);
+  Lengths {
+    em: ROOT_FONT_SIZE,
+    ..FontParseContext {
+      parent: initial,
+      root: initial,
+      system: false,
+    }
+    .lengths()
+  }
+}
+
+/// A `@font-face` range descriptor as FontFace::GetFontSelectionCapabilities
+/// keeps it (FontSelectionRange): [min, max] in FontSelectionValue steps.
+/// `from_auto`: kSetFromAuto (`auto`, min = max = the normal value).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FaceRange {
+  pub min: f32,
+  pub max: f32,
+  pub from_auto: bool,
+}
+
+impl FaceRange {
+  fn explicit(min: f32, max: f32) -> Self {
+    FaceRange {
+      min,
+      max,
+      from_auto: false,
+    }
+  }
+
+  fn auto(normal: f32) -> Self {
+    FaceRange {
+      min: normal,
+      max: normal,
+      from_auto: true,
+    }
+  }
+
+  /// A two-value range: "User agents must swap the computed value of the
+  /// startpoint and endpoint of the range in order to forbid decreasing
+  /// ranges" (GetFontSelectionCapabilities compares the doubles).
+  fn swapped(start: f64, end: f64) -> Self {
+    let (min, max) = if start < end {
+      (start, end)
+    } else {
+      (end, start)
+    };
+    Self::explicit(font_selection_value(min), font_selection_value(max))
+  }
+}
+
+/// A `@font-face` weight descriptor's capabilities.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum FaceWeight {
+  Range(FaceRange),
+  /// A math function outside [1, 1000]: GetFontSelectionCapabilities
+  /// returns `normal_capabilities`, which drops the style too.
+  ResetAll,
+}
+
+/// The `@font-face` style descriptor (ConsumeFontStyle in
+/// kCSSFontFaceRuleMode, then GetFontSelectionCapabilities): `normal` {0, 0},
+/// `italic` and `oblique` {14, 14}, `auto` {0, 0} from auto, `oblique <a>`
+/// {a, a}, `oblique <a> <b>` the range. None when it is invalid.
+pub(crate) fn parse_font_face_style(input: &str) -> Option<FaceRange> {
+  let mut p = Parser::new(input);
+  p.set_nested_block_limit(u8::MAX);
+  let p = &mut p;
+  let keyword = p.try_parse(|p| match next_ident(p).as_deref() {
+    Some("normal") => Ok(FaceRange::explicit(0.0, 0.0)),
+    Some("auto") => Ok(FaceRange::auto(0.0)),
+    _ => Err(()),
+  });
+  let range = match keyword {
+    Ok(range) => range,
+    Err(()) => {
+      let lengths = font_face_lengths();
+      match next_ident(p)?.as_str() {
+        "italic" => FaceRange::explicit(ITALIC_SLOPE, ITALIC_SLOPE),
+        "oblique" => match consume_oblique_angle(p, &lengths) {
+          Err(()) => FaceRange::explicit(ITALIC_SLOPE, ITALIC_SLOPE),
+          Ok(Err(())) => return None,
+          // One angle (0 is `normal`, {0, 0} too).
+          Ok(Ok(start)) if p.is_exhausted() => {
+            let slope = font_selection_value(start);
+            FaceRange::explicit(slope, slope)
+          }
+          Ok(Ok(start)) => match consume_oblique_angle(p, &lengths) {
+            Ok(Ok(end)) => FaceRange::swapped(start, end),
+            _ => return None,
+          },
+        },
+        _ => return None,
+      }
+    }
+  };
+  p.is_exhausted().then_some(range)
+}
+
+/// The `@font-face` weight descriptor (ConsumeFontWeight in
+/// kCSSFontFaceRuleMode, then GetFontSelectionCapabilities): `normal`,
+/// `bold`, `auto` (400 from auto), one number or a range. None when it is
+/// invalid (`bolder` and `lighter` included).
+pub(crate) fn parse_font_face_weight(input: &str) -> Option<FaceWeight> {
+  let mut p = Parser::new(input);
+  p.set_nested_block_limit(u8::MAX);
+  let p = &mut p;
+  let keyword = p.try_parse(|p| match next_ident(p).as_deref() {
+    Some("normal") => Ok(FaceRange::explicit(400.0, 400.0)),
+    Some("bold") => Ok(FaceRange::explicit(700.0, 700.0)),
+    Some("auto") => Ok(FaceRange::auto(400.0)),
+    _ => Err(()),
+  });
+  let weight = match keyword {
+    Ok(range) => FaceWeight::Range(range),
+    Err(()) => {
+      let lengths = font_face_lengths();
+      let start = consume_face_weight_value(p, &lengths)?;
+      if p.is_exhausted() {
+        // `float weight_value`, then the [1, 1000] check.
+        let value = start as f32;
+        if !(1.0..=1000.0).contains(&value) {
+          FaceWeight::ResetAll
+        } else {
+          let weight = font_selection_value(value.into());
+          FaceWeight::Range(FaceRange::explicit(weight, weight))
+        }
+      } else {
+        let end = consume_face_weight_value(p, &lengths)?;
+        // Only `from < 1` and `to > 1000`, before the swap.
+        if start < 1.0 || end > 1000.0 {
+          FaceWeight::ResetAll
+        } else {
+          FaceWeight::Range(FaceRange::swapped(start, end))
+        }
+      }
+    }
+  };
+  p.is_exhausted().then_some(weight)
+}
+
+/// ConsumeFontWeight's ConsumeNumber (kNonNegative): a number literal in
+/// [1, 1000], or a <number> math function, not range checked here
+/// (computed, NaN 0, then clamped to 0 and up).
+fn consume_face_weight_value<'i>(p: &mut Parser<'i>, lengths: &Lengths) -> Option<f64> {
+  if let Ok(node) = p.try_parse(|p| consume_math(p, true, |c| c == Category::Number)) {
+    return Some(compute(&node, lengths).max(0.0));
+  }
+  let t = next_token(p).ok()?;
+  match t.token {
+    Token::Number { .. } if (1.0..=1000.0).contains(&t.value) => Some(t.value),
+    _ => None,
+  }
+}
+
+/// The `@font-face` stretch descriptor (ConsumeFontStretch in
+/// kCSSFontFaceRuleMode, then GetFontSelectionCapabilities): `normal` and
+/// `auto` (100 from auto), the eight stretch keywords, a non-negative
+/// percentage or a percentage range. None when it is invalid.
+pub(crate) fn parse_font_face_stretch(input: &str) -> Option<FaceRange> {
+  let mut p = Parser::new(input);
+  p.set_nested_block_limit(u8::MAX);
+  let p = &mut p;
+  let keyword = p.try_parse(|p| match next_ident(p).as_deref() {
+    Some("normal" | "auto") => Ok(FaceRange::auto(100.0)),
+    Some("ultra-condensed") => Ok(FaceRange::explicit(50.0, 50.0)),
+    Some("extra-condensed") => Ok(FaceRange::explicit(62.5, 62.5)),
+    Some("condensed") => Ok(FaceRange::explicit(75.0, 75.0)),
+    Some("semi-condensed") => Ok(FaceRange::explicit(87.5, 87.5)),
+    Some("semi-expanded") => Ok(FaceRange::explicit(112.5, 112.5)),
+    Some("expanded") => Ok(FaceRange::explicit(125.0, 125.0)),
+    Some("extra-expanded") => Ok(FaceRange::explicit(150.0, 150.0)),
+    Some("ultra-expanded") => Ok(FaceRange::explicit(200.0, 200.0)),
+    _ => Err(()),
+  });
+  let range = match keyword {
+    Ok(range) => range,
+    Err(()) => {
+      let lengths = font_face_lengths();
+      let start = consume_face_stretch_value(p, &lengths)?;
+      if p.is_exhausted() {
+        // Blink converts a single computed percentage to float before
+        // quarter-step quantization (GetFontSelectionCapabilities), while
+        // range endpoints stay f64.
+        let width = font_selection_value((start as f32).into());
+        FaceRange::explicit(width, width)
+      } else {
+        let end = consume_face_stretch_value(p, &lengths)?;
+        FaceRange::swapped(start, end)
+      }
+    }
+  };
+  p.is_exhausted().then_some(range)
+}
+
+/// ConsumeFontStretch's ConsumePercent (kNonNegative): a non-negative
+/// percentage literal, or a <percentage> math function (computed, NaN 0,
+/// then clamped to 0 and up).
+fn consume_face_stretch_value<'i>(p: &mut Parser<'i>, lengths: &Lengths) -> Option<f64> {
+  if let Ok(node) = p.try_parse(|p| consume_math(p, true, |c| c == Category::Percent)) {
+    return Some(compute(&node, lengths).max(0.0));
+  }
+  let t = next_token(p).ok()?;
+  match t.token {
+    Token::Percentage { .. } if t.value >= 0.0 => Some(t.value),
+    _ => None,
+  }
 }
 
 fn next_ident<'i>(p: &mut Parser<'i>) -> Option<String> {
@@ -284,40 +498,42 @@ fn compute(node: &Node, lengths: &Lengths) -> f64 {
   if v.is_nan() { 0.0 } else { v }
 }
 
+/// ConsumeFontStyle's ConsumeAngle, in degrees: Err when there is no angle
+/// (nothing consumed), Ok(Err) for a literal outside [-90, 90] on its
+/// written number (IsAngleWithinLimits; a math function is not limited).
+fn consume_oblique_angle<'i>(p: &mut Parser<'i>, lengths: &Lengths) -> Result<Result<f64, ()>, ()> {
+  p.try_parse(|p| {
+    // ConsumeMathFunctionAngle parses without percentages.
+    if let Ok(node) = p.try_parse(|p| consume_math(p, false, |c| c == Category::Angle)) {
+      return Ok(Ok(compute(&node, lengths)));
+    }
+    let t = next_token(p)?;
+    match (t.token, t.unit) {
+      (Token::Dimension { .. }, Some(unit @ (Unit::Deg | Unit::Rad | Unit::Grad | Unit::Turn))) => {
+        if !(-90.0..=90.0).contains(&t.value) {
+          return Ok(Err(()));
+        }
+        Ok(Ok(
+          Literal {
+            value: t.value,
+            unit,
+          }
+          .degrees(),
+        ))
+      }
+      _ => Err(()),
+    }
+  })
+}
+
 /// ConsumeFontStyle after `italic` or `oblique`: the slope in degrees and the
 /// keyword, or None when the angle is invalid (which fails the shorthand).
 fn consume_font_style<'i>(p: &mut Parser<'i>, lengths: &Lengths) -> Option<(f32, StyleKeyword)> {
   match next_ident(p)?.as_str() {
     "italic" => Some((ITALIC_SLOPE, StyleKeyword::Italic)),
     "oblique" => {
-      // An optional <angle>: a literal one is limited to [-90, 90] on its
-      // written number (IsAngleWithinLimits), and 0 is `normal`.
-      let angle = p.try_parse(|p| -> Result<Result<f64, ()>, ()> {
-        // ConsumeMathFunctionAngle parses without percentages.
-        if let Ok(node) = p.try_parse(|p| consume_math(p, false, |c| c == Category::Angle)) {
-          return Ok(Ok(compute(&node, lengths)));
-        }
-        let t = next_token(p)?;
-        match (t.token, t.unit) {
-          (
-            Token::Dimension { .. },
-            Some(unit @ (Unit::Deg | Unit::Rad | Unit::Grad | Unit::Turn)),
-          ) => {
-            if !(-90.0..=90.0).contains(&t.value) {
-              return Ok(Err(()));
-            }
-            Ok(Ok(
-              Literal {
-                value: t.value,
-                unit,
-              }
-              .degrees(),
-            ))
-          }
-          _ => Err(()),
-        }
-      });
-      match angle {
+      // An optional <angle>; 0 is `normal`.
+      match consume_oblique_angle(p, lengths) {
         Err(()) => Some((ITALIC_SLOPE, StyleKeyword::Oblique)),
         Ok(Err(())) => None,
         Ok(Ok(0.0)) => Some((0.0, StyleKeyword::Normal)),
@@ -832,6 +1048,123 @@ mod tests {
     assert_eq!(parse_font_stretch("CONDENSED"), None);
     assert_eq!(parse_font_stretch("50%"), None);
     assert_eq!(parse_font_stretch("ultra"), None);
+  }
+
+  #[test]
+  fn font_face_stretch() {
+    // normal and auto keep from_auto: true (wdth unclamped).
+    for input in ["normal", "NORMAL", "auto", "Auto", " normal "] {
+      assert_eq!(
+        parse_font_face_stretch(input),
+        Some(FaceRange::auto(100.0)),
+        "{input}"
+      );
+    }
+
+    // All 8 non-normal keywords (case-insensitive, from_auto: false).
+    for (input, width) in [
+      ("ultra-condensed", 50.0),
+      ("ULTRA-CONDENSED", 50.0),
+      ("extra-condensed", 62.5),
+      ("Extra-Condensed", 62.5),
+      ("condensed", 75.0),
+      ("CONDENSED", 75.0),
+      ("semi-condensed", 87.5),
+      ("Semi-Condensed", 87.5),
+      ("semi-expanded", 112.5),
+      ("SEMI-EXPANDED", 112.5),
+      ("expanded", 125.0),
+      ("Expanded", 125.0),
+      ("extra-expanded", 150.0),
+      ("EXTRA-EXPANDED", 150.0),
+      ("ultra-expanded", 200.0),
+      ("Ultra-Expanded", 200.0),
+    ] {
+      assert_eq!(
+        parse_font_face_stretch(input),
+        Some(FaceRange::explicit(width, width)),
+        "{input}"
+      );
+    }
+
+    // Explicit 100% is distinct from normal (from_auto: false).
+    assert_eq!(
+      parse_font_face_stretch("100%"),
+      Some(FaceRange::explicit(100.0, 100.0))
+    );
+    assert_ne!(
+      parse_font_face_stretch("100%"),
+      parse_font_face_stretch("normal")
+    );
+
+    // Single percentages and quarter-step / int16 saturation.
+    for (input, width) in [
+      ("0%", 0.0),
+      ("50%", 50.0),
+      ("75.24%", 75.0),
+      ("75.25%", 75.25),
+      ("10000%", 8191.75),
+    ] {
+      assert_eq!(
+        parse_font_face_stretch(input),
+        Some(FaceRange::explicit(width, width)),
+        "{input}"
+      );
+    }
+
+    // Ranges (including reversed and calc endpoints).
+    for (input, min, max) in [
+      ("50% 200%", 50.0, 200.0),
+      ("200% 50%", 50.0, 200.0),
+      ("calc(-10%) 125%", 0.0, 125.0),
+      ("125% calc(-10%)", 0.0, 125.0),
+    ] {
+      assert_eq!(
+        parse_font_face_stretch(input),
+        Some(FaceRange::explicit(min, max)),
+        "{input}"
+      );
+    }
+
+    // Math functions.
+    for (input, width) in [
+      ("calc(50% + 25%)", 75.0),
+      ("calc(-10%)", 0.0),
+      ("calc(NaN * 1%)", 0.0),
+      ("calc(infinity * 1%)", 8191.75),
+      ("calc(100% / 0.19 * 0.19)", 100.0),
+      ("min(50%, 75%)", 50.0),
+      ("clamp(50%, 80%, 100%)", 80.0),
+    ] {
+      assert_eq!(
+        parse_font_face_stretch(input),
+        Some(FaceRange::explicit(width, width)),
+        "{input}"
+      );
+    }
+    // Range endpoints stay f64 before quarter-step truncation, matching Blink.
+    assert_eq!(
+      parse_font_face_stretch("calc(100% / 0.19 * 0.19) calc(100% / 0.19 * 0.19)"),
+      Some(FaceRange::explicit(99.75, 99.75)),
+    );
+
+    // Rejections.
+    for input in [
+      "",
+      "-10%",
+      "50",
+      "50px",
+      "normal normal",
+      "auto auto",
+      "condensed expanded",
+      "condensed 150%",
+      "50% 100% 150%",
+      "inherit",
+      "calc(10px)",
+      "calc(50% + 10px)",
+    ] {
+      assert_eq!(parse_font_face_stretch(input), None, "{input}");
+    }
   }
 
   #[test]

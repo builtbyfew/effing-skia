@@ -39,7 +39,7 @@ TextCaches& GetTextCaches(skiac_font_collection* c_collection) {
   return *c_collection->text_caches;
 }
 
-const std::vector<SkString>& CachedFontFamilies(
+const TextCaches::Families& CachedFontFamilies(
     skiac_font_collection* c_collection,
     const skiac_text_request& request,
     const LocaleFamilies* locale) {
@@ -73,11 +73,10 @@ const std::vector<SkString>& CachedFontFamilies(
   }
   auto found = cache.find(key);
   if (found == cache.end()) {
-    found = cache
-                .emplace(
-                    std::move(key),
-                    ResolveFontFamilies(c_collection, request, nullptr, locale))
-                .first;
+    TextCaches::Families families;
+    families.names =
+        ResolveFontFamilies(c_collection, request, &families.generic, locale);
+    found = cache.emplace(std::move(key), std::move(families)).first;
   }
   return found->second;
 }
@@ -174,6 +173,7 @@ void AppendLineKey(std::string* key, const skiac_text_request& request) {
   put_float(request.size_adjust_value);
   put_int(request.size_adjust_from_font);
   put_int(effing::shaping_whole_runs());  // effing
+  put_int(request.antialias == kAntialiasNone ? 1 : 0);
   put(request.text, request.text_len);
 }
 
@@ -212,7 +212,7 @@ size_t MakeRunBlobs(Line* line, const TextRasterPolicy& policy) {
   size_t glyphs = 0;
   line->runs.reserve(line->blink.runs.size());
   for (const BlinkRun& run : line->blink.runs) {
-    const SkFont font = policy.DrawFont(run.font, nullptr);
+    const SkFont font = policy.RasterFont(run.font, nullptr);
     SkTextBlobBuilder builder;
     const auto& buffer = builder.allocRunPos(font, run.glyphs.size());
     memcpy(buffer.glyphs, run.glyphs.data(),
@@ -508,12 +508,13 @@ void MeasureOrDraw(skiac_font_collection* c_collection,
         effing::paint_glyphs_unsnapped(
             canvas, run.font, run.glyphs.data(), run.positions.data(),
             static_cast<int>(run.glyphs.size()), final_x + run.origin.fX,
-            paint_y + run.origin.fY, *paint);
+            paint_y + run.origin.fY, *paint,
+            request.antialias != kAntialiasNone);
       }
     } else if (policy.DrawFontUsesDevice()) {
       const SkMatrix device = canvas->getTotalMatrix();
       for (const BlinkRun& run : line->blink.runs) {
-        const SkFont font = policy.DrawFont(run.font, &device);
+        const SkFont font = policy.RasterFont(run.font, &device);
         SkTextBlobBuilder builder;
         const auto& buffer = builder.allocRunPos(font, run.glyphs.size());
         memcpy(buffer.glyphs, run.glyphs.data(),
@@ -638,6 +639,16 @@ void skiac_debug_text_line(skiac_font_collection* c_collection,
   put_float(line->last_word_advance);
   out += ",\"fallbackReads\":";
   out += std::to_string(c_collection->installed_fallback_reads);
+  out += ",\"familyInstanceFaces\":";
+  out += std::to_string(c_collection->family_instance_faces);
+  out += ",\"requestInstanceFaces\":";
+  out += std::to_string(c_collection->request_instance_faces);
+  out += ",\"descriptorLookups\":";
+  out += std::to_string(c_collection->descriptor_lookups);
+  out += ",\"fontFaceCores\":";
+  out += std::to_string(c_collection->font_face_cores);
+  out += ",\"splitFamilies\":";
+  out += std::to_string(c_collection->assets->splitFamilyCount());
   out += ",\"runs\":[";
   for (size_t r = 0; r < line->blink.runs.size(); ++r) {
     const BlinkRun& run = line->blink.runs[r];
