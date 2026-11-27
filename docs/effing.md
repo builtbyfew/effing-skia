@@ -1502,7 +1502,7 @@ the CI matrix.
 
 Changes to the fork's public surface, for `@effing/canvas` to follow.
 
-### Unreleased
+### 1.2.1-effing.1
 
 - On upstream 1.2.1 (by way of 1.2.0), with what upstream changed there:
   among others, Skia chrome/m158, `@font-face` descriptors in

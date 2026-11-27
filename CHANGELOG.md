@@ -1,3 +1,24 @@
+# [1.2.1-effing.1](https://github.com/builtbyfew/effing-skia/compare/v1.1.1-effing.1...v1.2.1-effing.1) (2026-11-27)
+
+
+### Features
+
+* merge upstream napi-rs/canvas 1.2.1 ([#71](https://github.com/builtbyfew/effing-skia/issues/71)) ([43d53d1](https://github.com/builtbyfew/effing-skia/commit/43d53d145f5f6b7b541e934212ac4461841cb49b)), by way of 1.2.0, with among others Skia chrome/m158, `@font-face` descriptors for `GlobalFonts.register` and `registerFromPath` (`weight`, `style`, `stretch`), `ctx.antialias`, PNG `compressionLevel` and `filters`, and DirectWrite for the system text renderer on Windows (see upstream's changelog). The fork's font features are re-hooked into upstream's new font registration.
+* `ctx.antialias = 'none'` also draws `geometricPrecision` text, `fillParagraph` / `strokeParagraph` and a group's `bounds` clip aliased ([#71](https://github.com/builtbyfew/effing-skia/issues/71)) ([43d53d1](https://github.com/builtbyfew/effing-skia/commit/43d53d145f5f6b7b541e934212ac4461841cb49b))
+
+
+### Bug Fixes
+
+* **fonts:** a font collection's later faces are `FontFace`s as new as its first (the newest face of a style draws it), and keep their order in a family across a rebuild (`GlobalFonts.remove`) ([#71](https://github.com/builtbyfew/effing-skia/issues/71)) ([43d53d1](https://github.com/builtbyfew/effing-skia/commit/43d53d145f5f6b7b541e934212ac4461841cb49b))
+
+
+### BREAKING CHANGES
+
+* Canvas text and the `shaper` paragraph engine choose among a family's registered faces by their `@font-face` descriptors (upstream's change). A face registered without descriptors matches as `normal`, so pass each file's `{ weight, style }` to `register`. The default `skparagraph` engine is unaffected.
+
+See the 1.2.1-effing.1 section of `docs/effing.md` for the changes `@effing/canvas` has to follow.
+
+
 # [1.1.1-effing.1](https://github.com/builtbyfew/effing-skia/compare/v1.1.0-effing.1...v1.1.1-effing.1) (2026-11-19)
 
 
